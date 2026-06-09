@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& python -c \"import sys; print\\(sys.version\\)\")",
+      "PowerShell(\\(Get-Command python\\).Source)",
+      "PowerShell(py --version)",
+      "PowerShell(Stop-Process -Name python -Force 2>$null)",
+      "PowerShell(Start-Process py -ArgumentList \"d:\\\\Code\\\\my_cs\\\\serve.py\" -WindowStyle Normal)",
+      "PowerShell(py --version 2>&1)",
+      "PowerShell(py -3 --version 2>&1)",
+      "PowerShell(Stop-Process -Name \"py\" -ErrorAction SilentlyContinue; netstat -ano | findstr \":8080\" | ForEach-Object { \\($_ -split '\\\\s+'\\)[-1] } | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue })"
+    ]
+  }
+}

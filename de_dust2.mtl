@@ -1,0 +1,220 @@
+newmtl +0~fifties_lgt2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/+0~fifties_lgt2.png
+
+newmtl +a~fifties_lgt2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/+a~fifties_lgt2.png
+
+newmtl aaatrigger
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/aaatrigger.png
+
+newmtl black
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/black.png
+
+newmtl clip
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/clip.png
+
+newmtl generic011
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/generic011.png
+
+newmtl sky
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sky.png
+
+newmtl white
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/white.png
+
+newmtl -0sandrock2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/-0sandrock2.png
+
+newmtl -1sandrock2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/-1sandrock2.png
+
+newmtl -2sandrock2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/-2sandrock2.png
+
+newmtl cssandwallbta
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/cssandwallbta.png
+
+newmtl cssandwallbtb
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/cssandwallbtb.png
+
+newmtl cssandwalldj1
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/cssandwalldj1.png
+
+newmtl cssandwallgh1a
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/cssandwallgh1a.png
+
+newmtl cssandwallgh1b
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/cssandwallgh1b.png
+
+newmtl djcredit1
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/djcredit1.png
+
+newmtl djcredit2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/djcredit2.png
+
+newmtl sandccrete2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandccrete2.png
+
+newmtl sandwlldoorbta
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandwlldoorbta.png
+
+newmtl sandwlldoorbtb
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandwlldoorbtb.png
+
+newmtl sandwlldoordj1
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandwlldoordj1.png
+
+newmtl sandwlldoordj2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandwlldoordj2.png
+
+newmtl -0cssandwall
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/-0cssandwall.png
+
+newmtl -0sand
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/-0sand.png
+
+newmtl -1cssandwall
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/-1cssandwall.png
+
+newmtl -1sand
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/-1sand.png
+
+newmtl -2sand
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/-2sand.png
+
+newmtl -3sand
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/-3sand.png
+
+newmtl mltrycrtesd
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/mltrycrtesd.png
+
+newmtl mltrycrtesd2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/mltrycrtesd2.png
+
+newmtl mltrycrtetp
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/mltrycrtetp.png
+
+newmtl sandccrete
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandccrete.png
+
+newmtl sandcrtlrgsd
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandcrtlrgsd.png
+
+newmtl sandcrtlrgtp
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandcrtlrgtp.png
+
+newmtl sandcrtsmsd
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandcrtsmsd.png
+
+newmtl sandcrtsmtp
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandcrtsmtp.png
+
+newmtl sandroad
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandroad.png
+
+newmtl sandroadtgta
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandroadtgta.png
+
+newmtl sandroadtgtb
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandroadtgtb.png
+
+newmtl sandtrim
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandtrim.png
+
+newmtl sandwlldoor
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandwlldoor.png
+
+newmtl sandwlldoor2
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandwlldoor2.png
+
+newmtl sandwllwndw
+  Ka 1 1 1
+  Kd 1 1 1
+  map_Kd textures/sandwllwndw.png
+

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>de_dust2 — Free Fly</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a1a; overflow: hidden; font-family: monospace; }
+  canvas { display: block; }
+
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.75);
+    color: #fff; font-size: 18px; text-align: center;
+    cursor: pointer; user-select: none;
+  }
+  #overlay span { opacity: .6; font-size: 13px; display: block; margin-top: 10px; }
+
+  #loading {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #fff; font-size: 16px; display: none;
+  }
+
+  #hud {
+    position: absolute; bottom: 16px; left: 16px;
+    color: rgba(255,255,255,0.7); font-size: 12px;
+    line-height: 1.8; display: none;
+    text-shadow: 0 0 4px #000;
+  }
+
+  #crosshair {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(255,255,255,0.8); font-size: 22px;
+    pointer-events: none; display: none;
+    text-shadow: 0 0 3px #000;
+  }
+
+  #keys {
+    position: absolute; top: 16px; right: 16px;
+    color: rgba(255,255,255,0.55); font-size: 11px;
+    line-height: 2; text-align: right; display: none;
+    text-shadow: 0 0 4px #000;
+  }
+</style>
+</head>
+<body>
+
+<div id="overlay">
+  Click to enter the map
+  <span>WASD — move &nbsp;|&nbsp; Mouse — look &nbsp;|&nbsp; Q/E — up/down &nbsp;|&nbsp; Shift — fast &nbsp;|&nbsp; ESC — exit</span>
+</div>
+<div id="loading">Loading de_dust2...</div>
+<div id="crosshair">·</div>
+<div id="hud">
+  <div id="pos"></div>
+  <div id="spd"></div>
+</div>
+<div id="keys">
+  W / S — forward / back<br>
+  A / D — left / right<br>
+  E / Q — up / down<br>
+  Shift — fast mode<br>
+  ESC — release mouse
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OBJLoader }  from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader }  from 'three/addons/loaders/MTLLoader.js';
+
+// ── Scene ──────────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+scene.background = new THREE.Color(0x87CEEB);
+scene.fog = new THREE.Fog(0x87CEEB, 1000, 8000);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 1, 12000);
+
+// ── Load map ───────────────────────────────────────────────────────────────
+const $loading = document.getElementById('loading');
+$loading.style.display = 'block';
+
+const objPromise = new Promise((resolve, reject) => {
+  new MTLLoader().setPath('./').load('de_dust2.mtl', (materials) => {
+    materials.preload();
+    new OBJLoader().setMaterials(materials).setPath('./').load(
+      'de_dust2.obj', resolve,
+      (xhr) => {
+        const pct = xhr.total ? Math.round(xhr.loaded / xhr.total * 100) : '…';
+        $loading.textContent = `Loading geometry… ${pct}%`;
+      },
+      reject
+    );
+  });
+});
+
+// Vertex colors are embedded in the OBJ as "v x y z r g b".
+// OBJLoader (Three.js r125+) parses them into geometry.attributes.color automatically.
+
+objPromise.then((obj) => {
+
+  let meshCount = 0, vcCount = 0;
+  let dbg = '';
+
+  obj.traverse((child) => {
+    if (!child.isMesh) return;
+    meshCount++;
+
+    const oldMat = Array.isArray(child.material) ? child.material[0] : child.material;
+    const colAttr = child.geometry.attributes.color;
+    const hasVC   = !!colAttr;
+    if (hasVC) vcCount++;
+
+    if (meshCount === 1) {
+      if (colAttr) {
+        const a = colAttr.array;
+        dbg = `mesh[0]: color OK, val[0]=(${a[0].toFixed(3)},${a[1].toFixed(3)},${a[2].toFixed(3)})`;
+      } else {
+        dbg = 'mesh[0]: NO color attribute!';
+      }
+    }
+
+    // Replace material: texture × vertex lightmap color
+    const newMat = new THREE.MeshBasicMaterial({
+      map: oldMat && oldMat.map ? oldMat.map : null,
+      vertexColors: hasVC,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    });
+    if (newMat.map) {
+      newMat.map.wrapS = THREE.RepeatWrapping;
+      newMat.map.wrapT = THREE.RepeatWrapping;
+      newMat.map.needsUpdate = true;
+    }
+    child.material = newMat;
+  });
+
+  // Show debug info on screen for a few seconds
+  $loading.textContent = `meshes=${meshCount} vc=${vcCount} | ${dbg}`;
+  $loading.style.display = 'block';
+  setTimeout(() => { $loading.style.display = 'none'; }, 8000);
+
+  scene.add(obj);
+
+  const box    = new THREE.Box3().setFromObject(obj);
+  const center = box.getCenter(new THREE.Vector3());
+  const size   = box.getSize(new THREE.Vector3());
+  camera.position.set(center.x, box.min.y + size.y * 0.15, center.z);
+
+  $loading.style.display = 'none';
+  document.getElementById('overlay').style.display = 'flex';
+
+}).catch((err) => {
+  console.error(err);
+  $loading.textContent = 'Error: ' + err;
+});
+
+// ── Pointer Lock ───────────────────────────────────────────────────────────
+let isLocked = false;
+
+document.getElementById('overlay').addEventListener('click', () => {
+  renderer.domElement.requestPointerLock();
+});
+
+document.addEventListener('pointerlockchange', () => {
+  isLocked = document.pointerLockElement === renderer.domElement;
+  document.getElementById('overlay').style.display   = isLocked ? 'none' : 'flex';
+  document.getElementById('crosshair').style.display = isLocked ? 'block' : 'none';
+  document.getElementById('hud').style.display       = isLocked ? 'block' : 'none';
+  document.getElementById('keys').style.display      = isLocked ? 'block' : 'none';
+});
+
+// ── Mouse look ─────────────────────────────────────────────────────────────
+let yaw = 0, pitch = 0;
+const SENSITIVITY = 0.0018;
+
+document.addEventListener('mousemove', (e) => {
+  if (!isLocked) return;
+  yaw   -= e.movementX * SENSITIVITY;
+  pitch -= e.movementY * SENSITIVITY;
+  pitch  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+});
+
+camera.rotation.order = 'YXZ';
+
+// ── Keyboard ───────────────────────────────────────────────────────────────
+const keys = {};
+document.addEventListener('keydown', e => { keys[e.code] = true; });
+document.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+// ── Movement ───────────────────────────────────────────────────────────────
+const _fwd    = new THREE.Vector3();
+const _right  = new THREE.Vector3();
+const _worldUp = new THREE.Vector3(0, 1, 0);
+
+const SPEED_NORMAL = 8;
+const SPEED_FAST   = 40;
+
+function tick() {
+  if (!isLocked) return;
+
+  const speed = (keys['ShiftLeft'] || keys['ShiftRight']) ? SPEED_FAST : SPEED_NORMAL;
+
+  camera.getWorldDirection(_fwd);
+  _fwd.y = 0; _fwd.normalize();
+  _right.crossVectors(_fwd, _worldUp).normalize();
+
+  if (keys['KeyW'] || keys['ArrowUp'])    camera.position.addScaledVector(_fwd,    speed);
+  if (keys['KeyS'] || keys['ArrowDown'])  camera.position.addScaledVector(_fwd,   -speed);
+  if (keys['KeyA'] || keys['ArrowLeft'])  camera.position.addScaledVector(_right, -speed);
+  if (keys['KeyD'] || keys['ArrowRight']) camera.position.addScaledVector(_right,  speed);
+  if (keys['KeyE'])                        camera.position.y += speed;
+  if (keys['KeyQ'])                        camera.position.y -= speed;
+
+  const p = camera.position;
+  document.getElementById('pos').textContent =
+    `XYZ  ${p.x.toFixed(0)}  ${p.y.toFixed(0)}  ${p.z.toFixed(0)}`;
+  document.getElementById('spd').textContent =
+    `Speed  ${speed}  ${(keys['ShiftLeft'] || keys['ShiftRight']) ? '[ FAST ]' : ''}`;
+}
+
+// ── Render loop ────────────────────────────────────────────────────────────
+function animate() {
+  requestAnimationFrame(animate);
+  camera.rotation.y = yaw;
+  camera.rotation.x = pitch;
+  tick();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ── Resize ─────────────────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
