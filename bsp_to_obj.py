@@ -385,7 +385,8 @@ def convert(bsp_path, out_dir):
 
 
 if __name__ == '__main__':
+    from config import CSTRIKE_PATH
     bsp = sys.argv[1] if len(sys.argv) > 1 else \
-        r"D:\SteamLibrary\steamapps\common\Half-Life\cstrike\maps\de_dust2.bsp"
-    out = sys.argv[2] if len(sys.argv) > 2 else r"d:\Code\my_cs"
+        CSTRIKE_PATH / "maps" / "de_dust2.bsp"
+    out = sys.argv[2] if len(sys.argv) > 2 else Path(".").absolute()
     convert(bsp, out)

@@ -5,9 +5,10 @@ Tracing a point through hull 1 is equivalent to tracing a player-sized box.
 """
 import struct, json, re, sys
 from pathlib import Path
+from config import CSTRIKE_PATH
 
 BSP = sys.argv[1] if len(sys.argv) > 1 else \
-    r"D:\SteamLibrary\steamapps\common\Half-Life\cstrike\maps\de_dust2.bsp"
+    CSTRIKE_PATH / "maps" / "de_dust2.bsp"
 
 def lump(data, i):
     off, ln = struct.unpack_from('<II', data, 4 + i*8)

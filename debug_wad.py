@@ -1,8 +1,8 @@
 import struct
 from pathlib import Path
+from config import WAD_PATH
 
-wad = r"D:\SteamLibrary\steamapps\common\Half-Life\cstrike\cs_dust.wad"
-with open(wad, 'rb') as f:
+with open(WAD_PATH, 'rb') as f:
     data = f.read()
 
 print("Magic:", data[:4])
