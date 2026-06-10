@@ -447,6 +447,7 @@ function traceMove(from, to) {
 // ── Player physics ────────────────────────────────────────────────────────
 let gsPos, vel, onGround, wasJump;
 let duckAmount = 0;          // 0 = standing, 1 = fully crouched
+let phyDucked  = false;      // duck hull (hull3) is physically active
 let smoothCamY = null;       // smoothed camera Y for stair interpolation
 let punchPitch = 0;          // landing view-kick offset (radians)
 let punchVel   = 0;          // spring velocity for punch
@@ -472,6 +473,7 @@ function initPhysics(hull) {
   onGround     = false;
   wasJump      = false;
   duckAmount   = 0;
+  phyDucked    = false;
   if (sp) yaw = -(sp.angle * Math.PI / 180);
 
 }
@@ -526,16 +528,38 @@ function playerMove(dt) {
   // ── Duck transition ────────────────────────────────────────────────────
   const wantDuck = keys['ControlLeft'] || keys['ControlRight'];
   if (wantDuck) duckAmount = Math.min(1, duckAmount + dt / SV.ducktime);
-  else          duckAmount = Math.max(0, duckAmount - dt / SV.ducktime);
+  else          duckAmount = Math.max(0, duckAmount - dt / SV.uncrouchtime);
 
-  // Duck in air is purely visual (eye height tracks duckAmount).
-  // No gsPos shift in air — shifting by duckAmount*18 with stand hull puts hull bottom
-  // below the floor when duckAmount < 0.5, causing immediate startsolid and fall-through.
-  gHullHead = gHullHeadStand;
+  // ── Duck hull state ────────────────────────────────────────────────────
+  // phyDucked activates duck hull (hull3) for categorize.
+  // Duck hull bottom = gsPos-18 vs stand hull bottom = gsPos-36, so the duck hull
+  // contacts the floor 18 units sooner — allowing landing on taller boxes.
+  // slideMove ALWAYS uses stand hull (hull1) to avoid wall fall-through via seams.
+  if (!onGround && wantDuck) phyDucked = true;
+  if (!onGround && !wantDuck) phyDucked = false;   // release duck in air → stand hull
+
+  // Hull for categorize: duck when phyDucked, else stand
+  gHullHead = phyDucked ? gHullHeadDuck : gHullHeadStand;
 
   // ── Categorize ground ─────────────────────────────────────────────────
   const wasGround = onGround;
   categorize();
+
+  // ── Stand up when ctrl released on ground ─────────────────────────────
+  // When phyDucked on ground: gsPos is at duck-hull landing position (floor+18).
+  // Stand hull top would be at gsPos+55 (new origin +19, hull +36).  Duck hull top
+  // is at gsPos+18 — so we need 37 units of upward clearance checked with duck hull.
+  // Shift by 19 (18 + 1 epsilon) so stand hull bottom lands at floor+1, not floor,
+  // avoiding startsolid on BSP polygon boundaries.
+  if (phyDucked && onGround && !wantDuck) {
+    const trUp = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2] + 37]);
+    if (trUp.fraction >= 1.0) {
+      gsPos[2] += 19;
+      phyDucked = false;
+      gHullHead = gHullHeadStand;
+    }
+    // else: ceiling too low, stay phyDucked
+  }
 
   // Landing view punch: kick pitch down proportionally to fall speed
   if (!wasGround && onGround && prevVelZ < -150) {
@@ -568,8 +592,21 @@ function playerMove(dt) {
 
     const jumpKey = keys['Space'];
     if (jumpKey && !wasJump && duckAmount < 0.9) {
-      vel[2]   = SV.jumpvel;
-      onGround = false;
+      // Jumping from phyDucked: shift gsPos to stand-hull origin first (+1 epsilon).
+      // This raises the hull bottom above the floor so stand hull slideMove works.
+      if (phyDucked) {
+        const trUp = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2] + 37]);
+        if (trUp.fraction >= 1.0) {
+          gsPos[2] += 19;
+          phyDucked = false;
+          gHullHead = gHullHeadStand;
+        }
+        // else: ceiling too low, jump blocked
+      }
+      if (!phyDucked) {
+        vel[2]   = SV.jumpvel;
+        onGround = false;
+      }
     }
     wasJump = jumpKey;
 
@@ -579,7 +616,11 @@ function playerMove(dt) {
     wasJump = true;
   }
 
-  // ── Move ──────────────────────────────────────────────────────────────
+  // ── Move ─────────────────────────────────────────────────────────────
+  // In air: stand hull always — duck hull (hull3) misses BSP wall seams that hull1 blocks.
+  // On ground with phyDucked: duck hull required — gsPos is at duck-hull origin (floor+18),
+  // so stand hull bottom would be inside the floor (startsolid) and block all movement.
+  gHullHead = (onGround && phyDucked) ? gHullHeadDuck : gHullHeadStand;
   const savedPos = [...gsPos], savedVel = [...vel];
   slideMove(dt);
   if (!onGround) vel[2] -= SV.gravity * 0.5 * dt;   // second half-gravity
@@ -627,8 +668,10 @@ function playerMove(dt) {
   }
 
   // ── Camera ────────────────────────────────────────────────────────────
+  // When phyDucked on ground: gsPos is at floor+18 (duck hull origin).
+  // Add 18 to eye height so the camera sits at the same visual height as duckAmount implies.
   const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
-  const targetCamY = gsPos[2] + eyeH;
+  const targetCamY = gsPos[2] + eyeH + (phyDucked && onGround ? 18 : 0);
   if (smoothCamY === null) smoothCamY = targetCamY;
   if (onGround) {
     const camDiff = targetCamY - smoothCamY;
