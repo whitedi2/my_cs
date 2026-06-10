@@ -446,7 +446,7 @@ function traceMove(from, to) {
 // ── Player physics ────────────────────────────────────────────────────────
 let gsPos, vel, onGround, wasJump;
 let duckAmount = 0;          // 0 = standing, 1 = fully crouched
-let airDuckOffset = 0;       // how much gsPos[2] was shifted down due to ducking in air
+let smoothCamY = null;       // smoothed camera Y for stair interpolation
 let punchPitch = 0;          // landing view-kick offset (radians)
 let punchVel   = 0;          // spring velocity for punch
 let prevVelZ   = 0;          // z-velocity from previous frame (for landing detection)
@@ -485,7 +485,6 @@ function initPhysics(hull) {
   onGround     = false;
   wasJump      = false;
   duckAmount   = 0;
-  airDuckOffset = 0;
   if (sp) yaw = -(sp.angle * Math.PI / 180);
 
 }
@@ -526,7 +525,12 @@ function slideMove(dt) {
     for (const pl of hitPlanes) {
       const dot = vel[0]*pl[0] + vel[1]*pl[1] + vel[2]*pl[2];
       if (dot >= 0) continue;
-      vel[0] -= dot*pl[0]; vel[1] -= dot*pl[1]; vel[2] -= dot*pl[2];
+      // Floor surface on ground: only cancel downward velocity, preserve horizontal speed
+      if (pl[2] > 0.7 && onGround) {
+        if (vel[2] < 0) vel[2] = 0;
+      } else {
+        vel[0] -= dot*pl[0]; vel[1] -= dot*pl[1]; vel[2] -= dot*pl[2];
+      }
     }
   }
 }
@@ -537,21 +541,10 @@ function playerMove(dt) {
   if (wantDuck) duckAmount = Math.min(1, duckAmount + dt / SV.ducktime);
   else          duckAmount = Math.max(0, duckAmount - dt / SV.ducktime);
 
-  // Air ducking: shift gsPos down so feet stay fixed, switch to hull3 (smaller top clearance)
-  // Landing while ducked: restore the shift so hull1 bottom lands exactly on the floor
-  if (!onGround) {
-    const targetOffset = duckAmount * 18;
-    const shift = targetOffset - airDuckOffset;
-    gsPos[2] -= shift;
-    airDuckOffset = targetOffset;
-    gHullHead = duckAmount > 0.5 ? gHullHeadDuck : gHullHeadStand;
-  } else {
-    if (airDuckOffset !== 0) {
-      gsPos[2] += airDuckOffset;
-      airDuckOffset = 0;
-    }
-    gHullHead = gHullHeadStand;
-  }
+  // Duck in air is purely visual (eye height tracks duckAmount).
+  // No gsPos shift in air — shifting by duckAmount*18 with stand hull puts hull bottom
+  // below the floor when duckAmount < 0.5, causing immediate startsolid and fall-through.
+  gHullHead = gHullHeadStand;
 
   // ── Categorize ground ─────────────────────────────────────────────────
   const wasGround = onGround;
@@ -607,17 +600,22 @@ function playerMove(dt) {
   // Step-up: blocked horizontally on ground → climb stair
   const movedH = Math.hypot(gsPos[0]-savedPos[0], gsPos[1]-savedPos[1]);
   const wantH  = Math.hypot(savedVel[0]*dt, savedVel[1]*dt);
-  if (onGround && movedH < wantH * 0.5 && wantH > 0.1) {
+  if (onGround && wantH > 0.1) {
+    const noStepPos = [...gsPos], noStepVel = [...vel];
     gsPos = [...savedPos]; vel = [...savedVel];
     const up = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2]+SV.stepsize]);
     gsPos = [...up.end];
     slideMove(dt);
     const dn = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2]-SV.stepsize*2]);
     if (dn.fraction < 1 && dn.plane && dn.plane[2] > 0.7) {
-      gsPos = [...dn.end];
+      const stepMovedH = Math.hypot(dn.end[0]-savedPos[0], dn.end[1]-savedPos[1]);
+      if (stepMovedH > movedH) {
+        gsPos = [...dn.end];              // step moved farther — use it
+      } else {
+        gsPos = noStepPos; vel = noStepVel;   // step didn't help (e.g. wall) — revert
+      }
     } else {
-      gsPos = [...savedPos]; vel = [...savedVel];
-      slideMove(dt);
+      gsPos = noStepPos; vel = noStepVel;
     }
   }
 
@@ -642,11 +640,20 @@ function playerMove(dt) {
   }
 
   // ── Camera ────────────────────────────────────────────────────────────
-  // airDuckOffset > 0 means gsPos is still shifted down (in air OR just-landed before next-frame restore).
-  // Need duckAmount*36 lift to keep camera at "legs tuck" height (drops only 16 units, not 34).
-  const airDuckLift = airDuckOffset > 0 ? duckAmount * 36 : 0;
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand) + airDuckLift;
-  yawObj.position.set(gsPos[0], gsPos[2] + eyeH, -gsPos[1]);
+  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const targetCamY = gsPos[2] + eyeH;
+  if (smoothCamY === null) smoothCamY = targetCamY;
+  if (onGround) {
+    const camDiff = targetCamY - smoothCamY;
+    if (Math.abs(camDiff) > SV.stepsize * 3) {
+      smoothCamY = targetCamY;
+    } else {
+      smoothCamY += camDiff * (1 - Math.exp(-18 * dt));
+    }
+  } else {
+    smoothCamY = targetCamY;   // in air: track exactly (no lag on jump/fall)
+  }
+  yawObj.position.set(gsPos[0], smoothCamY, -gsPos[1]);
 }
 
 // ── Pointer Lock ──────────────────────────────────────────────────────────
