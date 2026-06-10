@@ -50,13 +50,23 @@
     cursor: pointer;
   }
   #settings input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #aaa; }
+  #weapon-hud {
+    position: absolute; bottom: 16px; right: 16px;
+    color: rgba(255,255,255,.78); font-size: 13px;
+    display: none; text-align: right; letter-spacing: 2px;
+    text-shadow: 0 0 5px #000;
+  }
+  #ammo-display {
+    font-size: 24px; font-weight: bold; letter-spacing: 3px;
+    color: rgba(255,255,255,.95);
+  }
 </style>
 </head>
 <body>
 
 <div id="overlay">
   Click to play
-  <span>WASD — move &nbsp;|&nbsp; Mouse — look &nbsp;|&nbsp; Space — jump &nbsp;|&nbsp; Shift — walk &nbsp;|&nbsp; Ctrl — crouch &nbsp;|&nbsp; ESC — pause</span>
+  <span>WASD — move &nbsp;|&nbsp; Mouse — look &nbsp;|&nbsp; Space — jump &nbsp;|&nbsp; Shift — walk &nbsp;|&nbsp; Ctrl — crouch &nbsp;|&nbsp; 1/2 — weapons &nbsp;|&nbsp; R — reload &nbsp;|&nbsp; LMB — fire/slash &nbsp;|&nbsp; RMB — stab &nbsp;|&nbsp; ESC — pause</span>
   <div id="settings">
     <label><input type="checkbox" id="opt-invert-y"> Инверсия мыши (Y)</label>
     <label><input type="checkbox" id="opt-widescreen" checked> Широкоэкранный FOV</label>
@@ -70,7 +80,14 @@
   A / D — left / right<br>
   Space — jump<br>
   Shift — walk &nbsp; Ctrl — crouch<br>
+  1 — knife &nbsp; 2 — USP<br>
+  R — reload &nbsp; Q — prev weapon<br>
+  LMB — fire / slash &nbsp; RMB — stab<br>
   ESC — pause
+</div>
+<div id="weapon-hud">
+  <div id="ammo-display"></div>
+  <div id="weapon-name">KNIFE</div>
 </div>
 
 <script type="importmap">
@@ -106,6 +123,188 @@ const pitchObj = new THREE.Object3D();
 pitchObj.add(camera);
 yawObj.add(pitchObj);
 scene.add(yawObj);
+
+// ── View-model scene (knife, rendered on top of world) ────────────────────
+const vmScene  = new THREE.Scene();
+const vmCamera = new THREE.PerspectiveCamera(73.74, innerWidth / innerHeight, 0.1, 200);
+vmScene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const vmSun = new THREE.DirectionalLight(0xffffff, 0.85);
+vmSun.position.set(1.5, 3, 2); vmScene.add(vmSun);
+renderer.autoClear = false;
+
+// ── Weapon configs ────────────────────────────────────────────────────────
+const WPNS = [
+  {
+    id: 'knife', label: 'KNIFE',
+    jsonFile: 'v_knife.json',
+    pos: new THREE.Vector3(0.05, -0.03, -0.55),
+    rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
+    scale: 0.055,
+    type: 'melee',
+    root: null,
+  },
+  {
+    id: 'usp', label: 'USP',
+    jsonFile: 'v_usp.json',
+    pos: new THREE.Vector3(0.07, -0.06, -0.58),
+    rot: { x: 0.06, y: Math.PI / 2, z: 0.04 },
+    scale: 0.055,
+    type: 'gun',
+    ammo: 12, maxAmmo: 12,
+    reserve: 100,
+    reloadTime: 2.7,
+    root: null,
+  },
+];
+
+let curWpnIdx  = 0;
+let nextWpnIdx = -1;
+
+const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5 };
+let ws = WS.DRAW, wsT = 0, wsIdleT = 0, wsHit = false;
+
+function curW() { return WPNS[curWpnIdx]; }
+
+const _texLoader = new THREE.TextureLoader();
+WPNS.forEach(wpn => {
+  fetch(wpn.jsonFile).then(r => r.json()).then(data => {
+    wpn.root = new THREE.Group();
+    data.meshes.forEach(m => {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3));
+      geo.setAttribute('normal',   new THREE.Float32BufferAttribute(m.normals,   3));
+      geo.setAttribute('uv',       new THREE.Float32BufferAttribute(m.uvs,       2));
+      geo.setIndex(m.indices);
+      geo.computeBoundingSphere();
+      const tex = _texLoader.load(m.texFile);
+      wpn.root.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ map: tex, side: THREE.DoubleSide })));
+    });
+    wpn.root.scale.setScalar(wpn.scale);
+    wpn.root.visible = (WPNS.indexOf(wpn) === curWpnIdx);
+    vmScene.add(wpn.root);
+    console.log(`Weapon loaded: ${wpn.id}`);
+  }).catch(() => console.warn(`${wpn.jsonFile} not found — run: python mdl_to_json.py ${wpn.id}`));
+});
+
+function switchWeapon(idx) {
+  if (idx === curWpnIdx || idx < 0 || idx >= WPNS.length) return;
+  if (ws === WS.RELOAD) return;
+  nextWpnIdx = idx;
+  if (ws === WS.IDLE) _beginDraw(nextWpnIdx);
+}
+
+function _beginDraw(idx) {
+  if (WPNS[curWpnIdx].root) WPNS[curWpnIdx].root.visible = false;
+  curWpnIdx  = idx;
+  nextWpnIdx = -1;
+  ws = WS.DRAW; wsT = 0;
+  if (WPNS[curWpnIdx].root) WPNS[curWpnIdx].root.visible = true;
+}
+
+function hitCheck(maxDist) {
+  if (!gsPos || !gPlanes) return;
+  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const cp   = Math.cos(pitch), spv = Math.sin(pitch);
+  const from = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
+  const fx   = -Math.sin(yaw)*cp, fy = Math.cos(yaw)*cp, fz = -spv;
+  const to   = [from[0]+fx*maxDist, from[1]+fy*maxDist, from[2]+fz*maxDist];
+  const tr   = traceMove(from, to);
+  if (tr.fraction < 1) {
+    const ch = document.getElementById('crosshair');
+    ch.style.color = '#ff5555';
+    setTimeout(() => { ch.style.color = 'rgba(255,255,255,0.85)'; }, 100);
+  }
+}
+
+function updateWeapon(dt) {
+  const wpn = curW();
+  if (!wpn.root) return;
+  wsT += dt; wsIdleT += dt;
+  const p = wpn.root.position, r = wpn.root.rotation;
+  const eo = t => 1 - (1-t)*(1-t);
+
+  if (nextWpnIdx >= 0 && ws === WS.IDLE) { _beginDraw(nextWpnIdx); return; }
+
+  switch (ws) {
+    case WS.DRAW: {
+      const t = eo(Math.min(wsT / 0.5, 1));
+      p.set(wpn.pos.x, wpn.pos.y - 0.9*(1-t), wpn.pos.z);
+      r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
+      if (t >= 1) { ws = WS.IDLE; wsT = 0; }
+      break;
+    }
+    case WS.IDLE: {
+      p.set(wpn.pos.x, wpn.pos.y + Math.sin(wsIdleT*1.6)*0.005, wpn.pos.z);
+      r.set(wpn.rot.x + Math.cos(wsIdleT*0.9)*0.007, wpn.rot.y, wpn.rot.z);
+      break;
+    }
+    case WS.SLASH: {
+      const PRE = 0.14, POST = 0.34;
+      if (wsT < PRE) {
+        const t = eo(wsT / PRE);
+        p.set(wpn.pos.x + t*0.22, wpn.pos.y - t*0.10, wpn.pos.z);
+        r.set(wpn.rot.x - t*0.32, wpn.rot.y + t*0.28, wpn.rot.z + t*0.40);
+      } else {
+        const t = Math.min((wsT - PRE) / POST, 1);
+        p.set(wpn.pos.x + (1-t)*0.22 - t*0.20, wpn.pos.y - (1-t)*0.10, wpn.pos.z);
+        r.set(wpn.rot.x - (1-t)*0.32, wpn.rot.y + (1-t)*0.28 - t*0.55, wpn.rot.z + (1-t)*0.40 - t*0.16);
+        if (t >= 0.25 && !wsHit) { wsHit = true; hitCheck(32); }
+        if (t >= 1) { ws = WS.IDLE; wsT = 0; wsHit = false; }
+      }
+      break;
+    }
+    case WS.STAB: {
+      const PRE = 0.10, POST = 0.44;
+      if (wsT < PRE) {
+        const t = wsT / PRE;
+        p.set(wpn.pos.x, wpn.pos.y - t*0.07, wpn.pos.z + t*0.11);
+        r.set(wpn.rot.x + t*0.22, wpn.rot.y, wpn.rot.z);
+      } else {
+        const t = Math.min((wsT - PRE) / POST, 1);
+        const fwd = t < 0.35 ? eo(t/0.35) : 1 - eo((t-0.35)/0.65);
+        p.set(wpn.pos.x, wpn.pos.y - (1-t)*0.07, wpn.pos.z + (1-t)*0.11 - fwd*0.26);
+        r.set(wpn.rot.x + (1-t)*0.22, wpn.rot.y, wpn.rot.z);
+        if (fwd >= 0.80 && !wsHit) { wsHit = true; hitCheck(32); }
+        if (t >= 1) { ws = WS.IDLE; wsT = 0; wsHit = false; }
+      }
+      break;
+    }
+    case WS.FIRE: {
+      const DUR = 0.12;
+      const t   = Math.min(wsT / DUR, 1);
+      const kick = t < 0.3 ? t/0.3 : 1 - (t-0.3)/0.7;
+      p.set(wpn.pos.x, wpn.pos.y + kick*0.03, wpn.pos.z + kick*0.04);
+      r.set(wpn.rot.x - kick*0.08, wpn.rot.y, wpn.rot.z);
+      if (!wsHit) { wsHit = true; hitCheck(4096); }
+      if (t >= 1) { ws = WS.IDLE; wsT = 0; wsHit = false; }
+      break;
+    }
+    case WS.RELOAD: {
+      const t   = Math.min(wsT / wpn.reloadTime, 1);
+      const dip = t < 0.15 ? t/0.15 : t > 0.85 ? 1-(t-0.85)/0.15 : 1;
+      p.set(wpn.pos.x, wpn.pos.y - dip*0.25, wpn.pos.z);
+      r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z + dip*0.35);
+      if (t >= 1) {
+        const take = Math.min(wpn.maxAmmo - wpn.ammo, wpn.reserve);
+        wpn.ammo += take; wpn.reserve -= take;
+        ws = WS.DRAW; wsT = 0;
+      }
+      break;
+    }
+  }
+}
+
+function updateHUD() {
+  const wpn = curW();
+  document.getElementById('weapon-name').textContent = wpn.label;
+  const ammoEl = document.getElementById('ammo-display');
+  if (wpn.type === 'gun') {
+    ammoEl.textContent = `${wpn.ammo}  /  ${wpn.reserve}`;
+    ammoEl.style.display = '';
+  } else {
+    ammoEl.style.display = 'none';
+  }
+}
 
 // ── Load assets ───────────────────────────────────────────────────────────
 const $load = document.getElementById('loading');
@@ -444,10 +643,11 @@ let mouseIgnore = 0;   // events to skip after pointer lock (avoid initial large
 document.addEventListener('pointerlockchange', () => {
   isLocked = document.pointerLockElement === renderer.domElement;
   if (isLocked) mouseIgnore = 5;
-  document.getElementById('overlay').style.display   = isLocked ? 'none' : 'flex';
-  document.getElementById('crosshair').style.display = isLocked ? 'block' : 'none';
-  document.getElementById('hud').style.display       = isLocked ? 'block' : 'none';
-  document.getElementById('keys').style.display      = isLocked ? 'block' : 'none';
+  document.getElementById('overlay').style.display    = isLocked ? 'none'  : 'flex';
+  document.getElementById('crosshair').style.display  = isLocked ? 'block' : 'none';
+  document.getElementById('hud').style.display        = isLocked ? 'block' : 'none';
+  document.getElementById('keys').style.display       = isLocked ? 'block' : 'none';
+  document.getElementById('weapon-hud').style.display = isLocked ? 'block' : 'none';
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────
@@ -456,12 +656,13 @@ let widescreenFOV = true;
 
 function updateFOV() {
   if (widescreenFOV) {
-    camera.fov = 90;
+    // CS 1.6 allow_widescreen: horizontal FOV = 90° at 4:3 → vertical ≈ 73.74°
+    // extending horizontally to fill 16:9 (gives ~106° hFOV on 16:9)
+    const hFov4x3 = 2 * Math.atan(Math.tan(Math.PI / 4) * (4 / 3));
+    camera.fov = 2 * Math.atan(Math.tan(hFov4x3 / 2) / (innerWidth / innerHeight)) * (180 / Math.PI);
   } else {
-    // Lock to 4:3 horizontal extent: hFov = 2*atan(tan(45°)*4/3) ≈ 106.26°
-    // Then derive vertical FOV for the actual screen aspect ratio
-    const hFovBase = 2 * Math.atan(Math.tan(Math.PI / 4) * (4 / 3));
-    camera.fov = 2 * Math.atan(Math.tan(hFovBase / 2) / (innerWidth / innerHeight)) * (180 / Math.PI);
+    // Non-standard wider view (90° vertical)
+    camera.fov = 90;
   }
   camera.updateProjectionMatrix();
 }
@@ -486,8 +687,39 @@ document.addEventListener('mousemove', e => {
 
 // ── Keyboard ──────────────────────────────────────────────────────────────
 const keys = {};
-document.addEventListener('keydown', e => { keys[e.code] = true; });
-document.addEventListener('keyup',   e => { keys[e.code] = false; });
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (!isLocked) return;
+  if (e.code === 'Digit1') switchWeapon(WPNS.findIndex(w => w.id === 'knife'));
+  if (e.code === 'Digit2') switchWeapon(WPNS.findIndex(w => w.id === 'usp'));
+  if (e.code === 'KeyQ')   switchWeapon((curWpnIdx + WPNS.length - 1) % WPNS.length);
+  if (e.code === 'KeyR') {
+    const wpn = curW();
+    if (wpn.type === 'gun' && ws === WS.IDLE && wpn.ammo < wpn.maxAmmo && wpn.reserve > 0) {
+      ws = WS.RELOAD; wsT = 0;
+    }
+  }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ── Weapon input ──────────────────────────────────────────────────────────
+document.addEventListener('mousedown', e => {
+  if (!isLocked || ws !== WS.IDLE) return;
+  const wpn = curW();
+  if (e.button === 0) {
+    if (wpn.type === 'melee') {
+      ws = WS.SLASH; wsT = 0;
+    } else if (wpn.type === 'gun') {
+      if (wpn.ammo > 0) {
+        wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
+      } else if (wpn.reserve > 0) {
+        ws = WS.RELOAD; wsT = 0;
+      }
+    }
+  }
+  if (e.button === 2 && wpn.type === 'melee') { ws = WS.STAB; wsT = 0; }
+});
+document.addEventListener('contextmenu', e => e.preventDefault());
 
 // ── Render loop ───────────────────────────────────────────────────────────
 let lastT = 0;
@@ -509,6 +741,8 @@ function animate(t) {
 
   if (isLocked && gsPos) {
     playerMove(dt);
+    updateWeapon(dt);
+    updateHUD();
     const spd = Math.hypot(vel[0], vel[1]);
     document.getElementById('pos').textContent =
       `XYZ  ${gsPos[0].toFixed(0)}  ${gsPos[1].toFixed(0)}  ${gsPos[2].toFixed(0)}`;
@@ -523,13 +757,18 @@ function animate(t) {
   yawObj.rotation.y   = isFinite(yaw)   ? yaw   : 0;
   pitchObj.rotation.x = isFinite(pitch) ? pitch + punchPitch : 0;
 
+  renderer.clear();
   renderer.render(scene, camera);
+  renderer.clearDepth();
+  renderer.render(vmScene, vmCamera);
 }
 animate(0);
 
 window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   updateFOV();
+  vmCamera.aspect = innerWidth / innerHeight;
+  vmCamera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
 </script>

@@ -8,7 +8,8 @@
       "PowerShell(Start-Process py -ArgumentList \"d:\\\\Code\\\\my_cs\\\\serve.py\" -WindowStyle Normal)",
       "PowerShell(py --version 2>&1)",
       "PowerShell(py -3 --version 2>&1)",
-      "PowerShell(Stop-Process -Name \"py\" -ErrorAction SilentlyContinue; netstat -ano | findstr \":8080\" | ForEach-Object { \\($_ -split '\\\\s+'\\)[-1] } | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue })"
+      "PowerShell(Stop-Process -Name \"py\" -ErrorAction SilentlyContinue; netstat -ano | findstr \":8080\" | ForEach-Object { \\($_ -split '\\\\s+'\\)[-1] } | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue })",
+      "Bash(python mdl_to_json.py)"
     ]
   }
 }
