@@ -62,6 +62,7 @@
   }
 </style>
 </head>
+<script src="config.js"></script>
 <body>
 
 <div id="overlay">
@@ -452,21 +453,7 @@ let punchVel   = 0;          // spring velocity for punch
 let prevVelZ   = 0;          // z-velocity from previous frame (for landing detection)
 let gHullHeadStand, gHullHeadDuck;
 
-const SV = {
-  gravity:     800,
-  maxspeed:    250,
-  walkspeed:   130,   // Shift = тихая ходьба
-  crouchspeed: 90,    // скорость в приседе
-  accelerate:  10,
-  airaccel:    10,
-  friction:    4,
-  stopspeed:   100,
-  jumpvel:     245,
-  stepsize:    18,
-  eyestand:    28,    // высота глаз от origin (стоя)
-  eyeduck:    -6,     // высота глаз от origin (присед)
-  ducktime:    0.4,   // секунды на полный присед
-};
+const SV = CONFIG;
 
 function initPhysics(hull) {
   gPlanes            = hull.planes;
@@ -648,7 +635,7 @@ function playerMove(dt) {
     if (Math.abs(camDiff) > SV.stepsize * 3) {
       smoothCamY = targetCamY;
     } else {
-      smoothCamY += camDiff * (1 - Math.exp(-18 * dt));
+      smoothCamY += camDiff * (1 - Math.exp(-CONFIG.stairSmoothing * dt));
     }
   } else {
     smoothCamY = targetCamY;   // in air: track exactly (no lag on jump/fall)
@@ -674,9 +661,9 @@ document.addEventListener('pointerlockchange', () => {
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────
-let invertY      = false;
-let widescreenFOV = true;
-let rightHand    = false;
+let invertY       = CONFIG.invertY;
+let widescreenFOV = CONFIG.widescreenFOV;
+let rightHand     = CONFIG.rightHand;
 
 function updateFOV() {
   if (widescreenFOV) {
@@ -707,7 +694,7 @@ document.getElementById('opt-right-hand').addEventListener('change', e => { righ
 // ── Mouse look ────────────────────────────────────────────────────────────
 let yaw = 0, pitch = 0;
 let pendingYaw = 0, pendingPitch = 0;
-const SENS = 0.0018;
+const SENS = CONFIG.sensitivity;
 const MAX_DELTA_PER_FRAME = Math.PI / 2;   // max 90° yaw or pitch change per frame
 
 document.addEventListener('mousemove', e => {
