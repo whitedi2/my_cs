@@ -9,12 +9,13 @@
   canvas { display: block; }
   #overlay {
     position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px;
     background: rgba(0,0,0,0.75);
     color: #fff; font-size: 18px; text-align: center;
     cursor: pointer; -webkit-user-select: none; user-select: none;
   }
-  #overlay span { opacity: .6; font-size: 13px; display: block; margin-top: 10px; }
+  #overlay span { opacity: .6; font-size: 13px; display: block; }
   #loading {
     position: absolute; top: 50%; left: 50%;
     transform: translate(-50%,-50%);
@@ -40,8 +41,7 @@
     text-shadow: 0 0 4px #000;
   }
   #settings {
-    margin-top: 20px;
-    display: flex; flex-direction: column; gap: 10px;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
     pointer-events: all;
   }
   #settings label {
@@ -66,10 +66,11 @@
 
 <div id="overlay">
   Click to play
-  <span>WASD — move &nbsp;|&nbsp; Mouse — look &nbsp;|&nbsp; Space — jump &nbsp;|&nbsp; Shift — walk &nbsp;|&nbsp; Ctrl — crouch &nbsp;|&nbsp; 1/2 — weapons &nbsp;|&nbsp; R — reload &nbsp;|&nbsp; LMB — fire/slash &nbsp;|&nbsp; RMB — stab &nbsp;|&nbsp; ESC — pause</span>
+  <span>WASD — move &nbsp;|&nbsp; Mouse — look &nbsp;|&nbsp; Space — jump &nbsp;|&nbsp; Shift — walk &nbsp;|&nbsp; Ctrl — crouch &nbsp;|&nbsp; 1/2/3 — weapons &nbsp;|&nbsp; R — reload &nbsp;|&nbsp; LMB — fire/slash &nbsp;|&nbsp; RMB — stab &nbsp;|&nbsp; ESC — pause</span>
   <div id="settings">
     <label><input type="checkbox" id="opt-invert-y"> Инверсия мыши (Y)</label>
     <label><input type="checkbox" id="opt-widescreen" checked> Широкоэкранный FOV</label>
+    <label><input type="checkbox" id="opt-right-hand"> Правая рука</label>
   </div>
 </div>
 <div id="loading">Loading…</div>
@@ -80,7 +81,7 @@
   A / D — left / right<br>
   Space — jump<br>
   Shift — walk &nbsp; Ctrl — crouch<br>
-  1 — knife &nbsp; 2 — USP<br>
+  1 — M4A1 &nbsp; 2 — USP &nbsp; 3 — knife<br>
   R — reload &nbsp; Q — prev weapon<br>
   LMB — fire / slash &nbsp; RMB — stab<br>
   ESC — pause
@@ -126,7 +127,7 @@ scene.add(yawObj);
 
 // ── View-model scene (knife, rendered on top of world) ────────────────────
 const vmScene  = new THREE.Scene();
-const vmCamera = new THREE.PerspectiveCamera(73.74, innerWidth / innerHeight, 0.1, 200);
+const vmCamera = new THREE.PerspectiveCamera(49, innerWidth / innerHeight, 0.1, 200);
 vmScene.add(new THREE.AmbientLight(0xffffff, 0.55));
 const vmSun = new THREE.DirectionalLight(0xffffff, 0.85);
 vmSun.position.set(1.5, 3, 2); vmScene.add(vmSun);
@@ -135,19 +136,22 @@ renderer.autoClear = false;
 // ── Weapon configs ────────────────────────────────────────────────────────
 const WPNS = [
   {
-    id: 'knife', label: 'KNIFE',
-    jsonFile: 'v_knife.json',
-    pos: new THREE.Vector3(0.05, 0.07, -1.0),
+    id: 'm4', label: 'M4A1',
+    jsonFile: 'v_m4a1.json',
+    pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12,
-    type: 'melee',
+    type: 'gun',
+    ammo: 30, maxAmmo: 30,
+    reserve: 90,
+    reloadTime: 3.1,
     root: null,
   },
   {
     id: 'usp', label: 'USP',
     jsonFile: 'v_usp.json',
-    pos: new THREE.Vector3(0.07, 0.06, -1.0),
-    rot: { x: 0.06, y: Math.PI / 2, z: 0.04 },
+    pos: new THREE.Vector3(-0.04, -0.20, -0.75),
+    rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12,
     type: 'gun',
     ammo: 12, maxAmmo: 12,
@@ -155,9 +159,18 @@ const WPNS = [
     reloadTime: 2.7,
     root: null,
   },
+  {
+    id: 'knife', label: 'KNIFE',
+    jsonFile: 'v_knife.json',
+    pos: new THREE.Vector3(-0.04, -0.20, -0.75),
+    rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
+    scale: 0.12,
+    type: 'melee',
+    root: null,
+  },
 ];
 
-let curWpnIdx  = 0;
+let curWpnIdx  = 2;
 let nextWpnIdx = -1;
 
 const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5 };
@@ -177,7 +190,9 @@ WPNS.forEach(wpn => {
       geo.setIndex(m.indices);
       geo.computeBoundingSphere();
       const tex = _texLoader.load(m.texFile);
-      wpn.root.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ map: tex, side: THREE.DoubleSide })));
+      const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ map: tex, side: THREE.DoubleSide }));
+      mesh.frustumCulled = false;
+      wpn.root.add(mesh);
     });
     wpn.root.scale.setScalar(wpn.scale);
     wpn.root.visible = (WPNS.indexOf(wpn) === curWpnIdx);
@@ -639,6 +654,7 @@ let isLocked = false;
 document.getElementById('overlay').addEventListener('click', () => {
   renderer.domElement.requestPointerLock();
 });
+document.getElementById('settings').addEventListener('click', e => e.stopPropagation());
 let mouseIgnore = 0;   // events to skip after pointer lock (avoid initial large delta)
 document.addEventListener('pointerlockchange', () => {
   isLocked = document.pointerLockElement === renderer.domElement;
@@ -653,6 +669,7 @@ document.addEventListener('pointerlockchange', () => {
 // ── Settings ──────────────────────────────────────────────────────────────
 let invertY      = false;
 let widescreenFOV = true;
+let rightHand    = false;
 
 function updateFOV() {
   if (widescreenFOV) {
@@ -668,10 +685,17 @@ function updateFOV() {
   camera.updateProjectionMatrix();
 }
 
-updateFOV();   // apply correct FOV on startup
+function updateVmCamera() {
+  vmCamera.aspect = innerWidth / innerHeight;
+  vmCamera.updateProjectionMatrix();
+}
+
+updateFOV();
+updateVmCamera();
 
 document.getElementById('opt-invert-y').addEventListener('change',   e => { invertY       = e.target.checked; });
 document.getElementById('opt-widescreen').addEventListener('change', e => { widescreenFOV = e.target.checked; updateFOV(); });
+document.getElementById('opt-right-hand').addEventListener('change', e => { rightHand = e.target.checked; updateVmCamera(); });
 
 // ── Mouse look ────────────────────────────────────────────────────────────
 let yaw = 0, pitch = 0;
@@ -693,8 +717,9 @@ const keys = {};
 document.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (!isLocked) return;
-  if (e.code === 'Digit1') switchWeapon(WPNS.findIndex(w => w.id === 'knife'));
+  if (e.code === 'Digit1') switchWeapon(WPNS.findIndex(w => w.id === 'm4'));
   if (e.code === 'Digit2') switchWeapon(WPNS.findIndex(w => w.id === 'usp'));
+  if (e.code === 'Digit3') switchWeapon(WPNS.findIndex(w => w.id === 'knife'));
   if (e.code === 'KeyQ')   switchWeapon((curWpnIdx + WPNS.length - 1) % WPNS.length);
   if (e.code === 'KeyR') {
     const wpn = curW();
@@ -763,6 +788,10 @@ function animate(t) {
   renderer.clear();
   renderer.render(scene, camera);
   renderer.clearDepth();
+  vmCamera.updateProjectionMatrix();
+  const shouldFlip = curW().id === 'knife' ? !rightHand : rightHand;
+  if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
+  vmCamera.projectionMatrixInverse.copy(vmCamera.projectionMatrix).invert();
   renderer.render(vmScene, vmCamera);
 }
 animate(0);
@@ -771,7 +800,7 @@ window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   updateFOV();
   vmCamera.aspect = innerWidth / innerHeight;
-  vmCamera.updateProjectionMatrix();
+  updateVmCamera();
   renderer.setSize(innerWidth, innerHeight);
 });
 </script>

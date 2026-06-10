@@ -2,7 +2,7 @@
 from pathlib import Path
 
 # Default paths based on existing project structure
-CSTRIKE_PATH = r"D:\Games\Steam\steamapps\common\Half-Life\cstrike"
+CSTRIKE_PATH = r"D:\SteamLibrary\steamapps\common\Half-Life\cstrike"
 WAD_FILE = "cs_dust.wad"
 
 # Full path to the wad file
