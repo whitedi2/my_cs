@@ -114,7 +114,7 @@ const scene  = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB);
 scene.fog = new THREE.Fog(0x87CEEB, 2000, 8000);
 
-const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 1, 12000);
+const camera = new THREE.PerspectiveCamera(73.74, innerWidth / innerHeight, 1, 12000);
 
 // FPS camera hierarchy: scene → yawObj (Y rotation) → pitchObj (X rotation) → camera
 // This bypasses all Euler↔Quaternion sync issues in Three.js
@@ -137,18 +137,18 @@ const WPNS = [
   {
     id: 'knife', label: 'KNIFE',
     jsonFile: 'v_knife.json',
-    pos: new THREE.Vector3(0.05, -0.03, -0.55),
+    pos: new THREE.Vector3(0.05, 0.07, -1.0),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
-    scale: 0.055,
+    scale: 0.12,
     type: 'melee',
     root: null,
   },
   {
     id: 'usp', label: 'USP',
     jsonFile: 'v_usp.json',
-    pos: new THREE.Vector3(0.07, -0.06, -0.58),
+    pos: new THREE.Vector3(0.07, 0.06, -1.0),
     rot: { x: 0.06, y: Math.PI / 2, z: 0.04 },
-    scale: 0.055,
+    scale: 0.12,
     type: 'gun',
     ammo: 12, maxAmmo: 12,
     reserve: 100,
@@ -661,11 +661,14 @@ function updateFOV() {
     const hFov4x3 = 2 * Math.atan(Math.tan(Math.PI / 4) * (4 / 3));
     camera.fov = 2 * Math.atan(Math.tan(hFov4x3 / 2) / (innerWidth / innerHeight)) * (180 / Math.PI);
   } else {
-    // Non-standard wider view (90° vertical)
-    camera.fov = 90;
+    // CS 1.6 4:3 emulation: lock horizontal FOV = 90°, derive vertical for current aspect
+    // On 16:9 this gives ~58.7° vertical (more zoomed in than widescreen)
+    camera.fov = 2 * Math.atan(Math.tan(Math.PI / 4) / (innerWidth / innerHeight)) * (180 / Math.PI);
   }
   camera.updateProjectionMatrix();
 }
+
+updateFOV();   // apply correct FOV on startup
 
 document.getElementById('opt-invert-y').addEventListener('change',   e => { invertY       = e.target.checked; });
 document.getElementById('opt-widescreen').addEventListener('change', e => { widescreenFOV = e.target.checked; updateFOV(); });
