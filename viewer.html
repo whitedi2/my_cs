@@ -2,68 +2,75 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>de_dust2 — Free Fly</title>
+<title>de_dust2</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #1a1a1a; overflow: hidden; font-family: monospace; }
   canvas { display: block; }
-
   #overlay {
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
     background: rgba(0,0,0,0.75);
     color: #fff; font-size: 18px; text-align: center;
-    cursor: pointer; user-select: none;
+    cursor: pointer; -webkit-user-select: none; user-select: none;
   }
   #overlay span { opacity: .6; font-size: 13px; display: block; margin-top: 10px; }
-
   #loading {
     position: absolute; top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
+    transform: translate(-50%,-50%);
     color: #fff; font-size: 16px; display: none;
   }
-
-  #hud {
-    position: absolute; bottom: 16px; left: 16px;
-    color: rgba(255,255,255,0.7); font-size: 12px;
-    line-height: 1.8; display: none;
-    text-shadow: 0 0 4px #000;
-  }
-
   #crosshair {
     position: absolute; top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    color: rgba(255,255,255,0.8); font-size: 22px;
+    transform: translate(-50%,-50%);
+    color: rgba(255,255,255,0.85); font-size: 22px;
     pointer-events: none; display: none;
     text-shadow: 0 0 3px #000;
   }
-
+  #hud {
+    position: absolute; bottom: 16px; left: 16px;
+    color: rgba(255,255,255,.7); font-size: 12px;
+    line-height: 1.8; display: none;
+    text-shadow: 0 0 4px #000;
+  }
   #keys {
     position: absolute; top: 16px; right: 16px;
-    color: rgba(255,255,255,0.55); font-size: 11px;
+    color: rgba(255,255,255,.5); font-size: 11px;
     line-height: 2; text-align: right; display: none;
     text-shadow: 0 0 4px #000;
   }
+  #settings {
+    margin-top: 20px;
+    display: flex; flex-direction: column; gap: 10px;
+    pointer-events: all;
+  }
+  #settings label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: rgba(255,255,255,.7);
+    cursor: pointer;
+  }
+  #settings input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #aaa; }
 </style>
 </head>
 <body>
 
 <div id="overlay">
-  Click to enter the map
-  <span>WASD — move &nbsp;|&nbsp; Mouse — look &nbsp;|&nbsp; Q/E — up/down &nbsp;|&nbsp; Shift — fast &nbsp;|&nbsp; ESC — exit</span>
+  Click to play
+  <span>WASD — move &nbsp;|&nbsp; Mouse — look &nbsp;|&nbsp; Space — jump &nbsp;|&nbsp; Shift — walk &nbsp;|&nbsp; Ctrl — crouch &nbsp;|&nbsp; ESC — pause</span>
+  <div id="settings">
+    <label><input type="checkbox" id="opt-invert-y"> Инверсия мыши (Y)</label>
+    <label><input type="checkbox" id="opt-widescreen" checked> Широкоэкранный FOV</label>
+  </div>
 </div>
-<div id="loading">Loading de_dust2...</div>
+<div id="loading">Loading…</div>
 <div id="crosshair">·</div>
-<div id="hud">
-  <div id="pos"></div>
-  <div id="spd"></div>
-</div>
+<div id="hud"><div id="pos"></div><div id="spd"></div></div>
 <div id="keys">
   W / S — forward / back<br>
   A / D — left / right<br>
-  E / Q — up / down<br>
-  Shift — fast mode<br>
-  ESC — release mouse
+  Space — jump<br>
+  Shift — walk &nbsp; Ctrl — crouch<br>
+  ESC — pause
 </div>
 
 <script type="importmap">
@@ -77,180 +84,452 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { OBJLoader }  from 'three/addons/loaders/OBJLoader.js';
-import { MTLLoader }  from 'three/addons/loaders/MTLLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 
-// ── Scene ──────────────────────────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
+// ── Renderer / Scene ──────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(devicePixelRatio);
 document.body.appendChild(renderer.domElement);
 
 const scene  = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB);
-scene.fog = new THREE.Fog(0x87CEEB, 1000, 8000);
+scene.fog = new THREE.Fog(0x87CEEB, 2000, 8000);
 
-const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 1, 12000);
+const camera = new THREE.PerspectiveCamera(90, innerWidth / innerHeight, 1, 12000);
 
-// ── Load map ───────────────────────────────────────────────────────────────
-const $loading = document.getElementById('loading');
-$loading.style.display = 'block';
+// FPS camera hierarchy: scene → yawObj (Y rotation) → pitchObj (X rotation) → camera
+// This bypasses all Euler↔Quaternion sync issues in Three.js
+const yawObj   = new THREE.Object3D();
+const pitchObj = new THREE.Object3D();
+pitchObj.add(camera);
+yawObj.add(pitchObj);
+scene.add(yawObj);
 
-const objPromise = new Promise((resolve, reject) => {
-  new MTLLoader().setPath('./').load('de_dust2.mtl', (materials) => {
-    materials.preload();
-    new OBJLoader().setMaterials(materials).setPath('./').load(
-      'de_dust2.obj', resolve,
-      (xhr) => {
-        const pct = xhr.total ? Math.round(xhr.loaded / xhr.total * 100) : '…';
-        $loading.textContent = `Loading geometry… ${pct}%`;
-      },
-      reject
+// ── Load assets ───────────────────────────────────────────────────────────
+const $load = document.getElementById('loading');
+$load.style.display = 'block';
+
+const objPromise = new Promise((res, rej) => {
+  new MTLLoader().setPath('./').load('de_dust2.mtl', mtl => {
+    mtl.preload();
+    new OBJLoader().setMaterials(mtl).setPath('./').load(
+      'de_dust2.obj', res,
+      xhr => { $load.textContent = `Geometry… ${xhr.total ? Math.round(xhr.loaded/xhr.total*100) : '?'}%`; },
+      rej
     );
   });
 });
 
-// Vertex colors are embedded in the OBJ as "v x y z r g b".
-// OBJLoader (Three.js r125+) parses them into geometry.attributes.color automatically.
+const hullPromise = fetch('de_dust2_hull.json').then(r => r.json());
 
-objPromise.then((obj) => {
+$load.textContent = 'Loading…';
 
-  let meshCount = 0, vcCount = 0;
-  let dbg = '';
+Promise.all([objPromise, hullPromise]).then(([obj, hull]) => {
 
-  obj.traverse((child) => {
+  // ── Apply lightmap materials ──────────────────────────────────────────
+  obj.traverse(child => {
     if (!child.isMesh) return;
-    meshCount++;
-
-    const oldMat = Array.isArray(child.material) ? child.material[0] : child.material;
-    const colAttr = child.geometry.attributes.color;
-    const hasVC   = !!colAttr;
-    if (hasVC) vcCount++;
-
-    if (meshCount === 1) {
-      if (colAttr) {
-        const a = colAttr.array;
-        dbg = `mesh[0]: color OK, val[0]=(${a[0].toFixed(3)},${a[1].toFixed(3)},${a[2].toFixed(3)})`;
-      } else {
-        dbg = 'mesh[0]: NO color attribute!';
-      }
-    }
-
-    // Replace material: texture × vertex lightmap color
-    const newMat = new THREE.MeshBasicMaterial({
-      map: oldMat && oldMat.map ? oldMat.map : null,
-      vertexColors: hasVC,
+    const old = Array.isArray(child.material) ? child.material[0] : child.material;
+    const mat = new THREE.MeshBasicMaterial({
+      map: old && old.map ? old.map : null,
+      vertexColors: !!child.geometry.attributes.color,
       side: THREE.DoubleSide,
-      polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
+      polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
     });
-    if (newMat.map) {
-      newMat.map.wrapS = THREE.RepeatWrapping;
-      newMat.map.wrapT = THREE.RepeatWrapping;
-      newMat.map.needsUpdate = true;
-    }
-    child.material = newMat;
+    if (mat.map) { mat.map.wrapS = mat.map.wrapT = THREE.RepeatWrapping; }
+    child.material = mat;
   });
-
-  // Show debug info on screen for a few seconds
-  $loading.textContent = `meshes=${meshCount} vc=${vcCount} | ${dbg}`;
-  $loading.style.display = 'block';
-  setTimeout(() => { $loading.style.display = 'none'; }, 8000);
-
   scene.add(obj);
 
-  const box    = new THREE.Box3().setFromObject(obj);
-  const center = box.getCenter(new THREE.Vector3());
-  const size   = box.getSize(new THREE.Vector3());
-  camera.position.set(center.x, box.min.y + size.y * 0.15, center.z);
+  // ── Init collision + player ───────────────────────────────────────────
+  initPhysics(hull);
 
-  $loading.style.display = 'none';
+  $load.style.display = 'none';
   document.getElementById('overlay').style.display = 'flex';
 
-}).catch((err) => {
-  console.error(err);
-  $loading.textContent = 'Error: ' + err;
-});
+}).catch(err => { $load.textContent = 'Error: ' + err; console.error(err); });
 
-// ── Pointer Lock ───────────────────────────────────────────────────────────
+// ── BSP Hull Trace ────────────────────────────────────────────────────────
+// GoldSrc space: Z-up, X-east, Y-north
+// Three.js ↔ GoldSrc: (tx,ty,tz) ↔ (tx,-tz,ty)
+
+const CONTENTS_SOLID = -2;
+const DIST_EPS       = 0.03125;
+
+let gPlanes, gClipnodes, gHullHead;
+let gEntitySolidHeads     = [];
+let gEntitySolidHeadsDuck = [];
+
+function pointContents(node, p) {
+  while (node >= 0) {
+    const cn = gClipnodes[node];
+    const pl = gPlanes[cn[0]];
+    node = (pl[0]*p[0] + pl[1]*p[1] + pl[2]*p[2] - pl[3]) < 0 ? cn[2] : cn[1];
+  }
+  return node;
+}
+
+// hullHead = root node of THIS model (constant through recursion, used for back-step check)
+// node     = current tree node being visited (changes through recursion)
+function _check(hullHead, node, p1f, p2f, p1, p2, tr) {
+  if (node < 0) {
+    if (node !== CONTENTS_SOLID) { tr.allsolid = false; }
+    else { tr.startsolid = true; }
+    return true;
+  }
+  const cn = gClipnodes[node];
+  const pl = gPlanes[cn[0]];
+  const t1 = pl[0]*p1[0] + pl[1]*p1[1] + pl[2]*p1[2] - pl[3];
+  const t2 = pl[0]*p2[0] + pl[1]*p2[1] + pl[2]*p2[2] - pl[3];
+
+  if (t1 >= 0 && t2 >= 0) return _check(hullHead, cn[1], p1f, p2f, p1, p2, tr);
+  if (t1 <  0 && t2 <  0) return _check(hullHead, cn[2], p1f, p2f, p1, p2, tr);
+
+  const frac = Math.max(0, Math.min(1,
+    t1 < 0 ? (t1 + DIST_EPS)/(t1-t2) : (t1 - DIST_EPS)/(t1-t2)));
+  const midf = p1f + (p2f-p1f)*frac;
+  const mid  = [p1[0]+frac*(p2[0]-p1[0]), p1[1]+frac*(p2[1]-p1[1]), p1[2]+frac*(p2[2]-p1[2])];
+  const side = t1 < 0 ? 1 : 0;
+  if (!_check(hullHead, cn[1+side], p1f, midf, p1, mid, tr)) return false;
+  if (pointContents(cn[2-side], mid) !== CONTENTS_SOLID)
+    return _check(hullHead, cn[2-side], midf, p2f, mid, p2, tr);
+  if (tr.allsolid) return false;
+
+  const s = side === 0 ? 1 : -1;
+  tr.plane = [s*pl[0], s*pl[1], s*pl[2], s*pl[3]];
+
+  let ff = frac;
+  for (let i = 0; i < 12; i++) {
+    const ep = [p1[0]+ff*(p2[0]-p1[0]), p1[1]+ff*(p2[1]-p1[1]), p1[2]+ff*(p2[2]-p1[2])];
+    if (pointContents(hullHead, ep) !== CONTENTS_SOLID) break;
+    ff = Math.max(0, ff - 0.1);
+  }
+  tr.fraction = p1f + (p2f-p1f)*ff;
+  tr.end = [p1[0]+ff*(p2[0]-p1[0]), p1[1]+ff*(p2[1]-p1[1]), p1[2]+ff*(p2[2]-p1[2])];
+  return false;
+}
+
+function traceMove(from, to) {
+  // Trace world model first
+  const tr = { fraction:1.0, end:[...to], plane:null, startsolid:false, allsolid:true };
+  _check(gHullHead, gHullHead, 0, 1, from, to, tr);
+  // Trace each solid brush entity using matching hull (duck hull3 or stand hull1)
+  const entityHeads = (gHullHead === gHullHeadDuck) ? gEntitySolidHeadsDuck : gEntitySolidHeads;
+  for (const head of entityHeads) {
+    if (head < 0) continue;   // empty-hull entity, skip fast
+    const t2 = { fraction:1.0, end:[...to], plane:null, startsolid:false, allsolid:true };
+    _check(head, head, 0, 1, from, to, t2);
+    if (t2.fraction < tr.fraction) {
+      tr.fraction = t2.fraction; tr.end = t2.end;
+      tr.plane = t2.plane; tr.startsolid = t2.startsolid; tr.allsolid = t2.allsolid;
+    }
+  }
+  return tr;
+}
+
+// ── Player physics ────────────────────────────────────────────────────────
+let gsPos, vel, onGround, wasJump;
+let duckAmount = 0;          // 0 = standing, 1 = fully crouched
+let airDuckOffset = 0;       // how much gsPos[2] was shifted down due to ducking in air
+let punchPitch = 0;          // landing view-kick offset (radians)
+let punchVel   = 0;          // spring velocity for punch
+let prevVelZ   = 0;          // z-velocity from previous frame (for landing detection)
+let gHullHeadStand, gHullHeadDuck;
+
+const SV = {
+  gravity:     800,
+  maxspeed:    250,
+  walkspeed:   130,   // Shift = тихая ходьба
+  crouchspeed: 90,    // скорость в приседе
+  accelerate:  10,
+  airaccel:    10,
+  friction:    4,
+  stopspeed:   100,
+  jumpvel:     245,
+  stepsize:    18,
+  eyestand:    28,    // высота глаз от origin (стоя)
+  eyeduck:    -6,     // высота глаз от origin (присед)
+  ducktime:    0.4,   // секунды на полный присед
+};
+
+function initPhysics(hull) {
+  gPlanes            = hull.planes;
+  gClipnodes         = hull.clipnodes;
+  gHullHeadStand     = hull.hull1_head;
+  gHullHeadDuck      = hull.hull3_head ?? hull.hull1_head;
+  gHullHead          = gHullHeadStand;
+  gEntitySolidHeads     = hull.solid_heads      || [];
+  gEntitySolidHeadsDuck = hull.solid_heads_duck || gEntitySolidHeads;
+
+  // Spawn at first CT spawn; fall back to map center
+  const sp = hull.spawns.ct[0];
+  gsPos = sp ? [...sp.origin] : [0, 0, 200];
+  gsPos[2] += 1;   // tiny lift so we're not exactly on the boundary
+  vel = [0, 0, 0];
+  onGround     = false;
+  wasJump      = false;
+  duckAmount   = 0;
+  airDuckOffset = 0;
+  if (sp) yaw = -(sp.angle * Math.PI / 180);
+
+}
+
+function categorize() {
+  const down = [gsPos[0], gsPos[1], gsPos[2] - 2];
+  const tr   = traceMove(gsPos, down);
+  onGround = tr.fraction < 1 && tr.plane && tr.plane[2] > 0.7;
+  if (onGround && tr.fraction > 0) gsPos = [...tr.end];
+}
+
+function applyFriction(dt) {
+  const spd = Math.hypot(vel[0], vel[1]);
+  if (spd < 1) { vel[0] = vel[1] = 0; return; }
+  const drop  = Math.max(spd, SV.stopspeed) * SV.friction * dt;
+  const scale = Math.max(0, spd - drop) / spd;
+  vel[0] *= scale; vel[1] *= scale;
+}
+
+function accel(wishDir, wishSpd, ac, dt) {
+  const cur = vel[0]*wishDir[0] + vel[1]*wishDir[1] + vel[2]*wishDir[2];
+  const add = wishSpd - cur;
+  if (add <= 0) return;
+  const a = Math.min(ac * wishSpd * dt, add);
+  vel[0] += a*wishDir[0]; vel[1] += a*wishDir[1]; vel[2] += a*wishDir[2];
+}
+
+function slideMove(dt) {
+  let timeLeft = dt;
+  const hitPlanes = [];
+  for (let bump = 0; bump < 4 && timeLeft > 0; bump++) {
+    const dest = [gsPos[0]+vel[0]*timeLeft, gsPos[1]+vel[1]*timeLeft, gsPos[2]+vel[2]*timeLeft];
+    const tr   = traceMove(gsPos, dest);
+    gsPos = [...tr.end];
+    timeLeft -= timeLeft * tr.fraction;
+    if (tr.fraction === 1 || !tr.plane) break;
+    hitPlanes.push(tr.plane);
+    for (const pl of hitPlanes) {
+      const dot = vel[0]*pl[0] + vel[1]*pl[1] + vel[2]*pl[2];
+      if (dot >= 0) continue;
+      vel[0] -= dot*pl[0]; vel[1] -= dot*pl[1]; vel[2] -= dot*pl[2];
+    }
+  }
+}
+
+function playerMove(dt) {
+  // ── Duck transition ────────────────────────────────────────────────────
+  const wantDuck = keys['ControlLeft'] || keys['ControlRight'];
+  if (wantDuck) duckAmount = Math.min(1, duckAmount + dt / SV.ducktime);
+  else          duckAmount = Math.max(0, duckAmount - dt / SV.ducktime);
+
+  // Air ducking: shift gsPos down so feet stay fixed, switch to hull3 (smaller top clearance)
+  // Landing while ducked: restore the shift so hull1 bottom lands exactly on the floor
+  if (!onGround) {
+    const targetOffset = duckAmount * 18;
+    const shift = targetOffset - airDuckOffset;
+    gsPos[2] -= shift;
+    airDuckOffset = targetOffset;
+    gHullHead = duckAmount > 0.5 ? gHullHeadDuck : gHullHeadStand;
+  } else {
+    if (airDuckOffset !== 0) {
+      gsPos[2] += airDuckOffset;
+      airDuckOffset = 0;
+    }
+    gHullHead = gHullHeadStand;
+  }
+
+  // ── Categorize ground ─────────────────────────────────────────────────
+  const wasGround = onGround;
+  categorize();
+
+  // Landing view punch: kick pitch down proportionally to fall speed
+  if (!wasGround && onGround && prevVelZ < -150) {
+    punchVel = prevVelZ * 0.0008;   // ~0.12 rad punch from a normal jump
+  }
+  prevVelZ = vel[2];
+
+  // ── Speed / wish dir ──────────────────────────────────────────────────
+  const walk   = keys['ShiftLeft'] || keys['ShiftRight'];
+  const maxSpd = walk ? SV.walkspeed
+               : duckAmount > 0.1 ? SV.crouchspeed
+               : SV.maxspeed;
+
+  const fwdX = -Math.sin(yaw), fwdY = Math.cos(yaw);
+  const rgtX =  Math.cos(yaw), rgtY = Math.sin(yaw);
+  let wx = 0, wy = 0;
+  if (keys['KeyW'] || keys['ArrowUp'])    { wx += fwdX; wy += fwdY; }
+  if (keys['KeyS'] || keys['ArrowDown'])  { wx -= fwdX; wy -= fwdY; }
+  if (keys['KeyA'] || keys['ArrowLeft'])  { wx -= rgtX; wy -= rgtY; }
+  if (keys['KeyD'] || keys['ArrowRight']) { wx += rgtX; wy += rgtY; }
+  const wlen = Math.hypot(wx, wy);
+  const wSpd = Math.min(wlen, 1) * maxSpd;
+  const wDir = wlen > 0 ? [wx/wlen, wy/wlen, 0] : [0, 0, 0];
+
+  // ── Ground / air logic ────────────────────────────────────────────────
+  if (onGround) {
+    vel[2] = 0;
+    applyFriction(dt);
+    accel(wDir, wSpd, SV.accelerate, dt);
+
+    const jumpKey = keys['Space'];
+    if (jumpKey && !wasJump && duckAmount < 0.9) {
+      vel[2]   = SV.jumpvel;
+      onGround = false;
+    }
+    wasJump = jumpKey;
+
+  } else {
+    vel[2] -= SV.gravity * 0.5 * dt;        // first half-gravity (GoldSrc)
+    accel(wDir, Math.min(wSpd, 30), SV.airaccel, dt);
+    wasJump = true;
+  }
+
+  // ── Move ──────────────────────────────────────────────────────────────
+  const savedPos = [...gsPos], savedVel = [...vel];
+  slideMove(dt);
+  if (!onGround) vel[2] -= SV.gravity * 0.5 * dt;   // second half-gravity
+
+  // Step-up: blocked horizontally on ground → climb stair
+  const movedH = Math.hypot(gsPos[0]-savedPos[0], gsPos[1]-savedPos[1]);
+  const wantH  = Math.hypot(savedVel[0]*dt, savedVel[1]*dt);
+  if (onGround && movedH < wantH * 0.5 && wantH > 0.1) {
+    gsPos = [...savedPos]; vel = [...savedVel];
+    const up = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2]+SV.stepsize]);
+    gsPos = [...up.end];
+    slideMove(dt);
+    const dn = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2]-SV.stepsize*2]);
+    if (dn.fraction < 1 && dn.plane && dn.plane[2] > 0.7) {
+      gsPos = [...dn.end];
+    } else {
+      gsPos = [...savedPos]; vel = [...savedVel];
+      slideMove(dt);
+    }
+  }
+
+  // Step-down: stick to terrain going downhill
+  if (onGround && vel[2] <= 0) {
+    const dn = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2]-SV.stepsize]);
+    if (dn.fraction < 1 && dn.plane && dn.plane[2] > 0.7) gsPos = [...dn.end];
+  }
+
+  // ── View punch spring (landing kick) ──────────────────────────────────
+  // Implicit Euler — unconditionally stable at any dt (explicit blows up at dt≥0.05)
+  // System: dp/dt = v,  dv/dt = -k*p - d*v   (k=200, d=8)
+  {
+    const k = 200, d = 8;
+    const denom = 1 + d * dt + k * dt * dt;
+    const nv = (punchVel - k * dt * punchPitch) / denom;
+    punchPitch += dt * nv;
+    punchVel    = nv;
+    if (Math.abs(punchPitch) < 0.0003 && Math.abs(punchVel) < 0.0003) {
+      punchPitch = punchVel = 0;
+    }
+  }
+
+  // ── Camera ────────────────────────────────────────────────────────────
+  // airDuckOffset > 0 means gsPos is still shifted down (in air OR just-landed before next-frame restore).
+  // Need duckAmount*36 lift to keep camera at "legs tuck" height (drops only 16 units, not 34).
+  const airDuckLift = airDuckOffset > 0 ? duckAmount * 36 : 0;
+  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand) + airDuckLift;
+  yawObj.position.set(gsPos[0], gsPos[2] + eyeH, -gsPos[1]);
+}
+
+// ── Pointer Lock ──────────────────────────────────────────────────────────
 let isLocked = false;
-
 document.getElementById('overlay').addEventListener('click', () => {
   renderer.domElement.requestPointerLock();
 });
-
+let mouseIgnore = 0;   // events to skip after pointer lock (avoid initial large delta)
 document.addEventListener('pointerlockchange', () => {
   isLocked = document.pointerLockElement === renderer.domElement;
+  if (isLocked) mouseIgnore = 5;
   document.getElementById('overlay').style.display   = isLocked ? 'none' : 'flex';
   document.getElementById('crosshair').style.display = isLocked ? 'block' : 'none';
   document.getElementById('hud').style.display       = isLocked ? 'block' : 'none';
   document.getElementById('keys').style.display      = isLocked ? 'block' : 'none';
 });
 
-// ── Mouse look ─────────────────────────────────────────────────────────────
-let yaw = 0, pitch = 0;
-const SENSITIVITY = 0.0018;
+// ── Settings ──────────────────────────────────────────────────────────────
+let invertY      = false;
+let widescreenFOV = true;
 
-document.addEventListener('mousemove', (e) => {
+function updateFOV() {
+  if (widescreenFOV) {
+    camera.fov = 90;
+  } else {
+    // Lock to 4:3 horizontal extent: hFov = 2*atan(tan(45°)*4/3) ≈ 106.26°
+    // Then derive vertical FOV for the actual screen aspect ratio
+    const hFovBase = 2 * Math.atan(Math.tan(Math.PI / 4) * (4 / 3));
+    camera.fov = 2 * Math.atan(Math.tan(hFovBase / 2) / (innerWidth / innerHeight)) * (180 / Math.PI);
+  }
+  camera.updateProjectionMatrix();
+}
+
+document.getElementById('opt-invert-y').addEventListener('change',   e => { invertY       = e.target.checked; });
+document.getElementById('opt-widescreen').addEventListener('change', e => { widescreenFOV = e.target.checked; updateFOV(); });
+
+// ── Mouse look ────────────────────────────────────────────────────────────
+let yaw = 0, pitch = 0;
+let pendingYaw = 0, pendingPitch = 0;
+const SENS = 0.0018;
+const MAX_DELTA_PER_FRAME = Math.PI / 2;   // max 90° yaw or pitch change per frame
+
+document.addEventListener('mousemove', e => {
   if (!isLocked) return;
-  yaw   -= e.movementX * SENSITIVITY;
-  pitch -= e.movementY * SENSITIVITY;
-  pitch  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+  if (mouseIgnore > 0) { mouseIgnore--; return; }
+  // Discard spurious huge deltas (Edge pointer-lock bug can emit movementX in thousands)
+  if (Math.abs(e.movementX) > 200 || Math.abs(e.movementY) > 200) return;
+  pendingYaw   -= e.movementX * SENS;
+  pendingPitch -= e.movementY * SENS * (invertY ? -1 : 1);
 });
 
-camera.rotation.order = 'YXZ';
-
-// ── Keyboard ───────────────────────────────────────────────────────────────
+// ── Keyboard ──────────────────────────────────────────────────────────────
 const keys = {};
 document.addEventListener('keydown', e => { keys[e.code] = true; });
 document.addEventListener('keyup',   e => { keys[e.code] = false; });
 
-// ── Movement ───────────────────────────────────────────────────────────────
-const _fwd    = new THREE.Vector3();
-const _right  = new THREE.Vector3();
-const _worldUp = new THREE.Vector3(0, 1, 0);
-
-const SPEED_NORMAL = 8;
-const SPEED_FAST   = 40;
-
-function tick() {
-  if (!isLocked) return;
-
-  const speed = (keys['ShiftLeft'] || keys['ShiftRight']) ? SPEED_FAST : SPEED_NORMAL;
-
-  camera.getWorldDirection(_fwd);
-  _fwd.y = 0; _fwd.normalize();
-  _right.crossVectors(_fwd, _worldUp).normalize();
-
-  if (keys['KeyW'] || keys['ArrowUp'])    camera.position.addScaledVector(_fwd,    speed);
-  if (keys['KeyS'] || keys['ArrowDown'])  camera.position.addScaledVector(_fwd,   -speed);
-  if (keys['KeyA'] || keys['ArrowLeft'])  camera.position.addScaledVector(_right, -speed);
-  if (keys['KeyD'] || keys['ArrowRight']) camera.position.addScaledVector(_right,  speed);
-  if (keys['KeyE'])                        camera.position.y += speed;
-  if (keys['KeyQ'])                        camera.position.y -= speed;
-
-  const p = camera.position;
-  document.getElementById('pos').textContent =
-    `XYZ  ${p.x.toFixed(0)}  ${p.y.toFixed(0)}  ${p.z.toFixed(0)}`;
-  document.getElementById('spd').textContent =
-    `Speed  ${speed}  ${(keys['ShiftLeft'] || keys['ShiftRight']) ? '[ FAST ]' : ''}`;
-}
-
-// ── Render loop ────────────────────────────────────────────────────────────
-function animate() {
+// ── Render loop ───────────────────────────────────────────────────────────
+let lastT = 0;
+function animate(t) {
   requestAnimationFrame(animate);
-  camera.rotation.y = yaw;
-  camera.rotation.x = pitch;
-  tick();
+  const rawDt = (t - lastT) / 1000;
+  const dt = Math.min(rawDt, 0.05);
+  lastT = t;
+
+  // If frame was stalled >300ms (GPU switch / tab switch) — discard accumulated mouse input
+  if (rawDt > 0.3) { pendingYaw = pendingPitch = 0; }
+
+  // Apply accumulated mouse delta — capped to MAX_DELTA_PER_FRAME
+  const clamp = (v, a) => Math.max(-a, Math.min(a, v));
+  yaw   += clamp(pendingYaw,   MAX_DELTA_PER_FRAME);
+  pitch += clamp(pendingPitch, MAX_DELTA_PER_FRAME);
+  pitch  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+  pendingYaw = pendingPitch = 0;
+
+  if (isLocked && gsPos) {
+    playerMove(dt);
+    const spd = Math.hypot(vel[0], vel[1]);
+    document.getElementById('pos').textContent =
+      `XYZ  ${gsPos[0].toFixed(0)}  ${gsPos[1].toFixed(0)}  ${gsPos[2].toFixed(0)}`;
+    document.getElementById('spd').textContent =
+      `Speed ${spd.toFixed(0)}  ${onGround ? 'GROUND' : 'AIR'}  ${duckAmount > 0.1 ? 'DUCK' : ''}`;
+  }
+  // Safety: clamp punch and guard against NaN
+  if (!isFinite(punchPitch)) { punchPitch = punchVel = 0; }
+  punchPitch = Math.max(-0.4, Math.min(0.4, punchPitch));
+
+  // FPS camera: yaw on parent (world Y), pitch on child (local X)
+  yawObj.rotation.y   = isFinite(yaw)   ? yaw   : 0;
+  pitchObj.rotation.x = isFinite(pitch) ? pitch + punchPitch : 0;
+
   renderer.render(scene, camera);
 }
-animate();
+animate(0);
 
-// ── Resize ─────────────────────────────────────────────────────────────────
 window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
+  updateFOV();
   renderer.setSize(innerWidth, innerHeight);
 });
 </script>
