@@ -531,10 +531,10 @@ function playerMove(dt) {
   else          duckAmount = Math.max(0, duckAmount - dt / SV.uncrouchtime);
 
   // ── Duck hull state ────────────────────────────────────────────────────
-  // phyDucked activates duck hull (hull3) for categorize.
-  // Duck hull bottom = gsPos-18 vs stand hull bottom = gsPos-36, so the duck hull
-  // contacts the floor 18 units sooner — allowing landing on taller boxes.
-  // slideMove ALWAYS uses stand hull (hull1) to avoid wall fall-through via seams.
+  // phyDucked: duck hull (hull3) active for all collision.
+  // Duck hull bottom = gsPos-18 (vs stand hull gsPos-36): contacts floor 18 units sooner,
+  // so the player can fly over / land on boxes that stand hull would collide with.
+  // hull1 and hull3 share the same ±16 horizontal planes, so wall detection is identical.
   if (!onGround && wantDuck) phyDucked = true;
   if (!onGround && !wantDuck) phyDucked = false;   // release duck in air → stand hull
 
@@ -591,9 +591,9 @@ function playerMove(dt) {
     accel(wDir, wSpd, SV.accelerate, dt);
 
     const jumpKey = keys['Space'];
-    if (jumpKey && !wasJump && duckAmount < 0.9) {
-      // Jumping from phyDucked: shift gsPos to stand-hull origin first (+1 epsilon).
-      // This raises the hull bottom above the floor so stand hull slideMove works.
+    if (jumpKey && !wasJump && (duckAmount < 0.9 || phyDucked)) {
+      // When phyDucked: stand up first (shift gsPos to stand-hull origin + epsilon),
+      // then jump regardless of duckAmount (player is physically on a box, not fully crouched).
       if (phyDucked) {
         const trUp = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2] + 37]);
         if (trUp.fraction >= 1.0) {
@@ -617,10 +617,13 @@ function playerMove(dt) {
   }
 
   // ── Move ─────────────────────────────────────────────────────────────
-  // In air: stand hull always — duck hull (hull3) misses BSP wall seams that hull1 blocks.
-  // On ground with phyDucked: duck hull required — gsPos is at duck-hull origin (floor+18),
-  // so stand hull bottom would be inside the floor (startsolid) and block all movement.
-  gHullHead = (onGround && phyDucked) ? gHullHeadDuck : gHullHeadStand;
+  // phyDucked: duck hull for all movement.
+  //   - In air: duck hull bottom = gsPos-18 (vs gsPos-36), so player can fly over
+  //     boxes that stand hull would collide with.
+  //   - On ground: duck hull required because gsPos is at floor+18; stand hull bottom
+  //     (gsPos-36) would be inside the floor → startsolid → no movement.
+  // No phyDucked: stand hull everywhere (committed baseline, no fall-through).
+  gHullHead = phyDucked ? gHullHeadDuck : gHullHeadStand;
   const savedPos = [...gsPos], savedVel = [...vel];
   slideMove(dt);
   if (!onGround) vel[2] -= SV.gravity * 0.5 * dt;   // second half-gravity

@@ -11,8 +11,8 @@ const CONFIG = {
   stopspeed:    75,     // sv_stopspeed
   jumpvel:      245,    // начальная вертикальная скорость прыжка
   stepsize:     18,     // высота ступеньки (hull1 half-height / 2)
-  eyestand:     28,     // высота глаз от origin стоя
-  eyeduck:     -6,      // высота глаз от origin в приседе
+  eyestand:     17,     // высота глаз от origin стоя  (GoldSrc VEC_VIEW_OFS = 17)
+  eyeduck:     -6,      // высота глаз от origin в приседе (GoldSrc VEC_DUCK_VIEW = 12 → floor+30)
   ducktime:     0.2,    // секунды на полный присед
   uncrouchtime: 0.03,   // секунды на полное вставание
 
