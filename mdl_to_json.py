@@ -5,13 +5,23 @@ Exports v_knife.json with mesh in Three.js coordinate space (same as BSP exporte
 import struct, json, math, sys
 from pathlib import Path
 
-# Accept weapon name as positional arg (e.g. "knife", "usp", "ak47", or full path)
+# Accept weapon name as positional arg; optional --pose <seqname>; optional --out <filename>.
 weapon_name = 'knife'
-for _arg in sys.argv[1:]:
-    if not _arg.startswith('-'):
-        _stem = Path(_arg).stem            # strip extension if given
+pose_override = None   # e.g. 'idle_unsil'
+out_override  = None   # e.g. 'v_usp_sil.json'
+_args = sys.argv[1:]
+i = 0
+while i < len(_args):
+    if _args[i] == '--pose' and i + 1 < len(_args):
+        pose_override = _args[i + 1]; i += 2
+    elif _args[i] == '--out' and i + 1 < len(_args):
+        out_override = _args[i + 1]; i += 2
+    elif not _args[i].startswith('-'):
+        _stem = Path(_args[i]).stem
         weapon_name = _stem[2:] if _stem.startswith('v_') else _stem
-        break
+        i += 1
+    else:
+        i += 1
 
 try:
     from config import CSTRIKE_PATH
@@ -123,8 +133,13 @@ def decode_frame0(seq_idx):
         pose.append(vals)
     return pose
 
-# Pick the first "idle" sequence (or seq 0 as fallback)
-idle_idx = next((i for i, n in enumerate(seq_names) if 'idle' in n.lower()), 0)
+# Pick bind-pose sequence: --pose override, or first 'idle', or seq 0
+if pose_override:
+    idle_idx = next((i for i, n in enumerate(seq_names) if n.lower() == pose_override.lower()), None)
+    if idle_idx is None:
+        sys.exit(f"--pose {pose_override!r} not found in sequences: {seq_names}")
+else:
+    idle_idx = next((i for i, n in enumerate(seq_names) if n.lower() == 'idle'), 0)
 print(f"  Using sequence {idle_idx} ({seq_names[idle_idx]!r}) frame 0 for mesh pose")
 use_pose = decode_frame0(idle_idx)
 
@@ -311,7 +326,7 @@ result = {
     'textures':  textures_out,
     'bbox':      bbox,
 }
-out_path = OUT_DIR / f"v_{weapon_name}.json"
+out_path = OUT_DIR / (out_override if out_override else f"v_{weapon_name}.json")
 with open(out_path, 'w') as fh:
     json.dump(result, fh, separators=(',', ':'))
 size_kb = out_path.stat().st_size // 1024

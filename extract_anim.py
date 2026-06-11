@@ -60,75 +60,55 @@ for i in range(NBONES):
 SEQ_SZ = 176
 
 def decode_frame(seq_idx, frame_idx):
-    """Decode a single frame of a sequence into per-bone [tx,ty,tz,rx,ry,rz]."""
+    """Decode frame frame_idx of sequence seq_idx → per-bone [tx,ty,tz,rx,ry,rz]."""
     os_ = OSEQ + seq_idx * SEQ_SZ
     seqgroup = i32(os_ + 156)
     if seqgroup != 0:
-        return None  # demand-loaded, skip
-    
+        return None  # demand-loaded group, skip
+
     numframes = i32(os_ + 56)
     if frame_idx >= numframes:
         return None
-    
+
     animindex = i32(os_ + 124)
     pose = []
-    
+
     for b in range(NBONES):
         bone = bones[b]
-        # Find the cycle this frame belongs to
-        numblends = i32(os_ + 120)
-        blend_off = animindex + NBONES * 12 + 4  # after blend data
-        
-        # Get anim index for this bone
-        bone_anim_base = animindex + b * 12
+        anim_base = animindex + b * 12  # 6 × u16 offsets for this bone
         vals = []
-        
+
         for dof in range(6):
-            off = u16(bone_anim_base + dof * 2)
+            off = u16(anim_base + dof * 2)
             if off == 0:
                 vals.append(bone['val'][dof])
+                continue
+
+            # Walk GoldSrc RLE stream (mstudioanimvalue_t) to frame_idx.
+            # Each block: [valid:u8, total:u8] followed by valid×s16 values.
+            # Block covers 'total' frames; if k < valid → stored; else → repeat last.
+            rle = anim_base + off
+            k = frame_idx
+            while True:
+                valid = raw[rle]      # num.valid
+                total = raw[rle + 1]  # num.total
+                if total == 0:
+                    k = 0; break
+                if k < total:
+                    break
+                k -= total
+                rle += (valid + 1) * 2  # skip header + valid s16 values
+
+            valid = raw[rle]
+            if k < valid:
+                delta = s16(rle + 2 + k * 2)
             else:
-                pos = bone_anim_base + off
-                valid = raw[pos]
-                if valid == 0:
-                    # Constant value for entire sequence
-                    vals.append(bone['val'][dof] + bone['scale'][dof] * s16(pos + 2))
-                elif valid == 1:
-                    # Linear interpolation - find keyframes around this frame
-                    nkeys = u16(pos + 4)
-                    key_data = pos + 6
-                    
-                    if nkeys == 1:
-                        vals.append(bone['val'][dof] + bone['scale'][dof] * s16(key_data + 2))
-                    else:
-                        # Binary search for keyframes
-                        lo, hi = 0, nkeys - 1
-                        while lo < hi - 1:
-                            mid = (lo + hi) // 2
-                            key_frame = u16(key_data + mid * 6)
-                            if key_frame <= frame_idx:
-                                lo = mid
-                            else:
-                                hi = mid
-                        
-                        frame_lo = u16(key_data + lo * 6)
-                        frame_hi = u16(key_data + hi * 6)
-                        val_lo = s16(key_data + lo * 6 + 2)
-                        val_hi = s16(key_data + hi * 6 + 2)
-                        
-                        if frame_hi == frame_lo:
-                            vals.append(bone['val'][dof] + bone['scale'][dof] * val_lo)
-                        else:
-                            t = (frame_idx - frame_lo) / (frame_hi - frame_lo)
-                            blended = val_lo + t * (val_hi - val_lo)
-                            vals.append(bone['val'][dof] + bone['scale'][dof] * blended)
-                else:
-                    # Other validity types - use delta directly
-                    delta = s16(pos + 2) if valid > 0 else 0
-                    vals.append(bone['val'][dof] + bone['scale'][dof] * delta)
-        
+                delta = s16(rle + 2 + (valid - 1) * 2)
+
+            vals.append(bone['val'][dof] + bone['scale'][dof] * delta)
+
         pose.append(vals)
-    
+
     return pose
 
 # ── Extract all sequences ─────────────────────────────────────────────────
@@ -137,7 +117,7 @@ sequences = []
 for si in range(NSEQ):
     os_ = OSEQ + si * SEQ_SZ
     label = cstr(os_, 32)
-    fps = i32(os_ + 36)
+    fps = f32(os_ + 32)
     numframes = i32(os_ + 56)
     
     print(f"\n  Sequence {si}: {label!r}  fps={fps}  frames={numframes}")

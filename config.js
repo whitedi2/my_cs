@@ -26,6 +26,6 @@ const CONFIG = {
   // ── Настройки по умолчанию ────────────────────────────────────────────────
   widescreenFOV: true,  // широкоэкранный FOV (90° по горизонту 4:3, растянутый на 16:9)
   invertY:       true,
-  rightHand:     false,
+  rightHand:     true,
 
 };

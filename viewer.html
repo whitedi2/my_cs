@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>de_dust2</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -69,9 +70,9 @@
   Click to play
   <span>WASD — move &nbsp;|&nbsp; Mouse — look &nbsp;|&nbsp; Space — jump &nbsp;|&nbsp; Shift — walk &nbsp;|&nbsp; Ctrl — crouch &nbsp;|&nbsp; 1/2/3 — weapons &nbsp;|&nbsp; R — reload &nbsp;|&nbsp; LMB — fire/slash &nbsp;|&nbsp; RMB — stab &nbsp;|&nbsp; ESC — pause</span>
   <div id="settings">
-    <label><input type="checkbox" id="opt-invert-y"> Инверсия мыши (Y)</label>
+    <label><input type="checkbox" id="opt-invert-y" checked> Инверсия мыши (Y)</label>
     <label><input type="checkbox" id="opt-widescreen" checked> Широкоэкранный FOV</label>
-    <label><input type="checkbox" id="opt-right-hand"> Правая рука</label>
+    <label><input type="checkbox" id="opt-right-hand" checked> Правая рука</label>
   </div>
 </div>
 <div id="loading">Loading…</div>
@@ -138,7 +139,16 @@ renderer.autoClear = false;
 const WPNS = [
   {
     id: 'm4', label: 'M4A1',
-    jsonFile: 'v_m4a1.json',
+    jsonFile: 'v_m4a1.json', jsonFileSil: 'v_m4a1_sil.json',
+    idleSeq: 'idle_unsil', idleSeqSil: 'idle',
+    fireSeq: 'shoot1_unsil', fireSeqSil: 'shoot1',
+    fireSeqsUnsil: ['shoot1_unsil', 'shoot2_unsil', 'shoot3_unsil'],
+    fireSeqsSil:   ['shoot1', 'shoot2', 'shoot3'],
+    reloadSeq: 'reload_unsil', reloadSeqSil: 'reload',
+    drawSeq: 'draw_unsil', drawSeqSil: 'draw',
+    silencer: false,
+    autofire: true,
+    fireInterval: 0.09,
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12,
@@ -150,7 +160,16 @@ const WPNS = [
   },
   {
     id: 'usp', label: 'USP',
-    jsonFile: 'v_usp.json',
+    jsonFile: 'v_usp.json', jsonFileSil: 'v_usp_sil.json',
+    idleSeq: 'idle_unsil', idleSeqSil: 'idle',
+    fireSeq: 'shoot1_unsil', fireSeqSil: 'shoot1',
+    fireSeqsUnsil:    ['shoot1_unsil', 'shoot2_unsil', 'shoot3_unsil'],
+    fireSeqsSil:      ['shoot1', 'shoot2', 'shoot3'],
+    fireSeqLastUnsil: 'shootlast_unsil',
+    fireSeqLastSil:   'shootlast',
+    reloadSeq: 'reload_unsil', reloadSeqSil: 'reload',
+    drawSeq: 'draw_unsil', drawSeqSil: 'draw',
+    silencer: false,
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12,
@@ -163,6 +182,8 @@ const WPNS = [
   {
     id: 'knife', label: 'KNIFE',
     jsonFile: 'v_knife.json',
+    idleSeq: 'idle',
+    drawSeq: 'draw',
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12,
@@ -174,8 +195,9 @@ const WPNS = [
 let curWpnIdx  = 2;
 let nextWpnIdx = -1;
 
-const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5 };
+const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5, SILENCER: 6 };
 let ws = WS.DRAW, wsT = 0, wsIdleT = 0, wsHit = false;
+let bobCycle = 0, bobAmt = 0;  // weapon bob state
 
 function curW() { return WPNS[curWpnIdx]; }
 
@@ -197,58 +219,85 @@ function boneEulerMat(rx, ry, rz) {
 
 // ── Load weapon meshes + animation ────────────────────────────────────────
 const _texLoader = new THREE.TextureLoader();
+
+function _buildGroup(data, scale) {
+  const root = new THREE.Group();
+  const originalPositions = [], boneIndices = [];
+  data.meshes.forEach(m => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(m.positions), 3));
+    geo.setAttribute('normal',   new THREE.Float32BufferAttribute(m.normals, 3));
+    geo.setAttribute('uv',       new THREE.Float32BufferAttribute(m.uvs,     2));
+    geo.setIndex(m.indices);
+    geo.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geo,
+      new THREE.MeshLambertMaterial({ map: _texLoader.load(m.texFile), side: THREE.DoubleSide }));
+    mesh.frustumCulled = false;
+    root.add(mesh);
+    originalPositions.push(new Float32Array(m.positions));
+    if (m.boneIndices) boneIndices.push(m.boneIndices);
+  });
+  root.scale.setScalar(scale);
+  return { root, originalPositions, boneIndices };
+}
+
+function _activateGroup(wpn, g) {
+  wpn.root = g.root;
+  wpn.originalPositions = g.originalPositions;
+  wpn.boneIndices = g.boneIndices;
+}
+
 WPNS.forEach(wpn => {
   fetch(wpn.jsonFile).then(r => r.json()).then(data => {
-    wpn.root = new THREE.Group();
-    wpn.originalPositions = []; // store original positions for animation
-    wpn.boneIndices = [];       // bone index per vertex
-    
-    data.meshes.forEach(m => {
-      const geo = new THREE.BufferGeometry();
-      const posArr = new Float32Array(m.positions);
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
-      geo.setAttribute('normal',   new THREE.Float32BufferAttribute(m.normals,   3));
-      geo.setAttribute('uv',       new THREE.Float32BufferAttribute(m.uvs,       2));
-      geo.setIndex(m.indices);
-      geo.computeBoundingSphere();
-      const tex = _texLoader.load(m.texFile);
-      const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ map: tex, side: THREE.DoubleSide }));
-      mesh.frustumCulled = false;
-      wpn.root.add(mesh);
-      
-      // Store original positions + bone indices for animation
-      wpn.originalPositions.push(new Float32Array(m.positions));
-      if (m.boneIndices) {
-        wpn.boneIndices.push(m.boneIndices);
-      }
-    });
-    
-    wpn.root.scale.setScalar(wpn.scale);
+    wpn._groupUnsil = _buildGroup(data, wpn.scale);
+    _activateGroup(wpn, wpn._groupUnsil);
     wpn.root.visible = (WPNS.indexOf(wpn) === curWpnIdx);
     vmScene.add(wpn.root);
-    console.log(`Weapon loaded: ${wpn.id}`);
-    
+
     // Load animation file if available
     const animFile = wpn.jsonFile.replace('.json', '_anim.json');
-    fetch(animFile).then(r => {
-      if (!r.ok) throw new Error('Not found');
-      return r.json();
-    }).then(animData => {
-      wpn.anim = {
-        bones: animData.bones,
-        seqs: animData.sequences,
-        curFrame: 0,
-      };
-      console.log(`Animation loaded for ${wpn.id}: ${animData.bones.length} bones, ${animData.sequences.length} sequences`);
-    }).catch(() => {
-      console.log(`No animation file for ${wpn.id}, using static pose`);
-    });
-  }).catch(() => console.warn(`${wpn.jsonFile} not found — run: python mdl_to_json.py ${wpn.id}`));
+    fetch(animFile).then(r => r.ok ? r.json() : Promise.reject())
+      .then(animData => {
+        wpn.anim = { bones: animData.bones, seqs: animData.sequences, curFrame: 0 };
+        console.log(`Anim loaded: ${wpn.id} (${animData.bones.length} bones)`);
+      }).catch(() => {});
+
+    // Load silenced variant if available
+    if (wpn.jsonFileSil) {
+      fetch(wpn.jsonFileSil).then(r => r.json()).then(silData => {
+        wpn._groupSil = _buildGroup(silData, wpn.scale);
+        wpn._groupSil.root.visible = false;
+        vmScene.add(wpn._groupSil.root);
+      }).catch(() => {});
+    }
+  }).catch(() => console.warn(`${wpn.jsonFile} not found`));
 });
+
+function toggleSilencer() {
+  const wpn = curW();
+  if (!wpn._groupSil || ws !== WS.IDLE) return;
+  wpn._silAdding = !wpn.silencer;
+  if (wpn.anim) { wpn.anim._silAnimDone = false; wpn.anim.curFrame = 0; }
+  ws = WS.SILENCER; wsT = 0;
+}
+
+function _finishSilencer(wpn) {
+  const hasSil = wpn._silAdding;
+  wpn.root.visible = false;
+  _activateGroup(wpn, hasSil ? wpn._groupSil : wpn._groupUnsil);
+  if (!wpn._idleSeqOrig) { wpn._idleSeqOrig = wpn.idleSeq; wpn._fireSeqOrig = wpn.fireSeq; wpn._reloadSeqOrig = wpn.reloadSeq; wpn._drawSeqOrig = wpn.drawSeq; }
+  wpn.idleSeq   = hasSil ? wpn.idleSeqSil   : wpn._idleSeqOrig;
+  wpn.fireSeq   = hasSil ? wpn.fireSeqSil   : wpn._fireSeqOrig;
+  wpn.reloadSeq = hasSil ? wpn.reloadSeqSil : wpn._reloadSeqOrig;
+  wpn.drawSeq   = hasSil ? wpn.drawSeqSil   : wpn._drawSeqOrig;
+  wpn.root.visible = true;
+  wpn.silencer = hasSil;
+  if (wpn.anim) { wpn.anim.idleWorld = null; wpn.anim._prevAttackWs = undefined; }
+}
 
 function switchWeapon(idx) {
   if (idx === curWpnIdx || idx < 0 || idx >= WPNS.length) return;
-  if (ws === WS.RELOAD) return;
+  if (ws === WS.RELOAD || ws === WS.SILENCER) return;
   nextWpnIdx = idx;
   if (ws === WS.IDLE) _beginDraw(nextWpnIdx);
 }
@@ -258,7 +307,9 @@ function _beginDraw(idx) {
   curWpnIdx  = idx;
   nextWpnIdx = -1;
   ws = WS.DRAW; wsT = 0;
-  if (WPNS[curWpnIdx].root) WPNS[curWpnIdx].root.visible = true;
+  const wpn = WPNS[curWpnIdx];
+  if (wpn.anim) { wpn.anim._drawAnimDone = false; wpn.anim.curFrame = 0; }
+  if (wpn.root) wpn.root.visible = true;
 }
 
 function hitCheck(maxDist) {
@@ -283,19 +334,29 @@ function updateWeapon(dt) {
   const p = wpn.root.position, r = wpn.root.rotation;
   const eo = t => 1 - (1-t)*(1-t);
 
+  // Weapon bob (GoldSrc style: 0.8s cycle at max speed)
+  const _hspd = (vel && onGround) ? Math.hypot(vel[0], vel[1]) : 0;
+  const _tgtBob = onGround ? Math.min(_hspd / SV.maxspeed, 1) : 0;
+  bobAmt += (_tgtBob - bobAmt) * Math.min(dt * 8, 1);
+  if (_hspd > 5) bobCycle += dt * (_hspd / SV.maxspeed) * (Math.PI * 2 / 1.0);
+  const _bob = Math.sin(bobCycle) * bobAmt;
+  const bobYaw = -_bob * 0.035;                        // вращение вокруг ствола
+  const bobX   = -_bob * 0.035 * 2.4;                 // компенсация — ствол к центру
+  const bobZ   =  _bob * (_bob >= 0 ? 0.11 : 0.04);   // назад много, вперёд мало
+
   if (nextWpnIdx >= 0 && ws === WS.IDLE) { _beginDraw(nextWpnIdx); return; }
 
   switch (ws) {
     case WS.DRAW: {
-      const t = eo(Math.min(wsT / 0.5, 1));
-      p.set(wpn.pos.x, wpn.pos.y - 0.9*(1-t), wpn.pos.z);
+      if (wsT <= dt * 1.5 && wpn.anim) restoreWeaponVertices(wpn);
+      p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
       r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
-      if (t >= 1) { ws = WS.IDLE; wsT = 0; }
+      if (wpn.anim?._drawAnimDone || wsT >= 1.2) { ws = WS.IDLE; wsT = 0; }
       break;
     }
     case WS.IDLE: {
-      p.set(wpn.pos.x, wpn.pos.y + Math.sin(wsIdleT*1.6)*0.005, wpn.pos.z);
-      r.set(wpn.rot.x + Math.cos(wsIdleT*0.9)*0.007, wpn.rot.y, wpn.rot.z);
+      p.set(wpn.pos.x + bobX, wpn.pos.y + Math.sin(wsIdleT*1.6)*0.005, wpn.pos.z + bobZ);
+      r.set(wpn.rot.x + Math.cos(wsIdleT*0.9)*0.007, wpn.rot.y + bobYaw, wpn.rot.z);
       break;
     }
     case WS.SLASH: {
@@ -330,42 +391,53 @@ function updateWeapon(dt) {
       break;
     }
     case WS.FIRE: {
-      const DUR = 0.12;
+      const DUR = wpn.fireInterval || 0.12;
       const t   = Math.min(wsT / DUR, 1);
       const kick = t < 0.3 ? t/0.3 : 1 - (t-0.3)/0.7;
-      p.set(wpn.pos.x, wpn.pos.y + kick*0.03, wpn.pos.z + kick*0.04);
-      r.set(wpn.rot.x - kick*0.08, wpn.rot.y, wpn.rot.z);
+      p.set(wpn.pos.x + bobX, wpn.pos.y + kick*0.03, wpn.pos.z + kick*0.04 + bobZ);
+      r.set(wpn.rot.x - kick*0.08, wpn.rot.y + bobYaw, wpn.rot.z);
       if (!wsHit) { wsHit = true; hitCheck(4096); }
-      if (t >= 1) { ws = WS.IDLE; wsT = 0; wsHit = false; }
+      if (t >= 1) {
+        if (lmbHeld && wpn.autofire && wpn.ammo > 0) {
+          wpn.ammo--; wsT = 0; wsHit = false;  // stay in FIRE, restart shot
+        } else {
+          ws = WS.IDLE; wsT = 0; wsHit = false;
+        }
+      }
       break;
     }
     case WS.RELOAD: {
-      const t   = Math.min(wsT / wpn.reloadTime, 1);
-      const dip = t < 0.15 ? t/0.15 : t > 0.85 ? 1-(t-0.85)/0.15 : 1;
-      p.set(wpn.pos.x, wpn.pos.y - dip*0.25, wpn.pos.z);
-      r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z + dip*0.35);
-      if (t >= 1) {
+      p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
+      r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
+      if (wsT >= wpn.reloadTime) {
         const take = Math.min(wpn.maxAmmo - wpn.ammo, wpn.reserve);
         wpn.ammo += take; wpn.reserve -= take;
-        ws = WS.DRAW; wsT = 0;
+        ws = WS.IDLE; wsT = 0;
+      }
+      break;
+    }
+    case WS.SILENCER: {
+      p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
+      r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
+      if (wpn.anim?._silAnimDone || wsT >= 4.0) {
+        _finishSilencer(wpn);
+        ws = WS.IDLE; wsT = 0;
       }
       break;
     }
   }
 
-  // Apply skeletal animation (only during attack)
-  if (ws === WS.SLASH || ws === WS.STAB) {
+  // Skeletal animation
+  const _gunAnimActive = wpn.type === 'gun' && wpn.anim?._gunAnimPlaying;
+  if (wpn.anim && (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB || ws === WS.FIRE || ws === WS.RELOAD || ws === WS.DRAW || ws === WS.SILENCER || _gunAnimActive)) {
     applySkeletalAnimation(wpn, dt);
-  }
-  // Restore vertices when returning to idle
-  if (ws === WS.IDLE && wpn.anim) {
-    restoreWeaponVertices(wpn);
   }
 }
 
 // ── Restore weapon vertices to original idle pose ─────────────────────────
 function restoreWeaponVertices(wpn) {
   if (!wpn.originalPositions) return;
+  if (wpn.anim) wpn.anim._prevAttackWs = undefined; // reset so next attack starts at frame 0
   wpn.root.children.forEach((mesh, meshIdx) => {
     const origPos = wpn.originalPositions[meshIdx];
     if (!origPos) return;
@@ -378,11 +450,9 @@ function restoreWeaponVertices(wpn) {
   });
 }
 
-// ── Skeletal animation via delta transforms ──────────────────────────────
-// Vertices are baked in world-space (idle frame 0 pose).
-// We compute delta = current_frame - idle_frame0, then apply delta to vertices.
-const _tmpVec = new THREE.Vector3();
-const _tmpMat = new THREE.Matrix4();
+// ── Skeletal animation (full matrix skinning) ────────────────────────────
+// Vertices are baked in world-space at idle frame 0.
+// Skinning: v_new = M_cur × M_idle⁻¹ × v_orig  (in GoldSrc space, then axis-swap).
 
 function computeBoneWorlds(bones, framePose) {
   const R = [], T = [];
@@ -401,86 +471,134 @@ function computeBoneWorlds(bones, framePose) {
   return { R, T };
 }
 
+const _skinVtmp = new THREE.Vector3();
+
 function applySkeletalAnimation(wpn, dt) {
-  if (!wpn.anim || !wpn.anim.bones || !wpn.anim.seqs || !wpn.originalPositions) {
-    if (!wpn._debugStart) { console.log('applySkeletalAnimation: early exit (missing data)', { anim: !!wpn.anim, bones: !!wpn?.anim?.bones, seqs: !!wpn?.anim?.seqs, origPos: !!wpn.originalPositions }); wpn._debugStart = true; }
-    return;
+  if (!wpn.anim?.bones || !wpn.anim?.seqs || !wpn.originalPositions) return;
+  if (!wpn.boneIndices?.length) return;
+
+  // Determine sequence and handle frame reset per weapon type
+  let seqName;
+  if (ws === WS.IDLE) {
+    seqName = wpn.idleSeq || 'idle';
+    if (wpn.anim._prevAnimWs !== WS.IDLE) {
+      wpn.anim.curFrame = 0;
+      wpn.anim._prevAttackWs = undefined;
+    }
+  } else if (wpn.type === 'gun') {
+    if (ws === WS.SILENCER) {
+      seqName = wpn._silAdding ? 'add_silencer' : 'detach_silencer';
+      if (wsT < dt * 2) wpn.anim.curFrame = 0;
+    } else if (ws === WS.DRAW) {
+      seqName = wpn.drawSeq || (wpn.silencer ? 'draw' : 'draw_unsil');
+      if (wsT < dt * 2) wpn.anim.curFrame = 0;
+    } else if (ws === WS.RELOAD) {
+      seqName = wpn.reloadSeq || (wpn.silencer ? 'reload' : 'reload_unsil');
+      if (wsT < dt * 2) wpn.anim.curFrame = 0;
+    } else {
+      if (ws === WS.FIRE && wsT < dt * 2) {
+        const seqs = wpn.silencer
+          ? (wpn.fireSeqsSil   || [wpn.fireSeqSil || 'shoot1'])
+          : (wpn.fireSeqsUnsil || [wpn.fireSeq    || 'shoot1_unsil']);
+        const lastSeq = wpn.silencer ? wpn.fireSeqLastSil : wpn.fireSeqLastUnsil;
+        if (wpn.ammo === 0 && lastSeq) {
+          wpn.anim._lastFireSeq = lastSeq;
+        } else {
+          wpn.anim._shootIdx = ((wpn.anim._shootIdx ?? -1) + 1) % seqs.length;
+          wpn.anim._lastFireSeq = seqs[wpn.anim._shootIdx];
+        }
+        wpn.anim.curFrame = 0;
+        wpn.anim._gunAnimPlaying = true;
+      }
+      seqName = wpn.anim._lastFireSeq || wpn.fireSeq || 'shoot1_unsil';
+    }
+  } else {
+    if (ws === WS.DRAW) {
+      seqName = wpn.drawSeq || 'draw';
+      if (wsT < dt * 2) wpn.anim.curFrame = 0;
+    } else if (ws !== WS.IDLE) {
+      seqName = ws === WS.STAB ? 'stab' : 'midslash1';
+      if (wpn.anim._prevAttackWs !== ws) {
+        wpn.anim._prevAttackWs = ws;
+        wpn.anim.curFrame = 0;
+      }
+    }
   }
-  if (!wpn.boneIndices || wpn.boneIndices.length === 0) {
-    if (!wpn._debugStart) { console.log('applySkeletalAnimation: early exit (no boneIndices)', wpn.boneIndices); wpn._debugStart = true; }
-    return;
-  }
-  if (!wpn._debugStart) { console.log('applySkeletalAnimation: entered OK'); wpn._debugStart = true; }
-  
-  // Determine which sequence to play based on weapon state
-  let seqName = 'slash1';
-  if (ws === WS.STAB) seqName = 'stab';
-  
+
   const seq = wpn.anim.seqs.find(s => s.name === seqName);
-  if (!seq || seq.frames.length === 0) return;
-  
-  // Advance frame
-  const fps = 10;
+  if (!seq?.frames.length) return;
+
+  wpn.anim._prevAnimWs = ws;
+  const fps = seq.fps > 0 ? seq.fps : 30;
   wpn.anim.curFrame += dt * fps;
   if (wpn.anim.curFrame >= seq.frames.length) {
-    wpn.anim.curFrame = 0;
-    if (ws !== WS.IDLE) { ws = WS.IDLE; wsT = 0; }
+    if (ws === WS.IDLE) { wpn.anim.curFrame %= seq.frames.length; }  // loop
+    else wpn.anim.curFrame = seq.frames.length - 1;
+    if (ws === WS.SILENCER) {
+      wpn.anim._silAnimDone = true;
+    } else if (ws === WS.DRAW) {
+      wpn.anim._drawAnimDone = true;
+    } else if (wpn.type === 'gun') {
+      if (ws !== WS.RELOAD) {
+        wpn.anim._gunAnimPlaying = false;
+        return;  // signal done; restoreWeaponVertices runs next frame
+      }
+      // RELOAD: hold at last frame until state machine transitions
+    }
   }
-  
+
   const frameIdx = Math.floor(wpn.anim.curFrame);
   const currentPose = seq.frames[frameIdx];
   if (!currentPose) return;
-  
-  // Get idle frame 0 as baseline
-  const idleSeq = wpn.anim.seqs.find(s => s.name === 'idle');
-  const idlePose = idleSeq ? idleSeq.frames[0] : null;
-  
-  // Compute world translations for current frame & idle baseline
-  const curTrans = computeBoneWorlds(wpn.anim.bones, currentPose).T;
-  const idleTrans = idlePose ? computeBoneWorlds(wpn.anim.bones, idlePose).T : null;
-  
-  // Debug: check delta magnitude
-  if (idleTrans && idleTrans[0] && curTrans[0]) {
-    const d = curTrans[0].distanceTo(idleTrans[0]);
-    if (wpn._debugCount !== undefined && wpn._debugCount < 3) {
-      console.log(`Bone 0 delta: ${d.toFixed(2)} (scale: ${wpn.scale})`);
-      wpn._debugCount++;
-    }
+
+  // Build idle bind-pose world transforms once and cache them
+  if (!wpn.anim.idleWorld) {
+    const idleSeqName = wpn.idleSeq || 'idle';
+    const idleSeq = wpn.anim.seqs.find(s => s.name === idleSeqName);
+    wpn.anim.idleWorld = (idleSeq?.frames.length)
+      ? computeBoneWorlds(wpn.anim.bones, idleSeq.frames[0])
+      : null;
   }
-  
-  // Apply translation delta to mesh vertices (from original positions, not accumulated)
+  if (!wpn.anim.idleWorld) return;
+
+  const idle = wpn.anim.idleWorld;
+  const cur  = computeBoneWorlds(wpn.anim.bones, currentPose);
+
+  // Build per-bone skinning matrices in GoldSrc space.
+  // Skinning: v_new_gs = R_cur × R_idle⁻¹ × (v_gs − t_idle) + t_cur
+  //         = M_skin × v_gs + (t_cur − M_skin × t_idle)
+  const skinM = [], skinT = [];
+  for (let b = 0; b < wpn.anim.bones.length; b++) {
+    const M = cur.R[b].clone().multiply(idle.R[b].clone().transpose());
+    const t = idle.T[b].clone().applyMatrix4(M);
+    t.subVectors(cur.T[b], t);
+    skinM.push(M);
+    skinT.push(t);
+  }
+
+  // Apply full rotation + translation skinning to every vertex
   wpn.root.children.forEach((mesh, meshIdx) => {
-    const origPos = wpn.originalPositions[meshIdx];
+    const origPos   = wpn.originalPositions[meshIdx];
     const boneIdxArr = wpn.boneIndices[meshIdx];
     if (!origPos || !boneIdxArr) return;
-    
+
     const posAttr = mesh.geometry.getAttribute('position');
-    const posArr = posAttr.array;
-    
+    const posArr  = posAttr.array;
+
     for (let i = 0; i < origPos.length; i += 3) {
-      const vertIdx = i / 3;
-      const boneIdx = boneIdxArr[vertIdx];
-      if (boneIdx === undefined || !curTrans[boneIdx]) continue;
-      
-      // Start from original position, then apply delta
-      posArr[i] = origPos[i];
-      posArr[i+1] = origPos[i+1];
-      posArr[i+2] = origPos[i+2];
-      
-      if (idleTrans && idleTrans[boneIdx]) {
-        // Compute translation delta in GoldSrc space, scaled to model size
-        const sc = wpn.scale;
-        const dx = (curTrans[boneIdx].x - idleTrans[boneIdx].x) * sc;
-        const dy = (curTrans[boneIdx].y - idleTrans[boneIdx].y) * sc;
-        const dz = (curTrans[boneIdx].z - idleTrans[boneIdx].z) * sc;
-        
-        // Apply delta in Three.js space: (x, z, -y)
-        posArr[i] += dx;
-        posArr[i+1] += dz;
-        posArr[i+2] -= dy;
+      const b = boneIdxArr[i / 3];
+      if (b === undefined || !skinM[b]) {
+        posArr[i] = origPos[i]; posArr[i+1] = origPos[i+1]; posArr[i+2] = origPos[i+2];
+        continue;
       }
+      // Three.js → GoldSrc: (x, y, z)_three = (x, z, −y)_gs  →  gs = (x, −z, y)
+      _skinVtmp.set(origPos[i], -origPos[i+2], origPos[i+1]);
+      _skinVtmp.applyMatrix4(skinM[b]).add(skinT[b]);
+      // GoldSrc → Three.js: (x, z, −y)
+      posArr[i]   =  _skinVtmp.x;
+      posArr[i+1] =  _skinVtmp.z;
+      posArr[i+2] = -_skinVtmp.y;
     }
-    
     posAttr.needsUpdate = true;
   });
 }
@@ -936,6 +1054,7 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Digit2') switchWeapon(WPNS.findIndex(w => w.id === 'usp'));
   if (e.code === 'Digit3') switchWeapon(WPNS.findIndex(w => w.id === 'knife'));
   if (e.code === 'KeyQ')   switchWeapon((curWpnIdx + WPNS.length - 1) % WPNS.length);
+  if (e.code === 'KeyF')   toggleSilencer();
   if (e.code === 'KeyR') {
     const wpn = curW();
     if (wpn.type === 'gun' && ws === WS.IDLE && wpn.ammo < wpn.maxAmmo && wpn.reserve > 0) {
@@ -946,7 +1065,9 @@ document.addEventListener('keydown', e => {
 document.addEventListener('keyup', e => { keys[e.code] = false; });
 
 // ── Weapon input ──────────────────────────────────────────────────────────
+let lmbHeld = false;
 document.addEventListener('mousedown', e => {
+  if (e.button === 0) lmbHeld = true;
   if (!isLocked || ws !== WS.IDLE) return;
   const wpn = curW();
   if (e.button === 0) {
@@ -961,7 +1082,9 @@ document.addEventListener('mousedown', e => {
     }
   }
   if (e.button === 2 && wpn.type === 'melee') { ws = WS.STAB; wsT = 0; }
+  if (e.button === 2 && wpn.type === 'gun')   toggleSilencer();
 });
+document.addEventListener('mouseup',  e => { if (e.button === 0) lmbHeld = false; });
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 // ── Render loop ───────────────────────────────────────────────────────────
