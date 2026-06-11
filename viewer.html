@@ -179,13 +179,34 @@ let ws = WS.DRAW, wsT = 0, wsIdleT = 0, wsHit = false;
 
 function curW() { return WPNS[curWpnIdx]; }
 
+// ── Skeletal animation system (per-weapon state) ─────────────────────────
+// Each weapon stores its own animation data in wpn.anim
+// GoldSrc MDL bone math: euler angles → quaternion → matrix
+function boneEulerMat(rx, ry, rz) {
+  const sr = Math.sin(rx * 0.5), cr = Math.cos(rx * 0.5);
+  const sp = Math.sin(ry * 0.5), cp = Math.cos(ry * 0.5);
+  const sy = Math.sin(rz * 0.5), cy = Math.cos(rz * 0.5);
+  const qx = sr*cp*cy - cr*sp*sy;
+  const qy = cr*sp*cy + sr*cp*sy;
+  const qz = cr*cp*sy - sr*sp*cy;
+  const qw = cr*cp*cy + sr*sp*sy;
+  return new THREE.Matrix4().makeRotationFromQuaternion(
+    new THREE.Quaternion(qx, qy, qz, qw)
+  );
+}
+
+// ── Load weapon meshes + animation ────────────────────────────────────────
 const _texLoader = new THREE.TextureLoader();
 WPNS.forEach(wpn => {
   fetch(wpn.jsonFile).then(r => r.json()).then(data => {
     wpn.root = new THREE.Group();
+    wpn.originalPositions = []; // store original positions for animation
+    wpn.boneIndices = [];       // bone index per vertex
+    
     data.meshes.forEach(m => {
       const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3));
+      const posArr = new Float32Array(m.positions);
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
       geo.setAttribute('normal',   new THREE.Float32BufferAttribute(m.normals,   3));
       geo.setAttribute('uv',       new THREE.Float32BufferAttribute(m.uvs,       2));
       geo.setIndex(m.indices);
@@ -194,11 +215,34 @@ WPNS.forEach(wpn => {
       const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ map: tex, side: THREE.DoubleSide }));
       mesh.frustumCulled = false;
       wpn.root.add(mesh);
+      
+      // Store original positions + bone indices for animation
+      wpn.originalPositions.push(new Float32Array(m.positions));
+      if (m.boneIndices) {
+        wpn.boneIndices.push(m.boneIndices);
+      }
     });
+    
     wpn.root.scale.setScalar(wpn.scale);
     wpn.root.visible = (WPNS.indexOf(wpn) === curWpnIdx);
     vmScene.add(wpn.root);
     console.log(`Weapon loaded: ${wpn.id}`);
+    
+    // Load animation file if available
+    const animFile = wpn.jsonFile.replace('.json', '_anim.json');
+    fetch(animFile).then(r => {
+      if (!r.ok) throw new Error('Not found');
+      return r.json();
+    }).then(animData => {
+      wpn.anim = {
+        bones: animData.bones,
+        seqs: animData.sequences,
+        curFrame: 0,
+      };
+      console.log(`Animation loaded for ${wpn.id}: ${animData.bones.length} bones, ${animData.sequences.length} sequences`);
+    }).catch(() => {
+      console.log(`No animation file for ${wpn.id}, using static pose`);
+    });
   }).catch(() => console.warn(`${wpn.jsonFile} not found — run: python mdl_to_json.py ${wpn.id}`));
 });
 
@@ -308,6 +352,137 @@ function updateWeapon(dt) {
       break;
     }
   }
+
+  // Apply skeletal animation (only during attack)
+  if (ws === WS.SLASH || ws === WS.STAB) {
+    applySkeletalAnimation(wpn, dt);
+  }
+  // Restore vertices when returning to idle
+  if (ws === WS.IDLE && wpn.anim) {
+    restoreWeaponVertices(wpn);
+  }
+}
+
+// ── Restore weapon vertices to original idle pose ─────────────────────────
+function restoreWeaponVertices(wpn) {
+  if (!wpn.originalPositions) return;
+  wpn.root.children.forEach((mesh, meshIdx) => {
+    const origPos = wpn.originalPositions[meshIdx];
+    if (!origPos) return;
+    const posAttr = mesh.geometry.getAttribute('position');
+    const posArr = posAttr.array;
+    for (let i = 0; i < origPos.length; i++) {
+      posArr[i] = origPos[i];
+    }
+    posAttr.needsUpdate = true;
+  });
+}
+
+// ── Skeletal animation via delta transforms ──────────────────────────────
+// Vertices are baked in world-space (idle frame 0 pose).
+// We compute delta = current_frame - idle_frame0, then apply delta to vertices.
+const _tmpVec = new THREE.Vector3();
+const _tmpMat = new THREE.Matrix4();
+
+function computeBoneWorlds(bones, framePose) {
+  const R = [], T = [];
+  for (let i = 0; i < framePose.length; i++) {
+    const p = framePose[i];
+    const mat = boneEulerMat(p[3], p[4], p[5]);
+    const trans = new THREE.Vector3(p[0], p[1], p[2]);
+    const par = bones[i].parent;
+    if (par >= 0 && R[par]) {
+      mat.premultiply(R[par]);
+      trans.applyMatrix4(R[par]).add(T[par]);
+    }
+    R.push(mat);
+    T.push(trans);
+  }
+  return { R, T };
+}
+
+function applySkeletalAnimation(wpn, dt) {
+  if (!wpn.anim || !wpn.anim.bones || !wpn.anim.seqs || !wpn.originalPositions) {
+    if (!wpn._debugStart) { console.log('applySkeletalAnimation: early exit (missing data)', { anim: !!wpn.anim, bones: !!wpn?.anim?.bones, seqs: !!wpn?.anim?.seqs, origPos: !!wpn.originalPositions }); wpn._debugStart = true; }
+    return;
+  }
+  if (!wpn.boneIndices || wpn.boneIndices.length === 0) {
+    if (!wpn._debugStart) { console.log('applySkeletalAnimation: early exit (no boneIndices)', wpn.boneIndices); wpn._debugStart = true; }
+    return;
+  }
+  if (!wpn._debugStart) { console.log('applySkeletalAnimation: entered OK'); wpn._debugStart = true; }
+  
+  // Determine which sequence to play based on weapon state
+  let seqName = 'slash1';
+  if (ws === WS.STAB) seqName = 'stab';
+  
+  const seq = wpn.anim.seqs.find(s => s.name === seqName);
+  if (!seq || seq.frames.length === 0) return;
+  
+  // Advance frame
+  const fps = 10;
+  wpn.anim.curFrame += dt * fps;
+  if (wpn.anim.curFrame >= seq.frames.length) {
+    wpn.anim.curFrame = 0;
+    if (ws !== WS.IDLE) { ws = WS.IDLE; wsT = 0; }
+  }
+  
+  const frameIdx = Math.floor(wpn.anim.curFrame);
+  const currentPose = seq.frames[frameIdx];
+  if (!currentPose) return;
+  
+  // Get idle frame 0 as baseline
+  const idleSeq = wpn.anim.seqs.find(s => s.name === 'idle');
+  const idlePose = idleSeq ? idleSeq.frames[0] : null;
+  
+  // Compute world translations for current frame & idle baseline
+  const curTrans = computeBoneWorlds(wpn.anim.bones, currentPose).T;
+  const idleTrans = idlePose ? computeBoneWorlds(wpn.anim.bones, idlePose).T : null;
+  
+  // Debug: check delta magnitude
+  if (idleTrans && idleTrans[0] && curTrans[0]) {
+    const d = curTrans[0].distanceTo(idleTrans[0]);
+    if (wpn._debugCount !== undefined && wpn._debugCount < 3) {
+      console.log(`Bone 0 delta: ${d.toFixed(2)} (scale: ${wpn.scale})`);
+      wpn._debugCount++;
+    }
+  }
+  
+  // Apply translation delta to mesh vertices (from original positions, not accumulated)
+  wpn.root.children.forEach((mesh, meshIdx) => {
+    const origPos = wpn.originalPositions[meshIdx];
+    const boneIdxArr = wpn.boneIndices[meshIdx];
+    if (!origPos || !boneIdxArr) return;
+    
+    const posAttr = mesh.geometry.getAttribute('position');
+    const posArr = posAttr.array;
+    
+    for (let i = 0; i < origPos.length; i += 3) {
+      const vertIdx = i / 3;
+      const boneIdx = boneIdxArr[vertIdx];
+      if (boneIdx === undefined || !curTrans[boneIdx]) continue;
+      
+      // Start from original position, then apply delta
+      posArr[i] = origPos[i];
+      posArr[i+1] = origPos[i+1];
+      posArr[i+2] = origPos[i+2];
+      
+      if (idleTrans && idleTrans[boneIdx]) {
+        // Compute translation delta in GoldSrc space, scaled to model size
+        const sc = wpn.scale;
+        const dx = (curTrans[boneIdx].x - idleTrans[boneIdx].x) * sc;
+        const dy = (curTrans[boneIdx].y - idleTrans[boneIdx].y) * sc;
+        const dz = (curTrans[boneIdx].z - idleTrans[boneIdx].z) * sc;
+        
+        // Apply delta in Three.js space: (x, z, -y)
+        posArr[i] += dx;
+        posArr[i+1] += dz;
+        posArr[i+2] -= dy;
+      }
+    }
+    
+    posAttr.needsUpdate = true;
+  });
 }
 
 function updateHUD() {

@@ -276,12 +276,15 @@ for bp in range(NBODY):
                         indices.extend([tv[k],   tv[k+1], tv[k+2]])
 
         if indices:
+            # Build bone index array - one per vertex, in same order as vert_map keys
+            bone_indices = [vbone[vi] for (vi, ni, s, t) in vert_map.keys()]
             out_meshes.append({
                 'positions': [round(v, 3) for v in positions],
                 'normals':   [round(v, 4) for v in normals],
                 'uvs':       [round(v, 5) for v in uvs],
                 'indices':   indices,
                 'texFile':   textures_out[tidx]['file'],
+                'boneIndices': bone_indices,
             })
             nverts = len(positions) // 3
             px_list = positions[0::3]; py_list = positions[1::3]; pz_list = positions[2::3]
