@@ -25,9 +25,7 @@
   #crosshair {
     position: absolute; top: 50%; left: 50%;
     transform: translate(-50%,-50%);
-    color: rgba(255,255,255,0.85); font-size: 22px;
     pointer-events: none; display: none;
-    text-shadow: 0 0 3px #000;
   }
   #hud {
     position: absolute; bottom: 16px; left: 16px;
@@ -61,6 +59,9 @@
     font-size: 24px; font-weight: bold; letter-spacing: 3px;
     color: rgba(255,255,255,.95);
   }
+  #mflash {
+    position: fixed; inset: 0; pointer-events: none;
+  }
 </style>
 </head>
 <script src="config.js"></script>
@@ -76,7 +77,8 @@
   </div>
 </div>
 <div id="loading">Loading…</div>
-<div id="crosshair">·</div>
+<canvas id="crosshair" width="160" height="160"></canvas>
+<canvas id="mflash"></canvas>
 <div id="hud"><div id="pos"></div><div id="spd"></div></div>
 <div id="keys">
   W / S — forward / back<br>
@@ -135,7 +137,78 @@ const vmSun = new THREE.DirectionalLight(0xffffff, 0.85);
 vmSun.position.set(1.5, 3, 2); vmScene.add(vmSun);
 renderer.autoClear = false;
 
+// ── Muzzle flash (2D canvas overlay) ─────────────────────────────────────
+let _flashStartT = -Infinity;
+let _flashSX = 0, _flashSY = 0, _flashRot = 0;
+const _FLASH_MS  = 55;
+const _mflashCtx = document.getElementById('mflash').getContext('2d');
+
+function _showFlash(wpn) {
+  if (wpn.type !== 'gun') return;
+  if (wpn.silencer && wpn.id === 'usp') return;
+  _flashSX  = (wpn.flashSX ?? 0.5) * innerWidth;
+  _flashSY  = (wpn.flashSY ?? 0.5) * innerHeight;
+  _flashRot = Math.random() * Math.PI * 2;
+  _flashStartT = performance.now();
+}
+
+function _drawFlash() {
+  const cvs = _mflashCtx.canvas;
+  if (cvs.width !== innerWidth)   cvs.width  = innerWidth;
+  if (cvs.height !== innerHeight) cvs.height = innerHeight;
+  const age = performance.now() - _flashStartT;
+  if (age >= _FLASH_MS) {
+    if (age < _FLASH_MS + 100) _mflashCtx.clearRect(0, 0, cvs.width, cvs.height);
+    return;
+  }
+  _mflashCtx.clearRect(0, 0, cvs.width, cvs.height);
+
+  const alpha  = 1 - age / _FLASH_MS;
+  const cx     = _flashSX, cy = _flashSY;
+  const u      = innerHeight;          // unit = screen height
+  const armLen = u * 0.11;             // spike length
+  const armWid = u * 0.016;            // spike base half-width
+  const glowR  = u * 0.055;            // central glow radius
+  const ctx    = _mflashCtx;
+
+  // 4 tapered spikes (triangle from base to point)
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(_flashRot);
+  ctx.globalAlpha = alpha;
+  for (let i = 0; i < 4; i++) {
+    const g = ctx.createLinearGradient(0, 0, armLen, 0);
+    g.addColorStop(0,   'rgba(255,255,210,0.95)');
+    g.addColorStop(0.4, 'rgba(255,180,40,0.55)');
+    g.addColorStop(1,   'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(0, -armWid);
+    ctx.lineTo(armLen, 0);
+    ctx.lineTo(0,  armWid);
+    ctx.closePath();
+    ctx.fill();
+    ctx.rotate(Math.PI / 2);
+  }
+  ctx.restore();
+
+  // Central bright glow
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const gg = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+  gg.addColorStop(0,    'rgba(255,255,230,1)');
+  gg.addColorStop(0.35, 'rgba(255,210,80,0.85)');
+  gg.addColorStop(0.7,  'rgba(255,100,10,0.4)');
+  gg.addColorStop(1,    'rgba(0,0,0,0)');
+  ctx.fillStyle = gg;
+  ctx.beginPath();
+  ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 // ── Weapon configs ────────────────────────────────────────────────────────
+const D = Math.PI / 180;
 const WPNS = [
   {
     id: 'm4', label: 'M4A1',
@@ -149,13 +222,47 @@ const WPNS = [
     silencer: false,
     autofire: true,
     fireInterval: 0.09,
+    // CS 1.6 M4A1 recoil pattern: [yawKick, pitchKick] per shot (radians)
+    // negative yaw = right, positive pitch = up
+    // Pitch is constant — crosshair rises and stays at plateau while yaw oscillates
+    recoilTable: [
+      [  0*D,  1.5*D], // 1
+      [  0*D,  1.5*D], // 2
+      [  0*D,  1.5*D], // 3
+      [  0*D,  1.5*D], // 4
+      [-0.4*D, 1.5*D], // 5  — starts drifting right
+      [-1.0*D, 1.5*D], // 6
+      [-1.5*D, 1.5*D], // 7
+      [-1.8*D, 1.5*D], // 8  — peak right
+      [-1.5*D, 1.5*D], // 9
+      [-1.0*D, 1.5*D], // 10
+      [-0.4*D, 1.5*D], // 11 — recovering
+      [ 0.3*D, 1.5*D], // 12 — crosses to left
+      [ 0.8*D, 1.5*D], // 13
+      [ 0.8*D, 1.5*D], // 14 — left peak
+      [ 0.3*D, 1.5*D], // 15
+      [-0.3*D, 1.5*D], // 16 — oscillating
+      [-0.6*D, 1.5*D], // 17
+      [-0.3*D, 1.5*D], // 18
+      [ 0.3*D, 1.5*D], // 19
+      [ 0.6*D, 1.5*D], // 20
+      [ 0.3*D, 1.5*D], // 21
+      [-0.3*D, 1.5*D], // 22
+      [-0.3*D, 1.5*D], // 23
+      [  0*D,  1.5*D], // 24
+      [ 0.3*D, 1.5*D], // 25
+      [ 0.3*D, 1.5*D], // 26
+      [  0*D,  1.5*D], // 27
+      [-0.2*D, 1.5*D], // 28
+      [  0*D,  1.5*D], // 29
+      [  0*D,  1.5*D], // 30
+    ],
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
-    scale: 0.12,
-    type: 'gun',
+    scale: 0.12, type: 'gun',
+    flashSX: 0.64, flashSY: 0.65,
     ammo: 30, maxAmmo: 30,
-    reserve: 90,
-    reloadTime: 3.1,
+    reserve: 90, reloadTime: 3.1,
     root: null,
   },
   {
@@ -168,15 +275,15 @@ const WPNS = [
     fireSeqLastUnsil: 'shootlast_unsil',
     fireSeqLastSil:   'shootlast',
     reloadSeq: 'reload_unsil', reloadSeqSil: 'reload',
+    recoilKick: 0.04,
     drawSeq: 'draw_unsil', drawSeqSil: 'draw',
     silencer: false,
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
-    scale: 0.12,
-    type: 'gun',
+    scale: 0.12, type: 'gun',
+    flashSX: 0.64, flashSY: 0.65,
     ammo: 12, maxAmmo: 12,
-    reserve: 100,
-    reloadTime: 2.7,
+    reserve: 100, reloadTime: 2.7,
     root: null,
   },
   {
@@ -299,7 +406,7 @@ function switchWeapon(idx) {
   if (idx === curWpnIdx || idx < 0 || idx >= WPNS.length) return;
   if (ws === WS.RELOAD || ws === WS.SILENCER) return;
   nextWpnIdx = idx;
-  if (ws === WS.IDLE) _beginDraw(nextWpnIdx);
+  if (ws === WS.IDLE || ws === WS.DRAW) _beginDraw(nextWpnIdx);
 }
 
 function _beginDraw(idx) {
@@ -320,11 +427,7 @@ function hitCheck(maxDist) {
   const fx   = -Math.sin(yaw)*cp, fy = Math.cos(yaw)*cp, fz = -spv;
   const to   = [from[0]+fx*maxDist, from[1]+fy*maxDist, from[2]+fz*maxDist];
   const tr   = traceMove(from, to);
-  if (tr.fraction < 1) {
-    const ch = document.getElementById('crosshair');
-    ch.style.color = '#ff5555';
-    setTimeout(() => { ch.style.color = 'rgba(255,255,255,0.85)'; }, 100);
-  }
+  // hit registered (no crosshair flash)
 }
 
 function updateWeapon(dt) {
@@ -396,12 +499,28 @@ function updateWeapon(dt) {
       const kick = t < 0.3 ? t/0.3 : 1 - (t-0.3)/0.7;
       p.set(wpn.pos.x + bobX, wpn.pos.y + kick*0.03, wpn.pos.z + kick*0.04 + bobZ);
       r.set(wpn.rot.x - kick*0.08, wpn.rot.y + bobYaw, wpn.rot.z);
-      if (!wsHit) { wsHit = true; hitCheck(4096); }
+      if (!wsHit) {
+        wsHit = true;
+        hitCheck(4096);
+        _showFlash(wpn);
+        const sc = wpn._shotCount || 0;
+        wpn._shotCount = sc + 1;
+        if (wpn.recoilTable) {
+          const [ky, kp] = wpn.recoilTable[Math.min(sc, wpn.recoilTable.length - 1)];
+          recoilPitch = Math.min(0.35, recoilPitch + kp);
+          recoilYaw   = Math.max(-0.25, Math.min(0.25, recoilYaw + ky));
+        } else {
+          recoilPitch = Math.min(0.35, recoilPitch + (wpn.recoilKick || 0));
+        }
+      }
       if (t >= 1) {
         if (lmbHeld && wpn.autofire && wpn.ammo > 0) {
-          wpn.ammo--; wsT = 0; wsHit = false;  // stay in FIRE, restart shot
+          wpn.ammo--; wsT = 0; wsHit = false;
         } else {
-          ws = WS.IDLE; wsT = 0; wsHit = false;
+          wsHit = false;
+          wpn._shotCount = 0;
+          if (wpn.ammo === 0 && wpn.reserve > 0) { ws = WS.RELOAD; wsT = 0; }
+          else { ws = WS.IDLE; wsT = 0; }
         }
       }
       break;
@@ -603,7 +722,43 @@ function applySkeletalAnimation(wpn, dt) {
   });
 }
 
+function drawCrosshair() {
+  const canvas = document.getElementById('crosshair');
+  if (canvas.style.display === 'none') return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W / 2, cy = H / 2;
+  ctx.clearRect(0, 0, W, H);
+
+  const wpn      = curW();
+  const isPistol = wpn?.type === 'gun' && !wpn?.autofire;
+  const baseGap  = isPistol ? 10 : 5;
+  const scale    = isPistol ? 200 : 130;
+
+  const spread = Math.sqrt(recoilPitch * recoilPitch + recoilYaw * recoilYaw) * scale;
+  const gap    = baseGap + spread;
+  const len    = 11;
+
+  const lines = [
+    [cx + gap,  cy,      cx + gap + len,  cy          ],
+    [cx - gap,  cy,      cx - gap - len,  cy          ],
+    [cx,        cy+gap,  cx,              cy+gap+len  ],
+    [cx,        cy-gap,  cx,              cy-gap-len  ],
+  ];
+
+  ctx.lineCap = 'square';
+  for (const [x1, y1, x2, y2] of lines) {
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,240,120,0.90)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+}
+
 function updateHUD() {
+  drawCrosshair();
   const wpn = curW();
   document.getElementById('weapon-name').textContent = wpn.label;
   const ammoEl = document.getElementById('ammo-display');
@@ -744,6 +899,8 @@ let phyDucked  = false;      // duck hull (hull3) is physically active
 let smoothCamY = null;       // smoothed camera Y for stair interpolation
 let punchPitch = 0;          // landing view-kick offset (radians)
 let punchVel   = 0;          // spring velocity for punch
+let recoilPitch = 0;         // gun recoil: vertical angle (positive = up)
+let recoilYaw   = 0;         // gun recoil: horizontal angle (negative = right)
 let prevVelZ   = 0;          // z-velocity from previous frame (for landing detection)
 let gHullHeadStand, gHullHeadDuck;
 
@@ -963,6 +1120,13 @@ function playerMove(dt) {
     }
   }
 
+  // ── Gun recoil — CS-style exponential decay ───────────────────────────────
+  const _recoilDecay = Math.exp(-dt * 14);
+  recoilPitch *= _recoilDecay;
+  recoilYaw   *= _recoilDecay;
+  if (Math.abs(recoilPitch) < 0.0005) recoilPitch = 0;
+  if (Math.abs(recoilYaw)   < 0.0005) recoilYaw   = 0;
+
   // ── Camera ────────────────────────────────────────────────────────────
   // When phyDucked on ground: gsPos is at floor+18 (duck hull origin).
   // Add 18 to eye height so the camera sits at the same visual height as duckAmount implies.
@@ -1118,10 +1282,12 @@ function animate(t) {
   // Safety: clamp punch and guard against NaN
   if (!isFinite(punchPitch)) { punchPitch = punchVel = 0; }
   punchPitch = Math.max(-0.4, Math.min(0.4, punchPitch));
+  if (!isFinite(recoilPitch)) recoilPitch = 0;
+  if (!isFinite(recoilYaw))   recoilYaw   = 0;
 
   // FPS camera: yaw on parent (world Y), pitch on child (local X)
-  yawObj.rotation.y   = isFinite(yaw)   ? yaw   : 0;
-  pitchObj.rotation.x = isFinite(pitch) ? pitch + punchPitch : 0;
+  yawObj.rotation.y   = isFinite(yaw)   ? yaw   + recoilYaw   : 0;
+  pitchObj.rotation.x = isFinite(pitch) ? pitch + punchPitch + recoilPitch : 0;
 
   renderer.clear();
   renderer.render(scene, camera);
@@ -1131,6 +1297,7 @@ function animate(t) {
   if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
   vmCamera.projectionMatrixInverse.copy(vmCamera.projectionMatrix).invert();
   renderer.render(vmScene, vmCamera);
+  _drawFlash();
 }
 animate(0);
 
