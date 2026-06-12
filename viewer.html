@@ -404,9 +404,15 @@ function _finishSilencer(wpn) {
 
 function switchWeapon(idx) {
   if (idx === curWpnIdx || idx < 0 || idx >= WPNS.length) return;
-  if (ws === WS.RELOAD || ws === WS.SILENCER) return;
+  // Разрешить переключение во время перезарядки или глушителя, но отметить прерывание
+  if (ws === WS.RELOAD) {
+    WPNS[curWpnIdx]._reloadInterrupted = true;
+  }
+  if (ws === WS.SILENCER) {
+    WPNS[curWpnIdx]._silencerInterrupted = true;
+  }
   nextWpnIdx = idx;
-  if (ws === WS.IDLE || ws === WS.DRAW) _beginDraw(nextWpnIdx);
+  if (ws === WS.IDLE || ws === WS.DRAW || ws === WS.RELOAD || ws === WS.SILENCER) _beginDraw(nextWpnIdx);
 }
 
 function _beginDraw(idx) {
@@ -415,6 +421,8 @@ function _beginDraw(idx) {
   nextWpnIdx = -1;
   ws = WS.DRAW; wsT = 0;
   const wpn = WPNS[curWpnIdx];
+  wpn._reloadInterrupted = false;  // Очистить флаг прерывания при переключении на новое оружие
+  wpn._silencerInterrupted = false;  // Очистить флаг глушителя при переключении
   if (wpn.anim) { wpn.anim._drawAnimDone = false; wpn.anim.curFrame = 0; }
   if (wpn.root) wpn.root.visible = true;
 }
@@ -454,7 +462,16 @@ function updateWeapon(dt) {
       if (wsT <= dt * 1.5 && wpn.anim) restoreWeaponVertices(wpn);
       p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
       r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
-      if (wpn.anim?._drawAnimDone || wsT >= 1.2) { ws = WS.IDLE; wsT = 0; }
+      if (wpn.anim?._drawAnimDone || wsT >= 1.2) { 
+        ws = WS.IDLE; wsT = 0;
+        // Если новое оружие имеет 0 патронов и есть резерв - начать перезарядку
+        if (wpn.type === 'gun' && wpn.ammo === 0 && wpn.reserve > 0) {
+          ws = WS.RELOAD; wsT = 0;
+        } else if (lmbHeld && wpn.type === 'gun' && wpn.ammo > 0) {
+          // Если LMB зажата во время draw и есть патроны - начать стрельбу
+          wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
+        }
+      }
       break;
     }
     case WS.IDLE: {
@@ -529,9 +546,18 @@ function updateWeapon(dt) {
       p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
       r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
       if (wsT >= wpn.reloadTime) {
-        const take = Math.min(wpn.maxAmmo - wpn.ammo, wpn.reserve);
-        wpn.ammo += take; wpn.reserve -= take;
-        ws = WS.IDLE; wsT = 0;
+        // Не завершать перезарядку если она была прервана переключением оружия
+        if (!wpn._reloadInterrupted) {
+          const take = Math.min(wpn.maxAmmo - wpn.ammo, wpn.reserve);
+          wpn.ammo += take; wpn.reserve -= take;
+        }
+        wpn._reloadInterrupted = false;  // Очистить флаг для следующей перезарядки
+        // Если LMB зажата во время перезарядки и есть патроны - начать стрельбу
+        if (lmbHeld && wpn.ammo > 0) {
+          wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
+        } else {
+          ws = WS.IDLE; wsT = 0;
+        }
       }
       break;
     }
@@ -539,8 +565,17 @@ function updateWeapon(dt) {
       p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
       r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
       if (wpn.anim?._silAnimDone || wsT >= 4.0) {
-        _finishSilencer(wpn);
-        ws = WS.IDLE; wsT = 0;
+        // Не применять изменение глушителя если анимация была прервана переключением оружия
+        if (!wpn._silencerInterrupted) {
+          _finishSilencer(wpn);
+        }
+        wpn._silencerInterrupted = false;  // Очистить флаг для следующего переключения
+        // Если LMB зажата после смены глушителя и есть патроны - начать стрельбу
+        if (lmbHeld && wpn.ammo > 0) {
+          wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
+        } else {
+          ws = WS.IDLE; wsT = 0;
+        }
       }
       break;
     }
