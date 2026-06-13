@@ -234,12 +234,19 @@ const SHELLS_MAX  = 12;
 const SHELL_LIFE  = 6.0;   // seconds before removal
 const SHELL_G     = 800;   // gravity magnitude (GoldSrc units/s²)
 const _activeShells  = [];
-const _shellMeshSet  = new Set();   // for raycast exclusion
+const _shellMeshSet  = new Set();
 const _shellGeos     = {};
 const _shellMats     = {};
-const _shellRaycaster = new THREE.Raycaster();
-const _shellRayDir    = new THREE.Vector3(0, -1, 0);
-const _shellRayOrigin = new THREE.Vector3();
+const _shellRaycaster  = new THREE.Raycaster();
+const _shellRayDir     = new THREE.Vector3(0, -1, 0);
+const _shellRayOrigin  = new THREE.Vector3();
+let   _shellRayTargets = null;   // rebuilt once after map load
+
+function _rebuildShellRayTargets() {
+  _shellRayTargets = [];
+  scene.traverse(o => { if (o.isMesh && !_shellMeshSet.has(o)) _shellRayTargets.push(o); });
+}
+
 
 function _buildShellGeo(data) {
   const m   = data.meshes[0];
@@ -305,9 +312,9 @@ function _ejectShell(wpn) {
   const right = new THREE.Vector3(-fwd.z, 0, fwd.x).multiplyScalar(ejectSign);
   const rv = () => (Math.random() - 0.5) * 2;
   const vel = new THREE.Vector3()
-    .addScaledVector(right,                    80 + rv() * 20)
-    .addScaledVector(new THREE.Vector3(0,1,0), 90 + rv() * 20)
-    .addScaledVector(fwd,                     150 + rv() * 30);
+    .addScaledVector(right,                    70 + rv() * 45)
+    .addScaledVector(new THREE.Vector3(0,1,0), 75 + rv() * 30)
+    .addScaledVector(fwd,                      40 + rv() * 35);
 
   if (_activeShells.length >= SHELLS_MAX) {
     const old = _activeShells.shift();
@@ -330,11 +337,7 @@ function _ejectShell(wpn) {
 }
 
 function _updateShells(dt) {
-  const floorApprox = yawObj.position.y - SV.eyestand;   // approximate ground Y
-
-  // Build raycast target list once per call — shared by all shells this frame
-  const rayTargets = [];
-  scene.traverse(o => { if (o.isMesh && !_shellMeshSet.has(o)) rayTargets.push(o); });
+  const floorApprox = yawObj.position.y - SV.eyestand;
 
   for (let i = _activeShells.length - 1; i >= 0; i--) {
     const s = _activeShells[i];
@@ -347,28 +350,33 @@ function _updateShells(dt) {
     }
     if (s.grounded) continue;
 
-    // Gravity + integrate
     s.vel.y -= SHELL_G * dt;
     s.mesh.position.addScaledVector(s.vel, dt);
     s.mesh.rotation.x += s.angVel.x * dt;
     s.mesh.rotation.y += s.angVel.y * dt;
     s.mesh.rotation.z += s.angVel.z * dt;
 
-    // Ground check: raycast downward when shell is below eye and moving down
     if (s.vel.y < 0) {
-      _shellRayOrigin.copy(s.mesh.position).y += 8;
-      _shellRaycaster.set(_shellRayOrigin, _shellRayDir);
-      const hits = _shellRaycaster.intersectObjects(rayTargets, false);
-      const groundY = hits.length > 0 ? hits[0].point.y : floorApprox;
-
+      // Determine floor once per shell via single downward raycast
+      if (s.groundY === undefined && s.mesh.position.y < floorApprox + 150) {
+        if (_shellRayTargets) {
+          _shellRayOrigin.copy(s.mesh.position).y += 10;
+          _shellRaycaster.set(_shellRayOrigin, _shellRayDir);
+          const hits = _shellRaycaster.intersectObjects(_shellRayTargets, false);
+          s.groundY = hits.length ? hits[0].point.y : floorApprox;
+        } else {
+          s.groundY = floorApprox;
+        }
+      }
+      const groundY = s.groundY ?? floorApprox;
       if (s.mesh.position.y <= groundY + 1) {
         s.mesh.position.y = groundY;
         s.bounces++;
         const restitution = 0.4 - s.bounces * 0.08;
         if (restitution > 0.05 && s.bounces < 4) {
-          s.vel.y    = Math.abs(s.vel.y) * restitution;
-          s.vel.x   *= 0.75;
-          s.vel.z   *= 0.75;
+          s.vel.y  = Math.abs(s.vel.y) * restitution;
+          s.vel.x *= 0.75;
+          s.vel.z *= 0.75;
           s.angVel.multiplyScalar(0.55);
         } else {
           s.grounded = true;
@@ -481,6 +489,7 @@ let nextWpnIdx = -1;
 
 const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5, SILENCER: 6 };
 let ws = WS.DRAW, wsT = 0, wsIdleT = 0, wsHit = false;
+let meleeCooldown = 0;          // time (s) until the next knife attack is allowed
 let bobCycle = 0, bobAmt = 0;  // weapon bob state
 
 function curW() { return WPNS[curWpnIdx]; }
@@ -488,16 +497,28 @@ function curW() { return WPNS[curWpnIdx]; }
 // ── Skeletal animation system (per-weapon state) ─────────────────────────
 // Each weapon stores its own animation data in wpn.anim
 // GoldSrc MDL bone math: euler angles → quaternion → matrix
-function boneEulerMat(rx, ry, rz) {
+function lerpAngle(a, b, t) {
+  let d = b - a;
+  if (d >  Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+}
+
+function boneEulerQuat(rx, ry, rz, out) {
   const sr = Math.sin(rx * 0.5), cr = Math.cos(rx * 0.5);
   const sp = Math.sin(ry * 0.5), cp = Math.cos(ry * 0.5);
   const sy = Math.sin(rz * 0.5), cy = Math.cos(rz * 0.5);
-  const qx = sr*cp*cy - cr*sp*sy;
-  const qy = cr*sp*cy + sr*cp*sy;
-  const qz = cr*cp*sy - sr*sp*cy;
-  const qw = cr*cp*cy + sr*sp*sy;
+  return out.set(
+    sr*cp*cy - cr*sp*sy,
+    cr*sp*cy + sr*cp*sy,
+    cr*cp*sy - sr*sp*cy,
+    cr*cp*cy + sr*sp*sy
+  );
+}
+
+function boneEulerMat(rx, ry, rz) {
   return new THREE.Matrix4().makeRotationFromQuaternion(
-    new THREE.Quaternion(qx, qy, qz, qw)
+    boneEulerQuat(rx, ry, rz, new THREE.Quaternion())
   );
 }
 
@@ -597,6 +618,7 @@ function _beginDraw(idx) {
   curWpnIdx  = idx;
   nextWpnIdx = -1;
   ws = WS.DRAW; wsT = 0;
+  meleeCooldown = 0;
   const wpn = WPNS[curWpnIdx];
   wpn._reloadInterrupted = false;  // Очистить флаг прерывания при переключении на новое оружие
   wpn._silencerInterrupted = false;  // Очистить флаг глушителя при переключении
@@ -615,10 +637,50 @@ function hitCheck(maxDist) {
   // hit registered (no crosshair flash)
 }
 
+// True if a melee swing/stab from the eye would connect within `dist` units.
+function _meleeHits(dist) {
+  if (!gsPos || !gPlanes) return false;
+  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const cp   = Math.cos(pitch), spv = Math.sin(pitch);
+  const from = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
+  const fx   = -Math.sin(yaw)*cp, fy = Math.cos(yaw)*cp, fz = -spv;
+  const to   = [from[0]+fx*dist, from[1]+fy*dist, from[2]+fz*dist];
+  return traceMove(from, to).fraction < 1.0;
+}
+
+// Start a knife attack with original CS 1.6 timing and hit/miss animation set.
+//   LMB slash : hit → slash1/slash2 (0.25s),  miss → midslash1/midslash2 (0.4s)
+//   RMB stab  : hit → stab (1.1s),            miss → stab_miss (1.0s)
+function _startMeleeAttack(wpn, isStab) {
+  const hit = _meleeHits(48);
+  let seqName, cd;
+  if (isStab) {
+    seqName = hit ? 'stab' : 'stab_miss';
+    cd = hit ? 1.1 : 1.0;
+    ws = WS.STAB;
+  } else {
+    // LMB always plays the full swing (midslash1/midslash2 alternating); the
+    // slash1/slash2 sequences are 2-frame impact stubs, not real swings, so a
+    // hit must not shorten the visible animation. Hit only affects the cooldown.
+    const i = wpn.anim ? (wpn.anim._slashIdx = ((wpn.anim._slashIdx ?? -1) + 1) % 2) : 0;
+    seqName = i ? 'midslash2' : 'midslash1';
+    cd = hit ? 0.35 : 0.4;
+    ws = WS.SLASH;
+  }
+  wsT = 0; wsHit = false;
+  meleeCooldown = cd;
+  if (wpn.anim) {
+    wpn.anim._attackSeq = seqName;
+    wpn.anim._prevAttackWs = undefined;   // force frame reset in applySkeletalAnimation
+    wpn.anim._attackAnimDone = false;
+  }
+}
+
 function updateWeapon(dt) {
   const wpn = curW();
   if (!wpn.root) return;
   wsT += dt; wsIdleT += dt;
+  if (meleeCooldown > 0) meleeCooldown -= dt;
   const p = wpn.root.position, r = wpn.root.rotation;
   const eo = t => 1 - (1-t)*(1-t);
 
@@ -639,7 +701,7 @@ function updateWeapon(dt) {
       if (wsT <= dt * 1.5 && wpn.anim) restoreWeaponVertices(wpn);
       p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
       r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
-      if (wpn.anim?._drawAnimDone || wsT >= 1.2) { 
+      if (wpn.anim?._drawAnimDone || wsT >= 2.0) {
         ws = WS.IDLE; wsT = 0;
         // Если новое оружие имеет 0 патронов и есть резерв - начать перезарядку
         if (wpn.type === 'gun' && wpn.ammo === 0 && wpn.reserve > 0) {
@@ -657,6 +719,16 @@ function updateWeapon(dt) {
       break;
     }
     case WS.SLASH: {
+      if (wpn.anim) {
+        // Knife has a full skeletal swing+return animation that itself starts
+        // and ends in the idle pose — let it drive everything (original look),
+        // and only return to IDLE once it has finished its smooth recovery.
+        p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
+        r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
+        if (wsT >= 0.12 && !wsHit) { wsHit = true; hitCheck(32); }
+        if (wpn.anim._attackAnimDone || wsT >= 1.4) { ws = WS.IDLE; wsT = 0; wsHit = false; }
+        break;
+      }
       const PRE = 0.14, POST = 0.34;
       if (wsT < PRE) {
         const t = eo(wsT / PRE);
@@ -672,6 +744,13 @@ function updateWeapon(dt) {
       break;
     }
     case WS.STAB: {
+      if (wpn.anim) {
+        p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
+        r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
+        if (wsT >= 0.22 && !wsHit) { wsHit = true; hitCheck(32); }
+        if (wpn.anim._attackAnimDone || wsT >= 1.6) { ws = WS.IDLE; wsT = 0; wsHit = false; }
+        break;
+      }
       const PRE = 0.10, POST = 0.44;
       if (wsT < PRE) {
         const t = wsT / PRE;
@@ -758,6 +837,14 @@ function updateWeapon(dt) {
     }
   }
 
+  // Knife auto-repeat: while a mouse button is held, swing at the original
+  // CS fire rate (gated by meleeCooldown), interrupting the previous swing.
+  if (wpn.type === 'melee' && meleeCooldown <= 0 &&
+      (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB)) {
+    if      (lmbHeld) _startMeleeAttack(wpn, false);
+    else if (rmbHeld) _startMeleeAttack(wpn, true);
+  }
+
   // Skeletal animation
   const _gunAnimActive = wpn.type === 'gun' && wpn.anim?._gunAnimPlaying;
   if (wpn.anim && (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB || ws === WS.FIRE || ws === WS.RELOAD || ws === WS.DRAW || ws === WS.SILENCER || _gunAnimActive)) {
@@ -792,12 +879,43 @@ function restoreWeaponVertices(wpn) {
 // Vertices are baked in world-space at idle frame 0.
 // Skinning: v_new = M_cur × M_idle⁻¹ × v_orig  (in GoldSrc space, then axis-swap).
 
-function computeBoneWorlds(bones, framePose) {
+// Effective frame count for non-looping sequences: drops trailing duplicate
+// frames so animations don't hold a dead pose before transitioning out.
+function _seqActiveLen(seq) {
+  if (seq._activeLen !== undefined) return seq._activeLen;
+  const F = seq.frames;
+  let n = F.length;
+  const frameEq = (a, b) =>
+    a.length === b.length &&
+    a.every((row, i) => row.every((v, j) => Math.abs(v - b[i][j]) < 1e-4));
+  while (n > 1 && frameEq(F[n - 1], F[n - 2])) n--;
+  seq._activeLen = n;
+  return n;
+}
+
+function computeBoneWorlds(bones, poseA, poseB, t) {
   const R = [], T = [];
-  for (let i = 0; i < framePose.length; i++) {
-    const p = framePose[i];
-    const mat = boneEulerMat(p[3], p[4], p[5]);
-    const trans = new THREE.Vector3(p[0], p[1], p[2]);
+  const n = poseA.length;
+  for (let i = 0; i < n; i++) {
+    const a = poseA[i];
+    let tx, ty, tz;
+    let q;
+    if (poseB && t > 0) {
+      const b = poseB[i];
+      tx = a[0] + (b[0] - a[0]) * t;
+      ty = a[1] + (b[1] - a[1]) * t;
+      tz = a[2] + (b[2] - a[2]) * t;
+      // Slerp quaternions (correctly handles ±π euler representation flips,
+      // unlike independent per-axis angle lerp which causes "stuck record" glitches)
+      boneEulerQuat(a[3], a[4], a[5], _qBoneA);
+      boneEulerQuat(b[3], b[4], b[5], _qBoneB);
+      q = _qBoneR.copy(_qBoneA).slerp(_qBoneB, t);
+    } else {
+      tx = a[0]; ty = a[1]; tz = a[2];
+      q = boneEulerQuat(a[3], a[4], a[5], _qBoneA);
+    }
+    const mat   = new THREE.Matrix4().makeRotationFromQuaternion(q);
+    const trans = new THREE.Vector3(tx, ty, tz);
     const par = bones[i].parent;
     if (par >= 0 && R[par]) {
       mat.premultiply(R[par]);
@@ -810,6 +928,9 @@ function computeBoneWorlds(bones, framePose) {
 }
 
 const _skinVtmp = new THREE.Vector3();
+const _qBoneA = new THREE.Quaternion();
+const _qBoneB = new THREE.Quaternion();
+const _qBoneR = new THREE.Quaternion();
 
 function applySkeletalAnimation(wpn, dt) {
   if (!wpn.anim?.bones || !wpn.anim?.seqs || !wpn.originalPositions) return;
@@ -855,10 +976,13 @@ function applySkeletalAnimation(wpn, dt) {
       seqName = wpn.drawSeq || 'draw';
       if (wsT < dt * 2) wpn.anim.curFrame = 0;
     } else if (ws !== WS.IDLE) {
-      seqName = ws === WS.STAB ? 'stab' : 'midslash1';
-      if (wpn.anim._prevAttackWs !== ws) {
+      // Hit/miss sequence chosen at attack start by _startMeleeAttack.
+      seqName = wpn.anim._attackSeq || (ws === WS.STAB ? 'stab' : 'midslash1');
+      if (wpn.anim._prevAttackWs !== ws || wpn.anim._attackSeqPlaying !== seqName) {
         wpn.anim._prevAttackWs = ws;
+        wpn.anim._attackSeqPlaying = seqName;
         wpn.anim.curFrame = 0;
+        wpn.anim._attackAnimDone = false;
       }
     }
   }
@@ -868,14 +992,19 @@ function applySkeletalAnimation(wpn, dt) {
 
   wpn.anim._prevAnimWs = ws;
   const fps = seq.fps > 0 ? seq.fps : 30;
+  // For non-looping sequences, ignore trailing duplicate frames so the weapon
+  // doesn't freeze on a dead "held" pose for a fraction of a second at the end.
+  const endLen = (ws === WS.IDLE) ? seq.frames.length : _seqActiveLen(seq);
   wpn.anim.curFrame += dt * fps;
-  if (wpn.anim.curFrame >= seq.frames.length) {
+  if (wpn.anim.curFrame >= endLen) {
     if (ws === WS.IDLE) { wpn.anim.curFrame %= seq.frames.length; }  // loop
-    else wpn.anim.curFrame = seq.frames.length - 1;
+    else wpn.anim.curFrame = endLen - 1;
     if (ws === WS.SILENCER) {
       wpn.anim._silAnimDone = true;
     } else if (ws === WS.DRAW) {
       wpn.anim._drawAnimDone = true;
+    } else if (ws === WS.SLASH || ws === WS.STAB) {
+      wpn.anim._attackAnimDone = true;
     } else if (wpn.type === 'gun') {
       if (ws !== WS.RELOAD) {
         wpn.anim._gunAnimPlaying = false;
@@ -885,22 +1014,30 @@ function applySkeletalAnimation(wpn, dt) {
     }
   }
 
-  const frameIdx = Math.floor(wpn.anim.curFrame);
-  const currentPose = seq.frames[frameIdx];
-  if (!currentPose) return;
+  const numFrames = seq.frames.length;
+  const frameIdx  = Math.floor(wpn.anim.curFrame) % numFrames;
+  const frac      = wpn.anim.curFrame - Math.floor(wpn.anim.curFrame);
+  const poseA     = seq.frames[frameIdx];
+  if (!poseA) return;
+  const loops  = ws === WS.IDLE;
+  const nextIdx = loops
+    ? (frameIdx + 1) % numFrames
+    : Math.min(frameIdx + 1, numFrames - 1);
+  // Don't interpolate across loop boundary (frame[N-1]→frame[0]) — bad blend if they differ
+  const poseB = (frac > 0.0001 && nextIdx > frameIdx) ? seq.frames[nextIdx] : null;
 
   // Build idle bind-pose world transforms once and cache them
   if (!wpn.anim.idleWorld) {
     const idleSeqName = wpn.idleSeq || 'idle';
     const idleSeq = wpn.anim.seqs.find(s => s.name === idleSeqName);
     wpn.anim.idleWorld = (idleSeq?.frames.length)
-      ? computeBoneWorlds(wpn.anim.bones, idleSeq.frames[0])
+      ? computeBoneWorlds(wpn.anim.bones, idleSeq.frames[0], null, 0)
       : null;
   }
   if (!wpn.anim.idleWorld) return;
 
   const idle = wpn.anim.idleWorld;
-  const cur  = computeBoneWorlds(wpn.anim.bones, currentPose);
+  const cur  = computeBoneWorlds(wpn.anim.bones, poseA, poseB, frac);
 
   // Build per-bone skinning matrices in GoldSrc space.
   // Skinning: v_new_gs = R_cur × R_idle⁻¹ × (v_gs − t_idle) + t_cur
@@ -1040,6 +1177,7 @@ Promise.all([objPromise, hullPromise]).then(([obj, hull]) => {
     child.material = mat;
   });
   scene.add(obj);
+  _rebuildShellRayTargets();
 
   // ── Init collision + player ───────────────────────────────────────────
   initPhysics(hull);
@@ -1464,15 +1602,23 @@ document.addEventListener('keydown', e => {
 document.addEventListener('keyup', e => { keys[e.code] = false; });
 
 // ── Weapon input ──────────────────────────────────────────────────────────
-let lmbHeld = false;
+let lmbHeld = false, rmbHeld = false;
 document.addEventListener('mousedown', e => {
   if (e.button === 0) lmbHeld = true;
-  if (!isLocked || ws !== WS.IDLE) return;
+  if (e.button === 2) rmbHeld = true;
+  if (!isLocked) return;
   const wpn = curW();
+  // Knife: gated by meleeCooldown (CS rate); held-repeat handled in updateWeapon.
+  if (wpn.type === 'melee') {
+    if (meleeCooldown <= 0 && (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB)) {
+      if      (e.button === 0) _startMeleeAttack(wpn, false);
+      else if (e.button === 2) _startMeleeAttack(wpn, true);
+    }
+    return;
+  }
+  if (ws !== WS.IDLE) return;
   if (e.button === 0) {
-    if (wpn.type === 'melee') {
-      ws = WS.SLASH; wsT = 0;
-    } else if (wpn.type === 'gun') {
+    if (wpn.type === 'gun') {
       if (wpn.ammo > 0) {
         wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
       } else if (wpn.reserve > 0) {
@@ -1480,10 +1626,12 @@ document.addEventListener('mousedown', e => {
       }
     }
   }
-  if (e.button === 2 && wpn.type === 'melee') { ws = WS.STAB; wsT = 0; }
   if (e.button === 2 && wpn.type === 'gun')   toggleSilencer();
 });
-document.addEventListener('mouseup',  e => { if (e.button === 0) lmbHeld = false; });
+document.addEventListener('mouseup',  e => {
+  if (e.button === 0) lmbHeld = false;
+  if (e.button === 2) rmbHeld = false;
+});
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 // ── Render loop ───────────────────────────────────────────────────────────
