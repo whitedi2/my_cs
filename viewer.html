@@ -156,8 +156,9 @@ function _loadAdditiveSprite(src) {
 }
 
 const _mflashFrames = {
-  m4:  [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash3_0${n}.png`)),
-  usp: [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash2_0${n}.png`)),
+  m4:    [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash3_0${n}.png`)),
+  m4sil: [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash2_0${n}.png`)),
+  usp:   [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash2_0${n}.png`)),
 };
 
 // Orthographic 2D flash scene — aspect-ratio aware so square plane = square on screen
@@ -194,14 +195,15 @@ function _vmProjectNDC(v) {
 
 function _showFlash(wpn) {
   if (wpn.type !== 'gun') return;
-  if (wpn.silencer && wpn.id === 'usp') return;
-  const frames = _mflashFrames[wpn.id] ?? _mflashFrames.usp;
+  const key = (wpn.id === 'm4' && wpn.silencer) ? 'm4sil' : wpn.id;
+  const frames = _mflashFrames[key] ?? _mflashFrames.usp;
   const frame  = frames[Math.floor(Math.random() * frames.length)];
   if (!frame.tex) return;
   _flashMat2D.map = frame.tex;
   _flashMat2D.needsUpdate = true;
 
-  const frac = 0.32 + Math.random() * 0.22;
+  const silScale = wpn.silencer ? (wpn.flashSilScale ?? 0.45) : 1.0;
+  const frac = (0.32 + Math.random() * 0.22) * silScale;
   const sz   = frac * 2;   // NDC units; camera has equal pixel density in x and y
   const ar   = innerWidth / innerHeight;
 
@@ -225,6 +227,157 @@ function _tickFlash() {
   if (age >= _FLASH_MS) { _flashMesh2D.visible = false; return; }
   _flashMesh2D.visible = true;
   _flashMat2D.opacity = 1 - age / _FLASH_MS;
+}
+
+// ── Shell casings ─────────────────────────────────────────────────────────
+const SHELLS_MAX  = 12;
+const SHELL_LIFE  = 6.0;   // seconds before removal
+const SHELL_G     = 800;   // gravity magnitude (GoldSrc units/s²)
+const _activeShells  = [];
+const _shellMeshSet  = new Set();   // for raycast exclusion
+const _shellGeos     = {};
+const _shellMats     = {};
+const _shellRaycaster = new THREE.Raycaster();
+const _shellRayDir    = new THREE.Vector3(0, -1, 0);
+const _shellRayOrigin = new THREE.Vector3();
+
+function _buildShellGeo(data) {
+  const m   = data.meshes[0];
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(m.normals,   3));
+  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(m.uvs,       2));
+  geo.setIndex(m.indices);
+  return geo;
+}
+
+fetch('rshell.json').then(r => r.json()).then(data => {
+  _shellGeos.rifle = _buildShellGeo(data);
+  _shellMats.rifle = new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load(data.meshes[0].texFile) });
+});
+fetch('pshell.json').then(r => r.json()).then(data => {
+  _shellGeos.pistol = _buildShellGeo(data);
+  _shellMats.pistol = new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load(data.meshes[0].texFile) });
+});
+
+function _ejectShell(wpn) {
+  if (wpn.type !== 'gun') return;
+  const type = wpn.shellType ?? 'rifle';
+  if (!_shellGeos[type] || !_shellMats[type]) return;
+
+  yawObj.updateMatrixWorld(true);
+  const eyePos  = new THREE.Vector3();
+  camera.getWorldPosition(eyePos);
+  const fwd = new THREE.Vector3();
+  camera.getWorldDirection(fwd);
+
+  // Camera basis in world space for unprojection
+  const camRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  const camUp    = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  const fy = camera.projectionMatrix.elements[5];  // focal_y = 1/tan(fovY/2)
+  const ar = innerWidth / innerHeight;
+  const SPAWN_DEPTH = 8;   // spawn close to player — shells appear large at birth, shrink as they fly away
+
+  // Spawn at the ejection port's screen position, unprojected to world space.
+  // _vmProjectNDC returns the same screen NDC as the world camera projection,
+  // so we can use it to find the matching world position at SPAWN_DEPTH.
+  let pos;
+  if (wpn._ejectionLocal) {
+    wpn.root.updateMatrixWorld();
+    const vmPos = wpn._ejectionLocal.clone();
+    wpn.root.localToWorld(vmPos);
+    const [nx, ny] = _vmProjectNDC(vmPos);
+    pos = eyePos.clone()
+      .addScaledVector(fwd,      SPAWN_DEPTH)
+      .addScaledVector(camRight, nx * ar * SPAWN_DEPTH / fy)
+      .addScaledVector(camUp,    ny      * SPAWN_DEPTH / fy);
+  } else {
+    const ejectSign = rightHand ? -1 : 1;
+    pos = eyePos.clone()
+      .addScaledVector(fwd, SPAWN_DEPTH)
+      .addScaledVector(camRight, ejectSign * 5)
+      .addScaledVector(camUp, -6);
+  }
+
+  // Velocity: GoldSrc-style — forward + slight left + up
+  // ejectSign=-1 for rightHand: shells go world-left (appears left on screen, away from right-hand weapon)
+  const ejectSign = rightHand ? -1 : 1;
+  const right = new THREE.Vector3(-fwd.z, 0, fwd.x).multiplyScalar(ejectSign);
+  const rv = () => (Math.random() - 0.5) * 2;
+  const vel = new THREE.Vector3()
+    .addScaledVector(right,                    80 + rv() * 20)
+    .addScaledVector(new THREE.Vector3(0,1,0), 90 + rv() * 20)
+    .addScaledVector(fwd,                     150 + rv() * 30);
+
+  if (_activeShells.length >= SHELLS_MAX) {
+    const old = _activeShells.shift();
+    scene.remove(old.mesh);
+    _shellMeshSet.delete(old.mesh);
+  }
+
+  const mesh = new THREE.Mesh(_shellGeos[type], _shellMats[type]);
+  mesh.position.copy(pos);
+  mesh.rotation.set(Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2);
+  // no manual scale — model is already in GoldSrc world units
+  scene.add(mesh);
+  _shellMeshSet.add(mesh);
+
+  _activeShells.push({
+    mesh, vel,
+    angVel: new THREE.Vector3((rv())*18, (rv())*28, (rv())*18),
+    life: 0, bounces: 0, grounded: false,
+  });
+}
+
+function _updateShells(dt) {
+  const floorApprox = yawObj.position.y - SV.eyestand;   // approximate ground Y
+
+  // Build raycast target list once per call — shared by all shells this frame
+  const rayTargets = [];
+  scene.traverse(o => { if (o.isMesh && !_shellMeshSet.has(o)) rayTargets.push(o); });
+
+  for (let i = _activeShells.length - 1; i >= 0; i--) {
+    const s = _activeShells[i];
+    s.life += dt;
+    if (s.life > SHELL_LIFE) {
+      scene.remove(s.mesh);
+      _shellMeshSet.delete(s.mesh);
+      _activeShells.splice(i, 1);
+      continue;
+    }
+    if (s.grounded) continue;
+
+    // Gravity + integrate
+    s.vel.y -= SHELL_G * dt;
+    s.mesh.position.addScaledVector(s.vel, dt);
+    s.mesh.rotation.x += s.angVel.x * dt;
+    s.mesh.rotation.y += s.angVel.y * dt;
+    s.mesh.rotation.z += s.angVel.z * dt;
+
+    // Ground check: raycast downward when shell is below eye and moving down
+    if (s.vel.y < 0) {
+      _shellRayOrigin.copy(s.mesh.position).y += 8;
+      _shellRaycaster.set(_shellRayOrigin, _shellRayDir);
+      const hits = _shellRaycaster.intersectObjects(rayTargets, false);
+      const groundY = hits.length > 0 ? hits[0].point.y : floorApprox;
+
+      if (s.mesh.position.y <= groundY + 1) {
+        s.mesh.position.y = groundY;
+        s.bounces++;
+        const restitution = 0.4 - s.bounces * 0.08;
+        if (restitution > 0.05 && s.bounces < 4) {
+          s.vel.y    = Math.abs(s.vel.y) * restitution;
+          s.vel.x   *= 0.75;
+          s.vel.z   *= 0.75;
+          s.angVel.multiplyScalar(0.55);
+        } else {
+          s.grounded = true;
+          s.vel.set(0, 0, 0);
+          s.angVel.set(0, 0, 0);
+        }
+      }
+    }
+  }
 }
 
 // ── Weapon configs ────────────────────────────────────────────────────────
@@ -280,7 +433,8 @@ const WPNS = [
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12, type: 'gun',
-    muzzleBone: 41, muzzleOrg: [0, -18.5, 0],
+    muzzleBone: 41, muzzleOrg: [0, -14.25, 0], muzzleOrgSil: [0, -18.5, 0],
+    ejectionBone: 41, ejectionOrg: [0, -1.25, 0], shellType: 'rifle',
     flashSX: 0.5, flashSY: 0.5,
     ammo: 30, maxAmmo: 30,
     reserve: 90, reloadTime: 3.1,
@@ -302,7 +456,8 @@ const WPNS = [
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12, type: 'gun',
-    muzzleBone: 20, muzzleOrg: [2.6, -13.3, 2.0],
+    muzzleBone: 20, muzzleOrg: [2.6, -8.1, 1.5], muzzleOrgSil: [2.6, -13.3, 2.0],
+    ejectionBone: 42, ejectionOrg: [0, -1.5, 0], shellType: 'pistol',
     flashSX: 0.5, flashSY: 0.5,
     ammo: 12, maxAmmo: 12,
     reserve: 100, reloadTime: 2.7,
@@ -541,7 +696,7 @@ function updateWeapon(dt) {
       if (!wsHit) {
         wsHit = true;
         hitCheck(4096);
-        _showFlash(wpn);
+        wpn._pendingFire = true;   // defer flash+eject until _muzzleLocal is current
         const sc = wpn._shotCount || 0;
         wpn._shotCount = sc + 1;
         if (wpn.recoilTable) {
@@ -607,6 +762,13 @@ function updateWeapon(dt) {
   const _gunAnimActive = wpn.type === 'gun' && wpn.anim?._gunAnimPlaying;
   if (wpn.anim && (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB || ws === WS.FIRE || ws === WS.RELOAD || ws === WS.DRAW || ws === WS.SILENCER || _gunAnimActive)) {
     applySkeletalAnimation(wpn, dt);
+  }
+
+  // Fire effects deferred until after animation so _muzzleLocal/_ejectionLocal are current
+  if (wpn._pendingFire) {
+    wpn._pendingFire = false;
+    _showFlash(wpn);
+    _ejectShell(wpn);
   }
 }
 
@@ -778,13 +940,20 @@ function applySkeletalAnimation(wpn, dt) {
     posAttr.needsUpdate = true;
   });
 
-  // Cache muzzle attachment vmScene-local position for flash positioning
+  // Cache muzzle and ejection port positions in vmScene-local space
   if (wpn.muzzleBone !== undefined && cur.T[wpn.muzzleBone]) {
-    const org = wpn.muzzleOrg;
+    const org = (wpn.silencer && wpn.muzzleOrgSil) ? wpn.muzzleOrgSil : wpn.muzzleOrg;
     _muzzleGsTmp.set(org[0], org[1], org[2]).applyMatrix4(cur.R[wpn.muzzleBone]);
     _muzzleGsTmp.add(cur.T[wpn.muzzleBone]);
-    // GoldSrc → Three.js local: (x, z, -y)
-    wpn._muzzleLocal = new THREE.Vector3(_muzzleGsTmp.x, _muzzleGsTmp.z, -_muzzleGsTmp.y);
+    if (!wpn._muzzleLocal) wpn._muzzleLocal = new THREE.Vector3();
+    wpn._muzzleLocal.set(_muzzleGsTmp.x, _muzzleGsTmp.z, -_muzzleGsTmp.y);
+  }
+  if (wpn.ejectionBone !== undefined && cur.T[wpn.ejectionBone]) {
+    const org = wpn.ejectionOrg;
+    _muzzleGsTmp.set(org[0], org[1], org[2]).applyMatrix4(cur.R[wpn.ejectionBone]);
+    _muzzleGsTmp.add(cur.T[wpn.ejectionBone]);
+    if (!wpn._ejectionLocal) wpn._ejectionLocal = new THREE.Vector3();
+    wpn._ejectionLocal.set(_muzzleGsTmp.x, _muzzleGsTmp.z, -_muzzleGsTmp.y);
   }
 }
 
@@ -1362,6 +1531,7 @@ function animate(t) {
   const shouldFlip = curW().id === 'knife' ? !rightHand : rightHand;
   if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
   vmCamera.projectionMatrixInverse.copy(vmCamera.projectionMatrix).invert();
+  _updateShells(dt);
   _tickFlash();
   renderer.render(_flashScene2D, _flashOrtho);
   renderer.render(vmScene, vmCamera);

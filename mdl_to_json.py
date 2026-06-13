@@ -5,10 +5,11 @@ Exports v_knife.json with mesh in Three.js coordinate space (same as BSP exporte
 import struct, json, math, sys
 from pathlib import Path
 
-# Accept weapon name as positional arg; optional --pose <seqname>; optional --out <filename>.
+# Accept weapon name as positional arg; optional --pose <seqname>; optional --out <filename>; optional --mdl <full_path>.
 weapon_name = 'knife'
 pose_override = None   # e.g. 'idle_unsil'
 out_override  = None   # e.g. 'v_usp_sil.json'
+mdl_override  = None   # full path to .mdl file
 _args = sys.argv[1:]
 i = 0
 while i < len(_args):
@@ -16,6 +17,8 @@ while i < len(_args):
         pose_override = _args[i + 1]; i += 2
     elif _args[i] == '--out' and i + 1 < len(_args):
         out_override = _args[i + 1]; i += 2
+    elif _args[i] == '--mdl' and i + 1 < len(_args):
+        mdl_override = _args[i + 1]; i += 2
     elif not _args[i].startswith('-'):
         _stem = Path(_args[i]).stem
         weapon_name = _stem[2:] if _stem.startswith('v_') else _stem
@@ -23,11 +26,14 @@ while i < len(_args):
     else:
         i += 1
 
-try:
-    from config import CSTRIKE_PATH
-    MDL_PATH = Path(CSTRIKE_PATH) / "models" / f"v_{weapon_name}.mdl"
-except Exception:
-    MDL_PATH = Path(f"v_{weapon_name}.mdl")
+if mdl_override:
+    MDL_PATH = Path(mdl_override)
+else:
+    try:
+        from config import CSTRIKE_PATH
+        MDL_PATH = Path(CSTRIKE_PATH) / "models" / f"v_{weapon_name}.mdl"
+    except Exception:
+        MDL_PATH = Path(f"v_{weapon_name}.mdl")
 
 if not MDL_PATH.exists():
     sys.exit(f"MDL not found: {MDL_PATH}")
