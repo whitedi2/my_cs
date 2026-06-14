@@ -251,7 +251,7 @@ function _rebuildShellRayTargets() {
 // ── Bullet hole / knife mark decals ───────────────────────────────────────
 const DECAL_MAX         = 64;
 const DECAL_SIZE_BULLET = 14;   // GoldSrc units
-const DECAL_SIZE_KNIFE  = 22;   // GoldSrc units
+const DECAL_SIZE_KNIFE  = 28;   // GoldSrc units (slash mark)
 const _activeDecals     = [];
 const _decalMeshSet     = new Set();
 const _decalRaycaster   = new THREE.Raycaster();
@@ -269,13 +269,74 @@ function _loadDecalTex(url) {
   return tex;
 }
 const _decalCacheBust = '?v=' + Date.now();   // force fresh PNGs past browser cache
+
+// Procedural knife-slash decal: dark cut strokes on white (white = identity
+// under MultiplyBlending, dark = darkens the wall). Each stroke is a filled
+// spindle — fat in the middle, tapering to points at both ends — so it reads as
+// a real cut rather than a flat line. The decal is oriented to the swing
+// direction (see _spawnDecal), not spun randomly.
+function _drawTaperedCut(g, x0, y0, x1, y1, sag, maxW, color) {
+  const N  = 26;
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2 + sag;
+  const top = [], bot = [];
+  for (let i = 0; i <= N; i++) {
+    const t  = i / N, it = 1 - t;
+    const px = it*it*x0 + 2*it*t*mx + t*t*x1;
+    const py = it*it*y0 + 2*it*t*my + t*t*y1;
+    const dx = 2*it*(mx-x0) + 2*t*(x1-mx);
+    const dy = 2*it*(my-y0) + 2*t*(y1-my);
+    const l  = Math.hypot(dx, dy) || 1;
+    const nx = -dy / l, ny = dx / l;
+    const w  = maxW * Math.pow(Math.sin(Math.PI * t), 0.65) * 0.5;   // 0 at ends, fat mid
+    top.push([px + nx*w, py + ny*w]);
+    bot.push([px - nx*w, py - ny*w]);
+  }
+  g.fillStyle = color;
+  g.beginPath();
+  g.moveTo(top[0][0], top[0][1]);
+  for (let i = 1; i < top.length; i++) g.lineTo(top[i][0], top[i][1]);
+  for (let i = bot.length - 1; i >= 0; i--) g.lineTo(bot[i][0], bot[i][1]);
+  g.closePath();
+  g.fill();
+}
+
+function _makeSlashTexture(seed) {
+  const S = 64;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, S, S);
+  let r = seed * 9301 + 49297;
+  const rnd = () => { r = (r * 9301 + 49297) % 233280; return r / 233280; };
+  const cy  = S / 2 + (rnd() - 0.5) * 6;
+  const len = S * (0.78 + rnd() * 0.15);
+  const x0  = (S - len) / 2, x1 = x0 + len;
+  const sag = (rnd() - 0.5) * 7;
+  // main cut — single tapered spindle (mid-grey so it darkens the wall gently,
+  // matching the bullet decals rather than reading as solid black)
+  _drawTaperedCut(g, x0, cy, x1, cy + (rnd() - 0.5) * 4, sag, 3.0 + rnd() * 1.6, 'rgba(78,78,78,1)');
+  // occasionally one short, faint nick beside it (kept subtle so it reads as one cut)
+  if (rnd() < 0.5) {
+    const off = (rnd() - 0.5) * 7;
+    _drawTaperedCut(g, x0 + len*0.25, cy + off, x1 - len*0.25, cy + off + (rnd()-0.5)*3,
+                    sag * 0.6, 1.0 + rnd() * 0.6, `rgba(120,120,120,${0.3 + rnd()*0.2})`);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace      = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
+
 const _decalTex = {
-  bullet: [1,2,3,4,5].map(i => _loadDecalTex('decals/shot'    + i + '.png' + _decalCacheBust)),
-  knife:  [1,2,3,4,5].map(i => _loadDecalTex('decals/bigshot' + i + '.png' + _decalCacheBust)),
+  bullet: [1,2,3,4,5].map(i => _loadDecalTex('decals/shot' + i + '.png' + _decalCacheBust)),
+  knife:  [0,1,2,3,4].map(s => _makeSlashTexture(s * 1000 + 7)),   // experimental cut marks
 };
 const _decalMatsCache = {};
 const _decalGeo       = new THREE.PlaneGeometry(1, 1);
 const _decalZAxis     = new THREE.Vector3(0, 0, 1);
+const _decalWorldUp   = new THREE.Vector3(0, 1, 0);
 
 function _getDecalMat(tex) {
   if (!_decalMatsCache[tex.uuid]) {
@@ -294,7 +355,9 @@ function _getDecalMat(tex) {
 // type = 'bullet' | 'knife'; raycasts the visual mesh along the current aim
 // (matches the camera forward exactly, incl. view kick) so it lands at the crosshair.
 // spread = per-shot random cone half-angle (radians), 0 for none.
-function _spawnDecal(type, maxDist, spread) {
+// roll  = if a number, orient the decal in the wall plane at this angle (cut
+//         direction); if undefined, spin it randomly (bullet holes).
+function _spawnDecal(type, maxDist, spread, roll) {
   if (!_shellRayTargets || !gsPos) return;
 
   // Random cone inaccuracy (uniform disc) added on top of the aim
@@ -334,9 +397,24 @@ function _spawnDecal(type, maxDist, spread) {
   mesh.scale.setScalar(size);
   mesh.renderOrder = _decalRenderOrder++;   // newer decals always render on top of older
 
-  const q = new THREE.Quaternion().setFromUnitVectors(_decalZAxis, norm);
-  const r = new THREE.Quaternion().setFromAxisAngle(norm, Math.random() * Math.PI * 2);
-  mesh.quaternion.copy(r).multiply(q);
+  if (roll === undefined) {
+    // Bullet hole — symmetric, random spin around the surface normal.
+    const q = new THREE.Quaternion().setFromUnitVectors(_decalZAxis, norm);
+    const r = new THREE.Quaternion().setFromAxisAngle(norm, Math.random() * Math.PI * 2);
+    mesh.quaternion.copy(r).multiply(q);
+  } else {
+    // Knife cut — orient in the wall plane: build a basis from the wall's
+    // horizontal (right) and vertical (up), then roll by the swing angle so the
+    // cut sits in a consistent plane instead of a random tilt.
+    let right = new THREE.Vector3().crossVectors(_decalWorldUp, norm);
+    if (right.lengthSq() < 1e-4) right.set(1, 0, 0);   // wall is floor/ceiling
+    right.normalize();
+    const up = new THREE.Vector3().crossVectors(norm, right).normalize();
+    const c = Math.cos(roll), s = Math.sin(roll);
+    const rx = right.clone().multiplyScalar(c).addScaledVector(up, s);
+    const ry = up.clone().multiplyScalar(c).addScaledVector(right, -s);
+    mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(rx, ry, norm));
+  }
   mesh.position.copy(pos);
 
   scene.add(mesh);
@@ -738,11 +816,15 @@ function _meleeHits(dist) {
 function _startMeleeAttack(wpn, isStab) {
   const meleeResult = _meleeHits(48);
   const hit = meleeResult !== null;
-  let seqName, cd;
+  // Cut orientation (right-hand weapon): LMB = one diagonal upper-left→lower-right,
+  // RMB = near-horizontal. Mirrored for a left-hand weapon. Small jitter only.
+  const handSign = rightHand ? 1 : -1;
+  let seqName, cd, cutRoll;
   if (isStab) {
     seqName = hit ? 'stab' : 'stab_miss';
     cd = hit ? 1.1 : 1.0;
     ws = WS.STAB;
+    cutRoll = handSign * -0.12 + (Math.random() - 0.5) * 0.1;   // RMB → near-horizontal
   } else {
     // LMB always plays the full swing (midslash1/midslash2 alternating); the
     // slash1/slash2 sequences are 2-frame impact stubs, not real swings, so a
@@ -751,8 +833,9 @@ function _startMeleeAttack(wpn, isStab) {
     seqName = i ? 'midslash2' : 'midslash1';
     cd = hit ? 0.35 : 0.4;
     ws = WS.SLASH;
+    cutRoll = handSign * -0.35 + (Math.random() - 0.5) * 0.12;  // LMB → shallow diagonal upper-left→lower-right
   }
-  if (hit) _spawnDecal('knife', 64);
+  if (hit) _spawnDecal('knife', 64, 0, cutRoll);
   wsT = 0; wsHit = false;
   meleeCooldown = cd;
   if (wpn.anim) {
