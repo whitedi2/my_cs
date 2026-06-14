@@ -90,7 +90,7 @@ for bp in range(NBODY):
             print(f"  Mesh {mi}: {len(bone_indices)} vertices with bone indices")
 
 # ── Write skin JSON ───────────────────────────────────────────────────────
-out_path = Path(__file__).parent / f"v_{weapon_name}_skin.json"
+out_path = Path(__file__).parent.parent / "models" / f"v_{weapon_name}_skin.json"
 with open(out_path, 'w') as fh:
     json.dump(skin_data, fh, separators=(',', ':'))
 

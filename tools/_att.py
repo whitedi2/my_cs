@@ -1,7 +1,7 @@
 import json, struct, math
 
 # ── M4A1 bones ───────────────────────────────────────────────────────────────
-with open("v_m4a1_anim.json") as f:
+with open("models/v_m4a1_anim.json") as f:
     d = json.load(f)
 bones = d["bones"]
 print("M4A1 total bones:", len(bones))
@@ -12,7 +12,7 @@ while b != -1:
     b = bones[b]["parent"]
 print("Bone41 chain:", " -> ".join(chain))
 
-with open("v_usp_anim.json") as f:
+with open("models/v_usp_anim.json") as f:
     d2 = json.load(f)
 b2 = d2["bones"]
 b = 20

@@ -103,7 +103,7 @@ solid_heads      = sh1
 solid_heads_duck = sh3
 
 # ── Output ────────────────────────────────────────────────────────────────────
-out_path = Path(__file__).parent / (Path(BSP).stem + '_hull.json')
+out_path = Path(__file__).parent.parent / "maps" / (Path(BSP).stem + '_hull.json')
 result = {
     'hull1_head':   headnodes[1],
     'hull3_head':   headnodes[3],   # duck hull (-16,-16,-18)→(16,16,18)

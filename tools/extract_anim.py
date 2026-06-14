@@ -144,7 +144,7 @@ result = {
     'sequences': sequences,
 }
 
-out_path = Path(__file__).parent / f"v_{weapon_name}_anim.json"
+out_path = Path(__file__).parent.parent / "models" / f"v_{weapon_name}_anim.json"
 with open(out_path, 'w') as fh:
     json.dump(result, fh, separators=(',', ':'))
 

@@ -1,6 +1,6 @@
 import json, math
 
-with open('v_knife_anim.json') as f:
+with open('models/v_knife_anim.json') as f:
     d = json.load(f)
 
 bones = d['bones']

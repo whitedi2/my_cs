@@ -45,7 +45,7 @@ except ImportError:
     HAS_PIL = False
     print("Pillow not installed — textures skipped")
 
-OUT_DIR = Path(__file__).parent
+OUT_DIR = Path(__file__).parent.parent
 (OUT_DIR / "textures").mkdir(exist_ok=True)
 
 raw = MDL_PATH.read_bytes()
@@ -332,7 +332,7 @@ result = {
     'textures':  textures_out,
     'bbox':      bbox,
 }
-out_path = OUT_DIR / (out_override if out_override else f"v_{weapon_name}.json")
+out_path = OUT_DIR / "models" / (out_override if out_override else f"v_{weapon_name}.json")
 with open(out_path, 'w') as fh:
     json.dump(result, fh, separators=(',', ':'))
 size_kb = out_path.stat().st_size // 1024

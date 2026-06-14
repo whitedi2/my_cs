@@ -388,5 +388,5 @@ if __name__ == '__main__':
     from config import CSTRIKE_PATH
     bsp = sys.argv[1] if len(sys.argv) > 1 else \
         CSTRIKE_PATH / "maps" / "de_dust2.bsp"
-    out = sys.argv[2] if len(sys.argv) > 2 else Path(".").absolute()
+    out = sys.argv[2] if len(sys.argv) > 2 else Path(__file__).parent.parent / "maps"
     convert(bsp, out)
