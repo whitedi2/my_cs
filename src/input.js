@@ -3,16 +3,75 @@
 // OBJLoader, MTLLoader are globals set in viewer.html). No imports/exports.
 
 // ── Pointer Lock ──────────────────────────────────────────────────────────
-let isLocked = false;
-document.getElementById('overlay').addEventListener('click', () => {
+let isLocked = false, hasStarted = false;
+const $overlay    = document.getElementById('overlay');
+const $btnPlay    = document.getElementById('btn-play');
+const $btnRestart = document.getElementById('btn-restart');
+let gameLoading = false;
+const $gameload = document.getElementById('gameload');
+const $glFill = document.getElementById('gl-fill');
+const $glPct  = document.getElementById('gl-pct');
+
+function _startGame() {
+  if (!mapReady) return;          // map still streaming
+  loadWeaponModels();             // other assets load lazily on first Start
+  loadPlayerModel();
+  // Lock now (needs the click gesture); cover the still-loading models with a
+  // progress screen and reveal the game only once everything is ready.
+  if (!gameAssetsReady()) { gameLoading = true; $gameload.style.display = 'flex'; }
   renderer.domElement.requestPointerLock();
+}
+$btnPlay.addEventListener('click', _startGame);
+$btnRestart.addEventListener('click', () => { if (typeof respawn === 'function') respawn(); _startGame(); });
+
+// ── Menu map preview: drag to rotate (auto-rotates otherwise) ───────────────
+let _menuDragging = false, _menuLastX = 0, _menuLastY = 0;
+$overlay.addEventListener('mousedown', e => {
+  if (isLocked || !mapReady) return;
+  if (e.target.closest('#menu')) return;                 // not over the card
+  if (e.clientX < innerWidth * MENU_LEFT_FRAC) return;   // only over the map area
+  _menuDragging = true; _menuLastX = e.clientX; _menuLastY = e.clientY;
 });
-document.getElementById('settings').addEventListener('click', e => e.stopPropagation());
+window.addEventListener('mousemove', e => {
+  if (!_menuDragging) return;
+  menuAzimuth -= (e.clientX - _menuLastX) * 0.006;
+  menuElev = Math.max(0.25, Math.min(1.45, menuElev - (e.clientY - _menuLastY) * 0.006));
+  _menuLastX = e.clientX; _menuLastY = e.clientY;
+});
+window.addEventListener('mouseup', () => { _menuDragging = false; });
+
+// Render the rotating map into the right-hand region; dark fill elsewhere.
+function _renderMenuBackdrop(dt) {
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, innerWidth, innerHeight);
+  renderer.setClearColor(0x0a0c10, 1);
+  renderer.clear(true, true, true);
+  if (!mapReady) return;
+  if (!_menuDragging) menuAzimuth += dt * 0.12;   // slow auto-rotate
+  frameMenuCamera();
+  const reg = _menuRegion();
+  renderer.setScissorTest(true);
+  renderer.setViewport(reg.x, reg.y, reg.w, reg.h);
+  renderer.setScissor(reg.x, reg.y, reg.w, reg.h);
+  renderer.clear(true, true, true);
+  const savedFog = scene.fog, savedBg = scene.background;
+  scene.fog = null; scene.background = null;       // dark backdrop, only the map shows
+  renderer.render(scene, menuCamera);
+  scene.fog = savedFog; scene.background = savedBg;
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, innerWidth, innerHeight);
+}
 let mouseIgnore = 0;   // events to skip after pointer lock (avoid initial large delta)
 document.addEventListener('pointerlockchange', () => {
   isLocked = document.pointerLockElement === renderer.domElement;
-  if (isLocked) mouseIgnore = 5;
-  document.getElementById('overlay').style.display    = isLocked ? 'none'  : 'flex';
+  if (isLocked) { mouseIgnore = 5; hasStarted = true; }
+  else {
+    // Menu shown (first time or paused): primary button label + restart visibility.
+    $btnPlay.textContent      = hasStarted ? 'Продолжить' : 'Начать игру';
+    $btnRestart.style.display = hasStarted ? '' : 'none';
+    gameLoading = false; $gameload.style.display = 'none';   // ESC during load → back to menu
+  }
+  $overlay.style.display = isLocked ? 'none' : 'flex';
   document.getElementById('crosshair').style.display  = isLocked ? 'block' : 'none';
   document.getElementById('hud').style.display        = isLocked ? 'block' : 'none';
   document.getElementById('keys').style.display       = isLocked ? 'block' : 'none';
@@ -141,7 +200,15 @@ function animate(t) {
   pitch  = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
   pendingYaw = pendingPitch = 0;
 
-  if (isLocked && gsPos) {
+  // While the Start loading screen is up, update it and don't simulate yet.
+  if (gameLoading) {
+    const p = Math.round(gameAssetsProgress() * 100);
+    $glFill.style.width = p + '%';
+    $glPct.textContent = p + '%';
+    if (gameAssetsReady()) { gameLoading = false; $gameload.style.display = 'none'; }
+  }
+
+  if (isLocked && gsPos && !gameLoading) {
     playerMove(dt);
     updateWeapon(dt);
     updatePlayerModel(dt);
@@ -176,20 +243,25 @@ function animate(t) {
   }
   updateChaseCamera();               // third-person: pull camera back; else recenter
 
-  renderer.clear();
-  renderer.render(scene, camera);
-  renderer.clearDepth();
-  _updateShells(dt);
-  // In third-person the view-model/muzzle-flash overlay is hidden (we see the
-  // world-space player model instead).
-  if (!thirdPerson) {
-    vmCamera.updateProjectionMatrix();
-    const shouldFlip = curW().id === 'knife' ? !rightHand : rightHand;
-    if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
-    vmCamera.projectionMatrixInverse.copy(vmCamera.projectionMatrix).invert();
-    _tickFlash();
-    renderer.render(_flashScene2D, _flashOrtho);
-    renderer.render(vmScene, vmCamera);
+  if (!isLocked) {
+    _renderMenuBackdrop(dt);     // rotating map in the right region; card is HTML on the left
+  } else {
+    _tickFlashWorld();              // fade the third-person world muzzle flash
+    renderer.clear();
+    renderer.render(scene, camera);
+    renderer.clearDepth();
+    _updateShells(dt);
+    // In third-person the view-model/muzzle-flash overlay is hidden (we see the
+    // world-space player model instead).
+    if (!thirdPerson) {
+      vmCamera.updateProjectionMatrix();
+      const shouldFlip = curW().id === 'knife' ? !rightHand : rightHand;
+      if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
+      vmCamera.projectionMatrixInverse.copy(vmCamera.projectionMatrix).invert();
+      _tickFlash();
+      renderer.render(_flashScene2D, _flashOrtho);
+      renderer.render(vmScene, vmCamera);
+    }
   }
 }
 animate(0);
@@ -202,5 +274,6 @@ window.addEventListener('resize', () => {
   const ar = innerWidth / innerHeight;
   _flashOrtho.left = -ar; _flashOrtho.right = ar;
   _flashOrtho.updateProjectionMatrix();
+  frameMenuCamera();                  // re-fit the top-down menu view to the new aspect
   renderer.setSize(innerWidth, innerHeight);
 });

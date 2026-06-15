@@ -29,10 +29,12 @@ function updateOrbit(dt) {
   orbitPitch = Math.max(-1.2, Math.min(1.2, orbitPitch));
 }
 
-// Player models are unlit-by-default in the world scene (map uses MeshBasicMaterial),
-// so give the rig its own light so its form reads. These only affect lit materials.
-scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-const _plSun = new THREE.DirectionalLight(0xffffff, 0.7);
+// Model lighting. The map's baked light lives in its vertex colors; each frame we
+// sample the floor light under the player (see _updateModelLight) and put it on the
+// material color, so the model darkens in shadow like in the original. The ambient
+// is near-full (the sampled color sets the level); a weak directional adds form.
+scene.add(new THREE.AmbientLight(0xffffff, 0.95));
+const _plSun = new THREE.DirectionalLight(0xffffff, 0.28);
 _plSun.position.set(0.6, 1, 0.4);
 scene.add(_plSun);
 
@@ -44,9 +46,14 @@ const player = {
   boneIndices: null,
   bindWorld: null,
   phase: 0,
+  lightCol: new THREE.Color(1, 1, 1),   // smoothed floor light tint
+  handWorld: new THREE.Vector3(),       // right-hand world pos (for shell ejection)
+  hasHandWorld: false,
+  muzzleWorld: new THREE.Vector3(),     // gun muzzle world pos (for third-person flash)
+  hasMuzzleWorld: false,
 };
 
-const _plTexLoader = new THREE.TextureLoader();
+const _plTexLoader = new THREE.TextureLoader(_assetMgr);   // tracked for the loading screen
 
 // Build a skinnable rig group from a model's mesh list.
 function _buildRig(meshList) {
@@ -71,7 +78,13 @@ function _buildRig(meshList) {
   return { root, meshes, originalPositions, boneIndices };
 }
 
-fetch(`models/player_${PLAYER_MODEL}.json`).then(r => r.json()).then(data => {
+// Deferred: called once at "Start" so the ~2 MB player bundle isn't fetched on page load.
+let _playerLoaded = false;
+function loadPlayerModel() {
+  if (_playerLoaded) return;
+  _playerLoaded = true;
+  _trackFetchStart();
+  fetch(`models/player_${PLAYER_MODEL}.json`).then(r => r.json()).then(data => {
   const rig = _buildRig(data.meshes);
   rig.root.visible = false;
   scene.add(rig.root);
@@ -106,10 +119,13 @@ fetch(`models/player_${PLAYER_MODEL}.json`).then(r => r.json()).then(data => {
   player.nameToIdx = {};
   data.bones.forEach((b, i) => { player.nameToIdx[b.name] = i; });
   player.twistMap = _legTwistMap(data.bones);   // gait-yaw: legs twist, torso holds the aim
+  player.handBone = player.nameToIdx['Bip01 R Hand'];   // shell-ejection point
 
   console.log(`Player model loaded: ${data.name} (${data.bones.length} bones, ${data.sequences.length} seqs)`);
-  _loadGunRigs();
-}).catch(err => console.warn('player model not loaded:', err));
+  _loadGunRigs();          // starts the gun fetches (tracked) before ending this one
+  _trackFetchEnd();
+  }).catch(err => { _trackFetchEnd(); console.warn('player model not loaded:', err); });
+}
 
 // ── World weapon models attached to the player's hand ───────────────────────
 // p_<weapon>.json carries the gun mesh + its own copy of the player skeleton.
@@ -121,6 +137,7 @@ const _GUN_FILES = { m4: 'models/p_m4a1.json', usp: 'models/p_usp.json', knife: 
 
 function _loadGunRigs() {
   for (const [id, file] of Object.entries(_GUN_FILES)) {
+    _trackFetchStart();
     fetch(file).then(r => r.json()).then(data => {
       const rig = _buildRig(data.meshes);
       rig.root.visible = false;
@@ -131,7 +148,8 @@ function _loadGunRigs() {
         bones: data.bones, bindFrame: data.bindFrame,
         bindWorld: computeBoneWorlds(data.bones, data.bindFrame, null, 0),
       };
-    }).catch(err => console.warn(`gun rig ${file} not loaded:`, err));
+      _trackFetchEnd();
+    }).catch(err => { _trackFetchEnd(); console.warn(`gun rig ${file} not loaded:`, err); });
   }
 }
 
@@ -360,6 +378,7 @@ function _resolveUpperPose(dt) {
 }
 
 const _plSkinTmp = new THREE.Vector3();
+const _plHandTmp = new THREE.Vector3();
 
 // ── Per-frame update (called from the render loop) ──────────────────────────
 function updatePlayerModel(dt) {
@@ -431,7 +450,35 @@ function updatePlayerModel(dt) {
   const originY = onGround ? floorZ + 36 - 18 * d : gsPos[2];
   player.root.position.set(gsPos[0], originY, -gsPos[1]);
 
+  // Cache the right-hand world position for third-person shell ejection.
+  if (player.handBone !== undefined && cur.T[player.handBone]) {
+    player.root.updateMatrixWorld();
+    const h = cur.T[player.handBone];
+    _plHandTmp.set(h.x, h.z, -h.y);         // GoldSrc model space → Three local
+    player.handWorld.copy(player.root.localToWorld(_plHandTmp));
+    player.hasHandWorld = true;
+  }
+
   _updateWeaponAttachment(_qF, _tF);   // gun rides the torso → already on the aim, no twist
+  _updateModelLight(dt);               // tint by the map's baked light (darken in shadow)
+}
+
+// Eject a shell from the third-person model's gun (world space), as in the
+// original where you see other players' brass. Right-ish + up + slightly back.
+function _ejectShellThirdPerson(wpn) {
+  if (!player.hasHandWorld) return;
+  const type = wpn.shellType ?? 'rifle';
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const right = new THREE.Vector3(cy, 0, -sy);   // player's right (world)
+  const up    = new THREE.Vector3(0, 1, 0);
+  const fwd   = new THREE.Vector3(-sy, 0, -cy);  // player's forward (world)
+  const rv = () => (Math.random() - 0.5) * 2;
+  const pos = player.handWorld.clone().addScaledVector(up, 3);
+  const vel = new THREE.Vector3()
+    .addScaledVector(right, 75 + rv() * 35)
+    .addScaledVector(up,    85 + rv() * 25)
+    .addScaledVector(fwd,  -10 + rv() * 25);
+  _spawnShell(type, pos, vel);
 }
 
 // Skin a rig's vertices: v_new = R_cur · R_bind⁻¹ · (v − t_bind) + t_cur (GoldSrc
@@ -496,6 +543,56 @@ function _updateWeaponAttachment(plQ, plT) {
   }
   const cur = _fkQ(rig.bones, _gq, _gt);
   _skinRig(rig.meshes, rig.originalPositions, rig.boneIndices, rig.bones, cur, rig.bindWorld);
+
+  // Cache the muzzle ('flash' bone) world position for the third-person flash.
+  if (rig.muzzleBone === undefined)
+    rig.muzzleBone = rig.bones.findIndex(b => /flash|muzzle/i.test(b.name));
+  if (rig.muzzleBone >= 0 && cur.T[rig.muzzleBone]) {
+    const m = cur.T[rig.muzzleBone];
+    _plHandTmp.set(m.x, m.z, -m.y);
+    player.root.updateMatrixWorld();
+    player.muzzleWorld.copy(player.root.localToWorld(_plHandTmp));
+    player.hasMuzzleWorld = true;
+  }
+}
+
+// Fire the third-person muzzle flash at the cached gun muzzle.
+function _muzzleFlashThirdPerson(wpn) {
+  if (player.hasMuzzleWorld) _showFlashWorld(player.muzzleWorld, wpn);
+}
+
+// ── Model lighting from the map (GoldSrc R_LightPoint) ──────────────────────
+// Trace down to the floor and read the baked lightmap (the map's vertex colors),
+// then tint the player + active gun materials with it so the model darkens in
+// shadow and brightens in light, as in the original. Smoothed to avoid flicker.
+const _DOWN = new THREE.Vector3(0, -1, 0);
+const _lightOrigin = new THREE.Vector3();
+const _lightRay = new THREE.Raycaster();
+function _updateModelLight(dt) {
+  if (!gsPos || !_shellRayTargets) return;
+  _lightOrigin.set(gsPos[0], gsPos[2] + 16, -gsPos[1]);
+  _lightRay.set(_lightOrigin, _DOWN);
+  _lightRay.far = 4096;
+  const hits = _lightRay.intersectObjects(_shellRayTargets, false);
+  let r = 1, g = 1, b = 1;
+  const hit = hits.length ? hits[0] : null;
+  if (hit && hit.face) {
+    const col = hit.object.geometry.getAttribute('color');
+    if (col) {
+      const f = hit.face;
+      r = (col.getX(f.a) + col.getX(f.b) + col.getX(f.c)) / 3;
+      g = (col.getY(f.a) + col.getY(f.b) + col.getY(f.c)) / 3;
+      b = (col.getZ(f.a) + col.getZ(f.b) + col.getZ(f.c)) / 3;
+    }
+  }
+  const k = 1 - Math.exp(-8 * dt);
+  player.lightCol.r += (r - player.lightCol.r) * k;
+  player.lightCol.g += (g - player.lightCol.g) * k;
+  player.lightCol.b += (b - player.lightCol.b) * k;
+  for (const m of player.meshes) m.material.color.copy(player.lightCol);
+  const id = (typeof curW === 'function' && curW()) ? curW().id : null;
+  const rig = _gunRigs[id];
+  if (rig) for (const m of rig.meshes) m.material.color.copy(player.lightCol);
 }
 
 // ── Chase camera: pull the FPS camera back behind the eye ───────────────────

@@ -1,10 +1,15 @@
-// load.js — map/asset loading bootstrap (loaded after physics so initPhysics exists).
+// load.js — map loading bootstrap (loaded after physics so initPhysics exists).
 // Classic script — shares one global scope with the other src/*.js (THREE,
 // OBJLoader, MTLLoader are globals set in viewer.html). No imports/exports.
+//
+// The menu shows immediately; the map streams in the background (progress shown
+// on the Play button) and becomes the rotating backdrop when ready. Other assets
+// (player/weapon models) load at "Start" — see input.js.
 
-// ── Load assets ───────────────────────────────────────────────────────────
-const $load = document.getElementById('loading');
-$load.style.display = 'block';
+let mapReady = false;
+const $play = document.getElementById('btn-play');
+$play.disabled = true;
+$play.textContent = 'Загрузка карты…';
 
 const objPromise = new Promise((res, rej) => {
   // Map lives in maps/ and is self-contained (obj + mtl + maps/textures/).
@@ -13,15 +18,13 @@ const objPromise = new Promise((res, rej) => {
     mtl.preload();
     new OBJLoader().setMaterials(mtl).setPath('maps/').load(
       'de_dust2.obj', res,
-      xhr => { $load.textContent = `Geometry… ${xhr.total ? Math.round(xhr.loaded/xhr.total*100) : '?'}%`; },
+      xhr => { if (xhr.total) $play.textContent = `Загрузка карты ${Math.round(xhr.loaded / xhr.total * 100)}%`; },
       rej
     );
   });
 });
 
 const hullPromise = fetch('maps/de_dust2_hull.json').then(r => r.json());
-
-$load.textContent = 'Loading…';
 
 Promise.all([objPromise, hullPromise]).then(([obj, hull]) => {
 
@@ -39,13 +42,14 @@ Promise.all([objPromise, hullPromise]).then(([obj, hull]) => {
     child.material = mat;
   });
   scene.add(obj);
+  frameMenuCamera(new THREE.Box3().setFromObject(obj));   // rotating menu backdrop
   _rebuildShellRayTargets();
 
   // ── Init collision + player ───────────────────────────────────────────
   initPhysics(hull);
 
-  $load.style.display = 'none';
-  document.getElementById('overlay').style.display = 'flex';
+  mapReady = true;
+  $play.disabled = false;
+  $play.textContent = 'Начать игру';
 
-}).catch(err => { $load.textContent = 'Error: ' + err; console.error(err); });
-
+}).catch(err => { $play.textContent = 'Ошибка загрузки'; console.error(err); });

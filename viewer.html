@@ -8,20 +8,44 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #1a1a1a; overflow: hidden; font-family: monospace; }
   canvas { display: block; }
+  /* ── Start menu: card on the left, rotating map on the right ── */
   #overlay {
     position: absolute; inset: 0;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 12px;
-    background: rgba(0,0,0,0.75);
-    color: #fff; font-size: 18px; text-align: center;
-    cursor: pointer; -webkit-user-select: none; user-select: none;
+    display: flex; align-items: center; justify-content: flex-start;
+    padding-left: clamp(24px, 6vw, 80px);
+    background: linear-gradient(90deg, rgba(5,6,9,.92) 0%, rgba(5,6,9,.5) 40%, rgba(5,6,9,0) 62%);
+    color: #e8e8ea; -webkit-user-select: none; user-select: none;
+    cursor: grab; font-family: 'Segoe UI', system-ui, sans-serif;
   }
-  #overlay span { opacity: .6; font-size: 13px; display: block; }
-  #loading {
-    position: absolute; top: 50%; left: 50%;
-    transform: translate(-50%,-50%);
-    color: #fff; font-size: 16px; display: none;
+  #overlay:active { cursor: grabbing; }
+  #maplist { display: flex; flex-direction: column; gap: 6px; }
+  .map-item {
+    padding: 8px 12px; font-size: 13px; border-radius: 7px; cursor: pointer;
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); color: rgba(255,255,255,.85);
   }
+  .map-item.selected { border-color: rgba(232,163,61,.6); background: rgba(232,163,61,.14); color: #fff; }
+  .map-item span { float: right; font-size: 11px; color: rgba(255,255,255,.4); }
+  #menu {
+    width: min(92vw, 380px); padding: 26px 26px 20px;
+    background: rgba(18,20,26,.6);
+    border: 1px solid rgba(255,255,255,.08); border-radius: 14px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 24px 70px rgba(0,0,0,.55);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  #title { font-size: 30px; font-weight: 800; letter-spacing: 4px; color: #fff; line-height: 1; }
+  #title b { color: #e8a33d; font-weight: 800; }
+  #subtitle { margin-top: -8px; font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: rgba(255,255,255,.42); }
+  .menu-btn {
+    width: 100%; padding: 12px 16px; font: inherit; font-size: 15px; font-weight: 600; letter-spacing: 1px;
+    color: #fff; background: rgba(232,163,61,.18);
+    border: 1px solid rgba(232,163,61,.55); border-radius: 9px; cursor: pointer;
+    transition: background .15s, transform .05s;
+  }
+  .menu-btn:hover { background: rgba(232,163,61,.34); }
+  .menu-btn:active { transform: translateY(1px); }
+  .menu-btn.secondary { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.16); font-weight: 500; font-size: 13px; }
+  .menu-btn.secondary:hover { background: rgba(255,255,255,.12); }
   #crosshair {
     position: absolute; top: 50%; left: 50%;
     transform: translate(-50%,-50%);
@@ -40,15 +64,25 @@
     text-shadow: 0 0 4px #000;
   }
   #settings {
-    display: flex; flex-direction: column; align-items: center; gap: 10px;
-    pointer-events: all;
+    display: flex; flex-direction: column; gap: 9px;
+    padding-top: 12px; border-top: 1px solid rgba(255,255,255,.08);
   }
   #settings label {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 13px; color: rgba(255,255,255,.7);
-    cursor: pointer;
+    display: flex; align-items: center; gap: 9px;
+    font-size: 13px; color: rgba(255,255,255,.78); cursor: pointer;
   }
-  #settings input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #aaa; }
+  #settings input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; accent-color: #e8a33d; }
+  #hint { font-size: 11px; line-height: 1.7; color: rgba(255,255,255,.4); }
+  #gameload {
+    position: absolute; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    background: radial-gradient(ellipse at center, #15171c, #060709);
+    color: #e8e8ea; font-family: 'Segoe UI', system-ui, sans-serif; z-index: 10;
+  }
+  #gl-title { font-size: 13px; letter-spacing: 3px; text-transform: uppercase; color: rgba(255,255,255,.55); }
+  #gl-bar { width: min(70vw, 320px); height: 6px; background: rgba(255,255,255,.1); border-radius: 4px; overflow: hidden; }
+  #gl-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #e8a33d, #f0c878); transition: width .15s ease; }
+  #gl-pct { font-size: 12px; letter-spacing: 1px; color: rgba(255,255,255,.5); }
   #weapon-hud {
     position: absolute; bottom: 16px; right: 16px;
     color: rgba(255,255,255,.78); font-size: 13px;
@@ -65,17 +99,30 @@
 <body>
 
 <div id="overlay">
-  Click to play
-  <span>WASD — move &nbsp;|&nbsp; Mouse — look &nbsp;|&nbsp; Space — jump &nbsp;|&nbsp; Shift — walk &nbsp;|&nbsp; Ctrl — crouch &nbsp;|&nbsp; 1/2/3 — weapons &nbsp;|&nbsp; R — reload &nbsp;|&nbsp; LMB — fire/slash &nbsp;|&nbsp; RMB — stab &nbsp;|&nbsp; ESC — pause</span>
-  <div id="settings">
-    <label><input type="checkbox" id="opt-invert-y" checked> Инверсия мыши (Y)</label>
-    <label><input type="checkbox" id="opt-widescreen" checked> Широкоэкранный FOV</label>
-    <label><input type="checkbox" id="opt-right-hand" checked> Правая рука</label>
-    <label><input type="checkbox" id="opt-dynamic-crosshair"> Динамичный прицел</label>
-    <label><input type="checkbox" id="opt-third-person"> Вид от третьего лица (V)</label>
+  <div id="menu">
+    <div id="title">CS<b>1.6</b></div>
+    <div id="subtitle">browser clone</div>
+    <div id="maplist">
+      <div class="map-item selected" data-map="de_dust2">de_dust2 <span>тяни — вращать</span></div>
+    </div>
+    <button id="btn-play" class="menu-btn">Начать игру</button>
+    <button id="btn-restart" class="menu-btn secondary" style="display:none">Заново (респаун)</button>
+    <div id="settings">
+      <label><input type="checkbox" id="opt-invert-y" checked> Инверсия мыши (Y)</label>
+      <label><input type="checkbox" id="opt-widescreen" checked> Широкоэкранный FOV</label>
+      <label><input type="checkbox" id="opt-right-hand" checked> Правая рука</label>
+      <label><input type="checkbox" id="opt-dynamic-crosshair"> Динамичный прицел</label>
+      <label><input type="checkbox" id="opt-third-person"> Вид от третьего лица (V)</label>
+    </div>
+    <div id="hint">WASD — движение · Мышь — обзор · Space — прыжок · Shift — шаг · Ctrl — присед<br>
+      1/2/3 — оружие · R — перезарядка · ЛКМ/ПКМ — атака · V — 3-е лицо · ESC — пауза</div>
   </div>
 </div>
-<div id="loading">Loading…</div>
+<div id="gameload">
+  <div id="gl-title">Загрузка ресурсов</div>
+  <div id="gl-bar"><div id="gl-fill"></div></div>
+  <div id="gl-pct">0%</div>
+</div>
 <canvas id="crosshair" width="160" height="160"></canvas>
 <div id="hud"><div id="pos"></div><div id="spd"></div></div>
 <div id="keys">

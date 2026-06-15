@@ -273,22 +273,27 @@ function _ejectShell(wpn) {
     .addScaledVector(camUp,    75 + rv() * 30)
     .addScaledVector(fwd,      40 + rv() * 35);
 
+  _spawnShell(type, pos, vel);
+}
+
+// Spawn a shell mesh at a world position with a world velocity. Shared by the
+// first-person eject (camera-space) and the third-person eject (from the model).
+function _spawnShell(type, pos, vel) {
+  if (!_shellGeos[type] || !_shellMats[type]) return;
   if (_activeShells.length >= SHELLS_MAX) {
     const old = _activeShells.shift();
     scene.remove(old.mesh);
     _shellMeshSet.delete(old.mesh);
   }
-
   const mesh = new THREE.Mesh(_shellGeos[type], _shellMats[type]);
   mesh.position.copy(pos);
   mesh.rotation.set(Math.random()*Math.PI*2, Math.random()*Math.PI*2, Math.random()*Math.PI*2);
-  // no manual scale — model is already in GoldSrc world units
   scene.add(mesh);
   _shellMeshSet.add(mesh);
-
+  const rv = () => (Math.random() - 0.5) * 2;
   _activeShells.push({
     mesh, vel,
-    angVel: new THREE.Vector3((rv())*18, (rv())*28, (rv())*18),
+    angVel: new THREE.Vector3(rv()*18, rv()*28, rv()*18),
     life: 0, bounces: 0, grounded: false,
   });
 }

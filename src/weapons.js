@@ -120,7 +120,7 @@ function boneEulerMat(rx, ry, rz) {
 }
 
 // ── Load weapon meshes + animation ────────────────────────────────────────
-const _texLoader = new THREE.TextureLoader();
+const _texLoader = new THREE.TextureLoader(_assetMgr);   // tracked for the loading screen
 
 function _buildGroup(data, scale) {
   const root = new THREE.Group();
@@ -149,31 +149,41 @@ function _activateGroup(wpn, g) {
   wpn.boneIndices = g.boneIndices;
 }
 
-WPNS.forEach(wpn => {
-  fetch(wpn.jsonFile).then(r => r.json()).then(data => {
-    wpn._groupUnsil = _buildGroup(data, wpn.scale);
-    _activateGroup(wpn, wpn._groupUnsil);
-    wpn.root.visible = (WPNS.indexOf(wpn) === curWpnIdx);
-    vmScene.add(wpn.root);
+// Deferred: called once at "Start" so view-model meshes aren't fetched on page load.
+let _weaponsLoaded = false;
+function loadWeaponModels() {
+  if (_weaponsLoaded) return;
+  _weaponsLoaded = true;
+  WPNS.forEach(wpn => {
+    _trackFetchStart();
+    fetch(wpn.jsonFile).then(r => r.json()).then(data => {
+      wpn._groupUnsil = _buildGroup(data, wpn.scale);
+      _activateGroup(wpn, wpn._groupUnsil);
+      wpn.root.visible = (WPNS.indexOf(wpn) === curWpnIdx);
+      vmScene.add(wpn.root);
 
-    // Load animation file if available
-    const animFile = wpn.jsonFile.replace('.json', '_anim.json');
-    fetch(animFile).then(r => r.ok ? r.json() : Promise.reject())
-      .then(animData => {
-        wpn.anim = { bones: animData.bones, seqs: animData.sequences, curFrame: 0 };
-        console.log(`Anim loaded: ${wpn.id} (${animData.bones.length} bones)`);
-      }).catch(() => {});
+      // Load animation file if available
+      const animFile = wpn.jsonFile.replace('.json', '_anim.json');
+      _trackFetchStart();
+      fetch(animFile).then(r => r.ok ? r.json() : Promise.reject())
+        .then(animData => {
+          wpn.anim = { bones: animData.bones, seqs: animData.sequences, curFrame: 0 };
+          console.log(`Anim loaded: ${wpn.id} (${animData.bones.length} bones)`);
+        }).catch(() => {}).finally(_trackFetchEnd);
 
-    // Load silenced variant if available
-    if (wpn.jsonFileSil) {
-      fetch(wpn.jsonFileSil).then(r => r.json()).then(silData => {
-        wpn._groupSil = _buildGroup(silData, wpn.scale);
-        wpn._groupSil.root.visible = false;
-        vmScene.add(wpn._groupSil.root);
-      }).catch(() => {});
-    }
-  }).catch(() => console.warn(`${wpn.jsonFile} not found`));
-});
+      // Load silenced variant if available
+      if (wpn.jsonFileSil) {
+        _trackFetchStart();
+        fetch(wpn.jsonFileSil).then(r => r.json()).then(silData => {
+          wpn._groupSil = _buildGroup(silData, wpn.scale);
+          wpn._groupSil.root.visible = false;
+          vmScene.add(wpn._groupSil.root);
+        }).catch(() => {}).finally(_trackFetchEnd);
+      }
+      _trackFetchEnd();   // mesh JSON done (after its textures + nested fetches started)
+    }).catch(() => { _trackFetchEnd(); console.warn(`${wpn.jsonFile} not found`); });
+  });
+}
 
 function toggleSilencer() {
   const wpn = curW();
@@ -503,11 +513,14 @@ function updateWeapon(dt) {
   }
 
   // Fire effects deferred until after animation so _muzzleLocal/_ejectionLocal are current.
-  // Muzzle flash and shells are computed in view-model space (relative to the camera),
-  // so they're meaningless in third-person (the camera sits behind the player) — skip them.
+  // First person: flash + shell in view-model space (relative to the camera).
+  // Third person: eject a shell from the world model's gun (flash is view-model-only).
   if (wpn._pendingFire) {
     wpn._pendingFire = false;
-    if (!thirdPerson) {
+    if (thirdPerson) {
+      _muzzleFlashThirdPerson(wpn);
+      _ejectShellThirdPerson(wpn);
+    } else {
       _showFlash(wpn);
       _ejectShell(wpn);
     }

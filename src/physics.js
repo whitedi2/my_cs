@@ -82,6 +82,7 @@ function traceMove(from, to) {
 
 // ── Player physics ────────────────────────────────────────────────────────
 let gsPos, vel, onGround, wasJump;
+let gsSpawn = null, gsSpawnYaw = 0;   // spawn point/angle (for respawn)
 let duckAmount = 0;          // 0 = standing, 1 = fully crouched
 let phyDucked  = false;      // duck hull (hull3) is physically active
 let smoothCamY = null;       // smoothed camera Y for stair interpolation
@@ -110,15 +111,27 @@ function initPhysics(hull) {
 
   // Spawn at first CT spawn; fall back to map center
   const sp = hull.spawns.ct[0];
-  gsPos = sp ? [...sp.origin] : [0, 0, 200];
-  gsPos[2] += 1;   // tiny lift so we're not exactly on the boundary
-  vel = [0, 0, 0];
-  onGround     = false;
-  wasJump      = false;
-  duckAmount   = 0;
-  phyDucked    = false;
-  if (sp) yaw = -(sp.angle * Math.PI / 180);
+  gsSpawn = sp ? [...sp.origin] : [0, 0, 200];
+  gsSpawn[2] += 1;   // tiny lift so we're not exactly on the boundary
+  gsSpawnYaw = sp ? -(sp.angle * Math.PI / 180) : 0;
+  respawn();
+}
 
+// Reset the player to the spawn (used by the menu's "Заново").
+function respawn() {
+  if (!gsSpawn) return;
+  gsPos = [...gsSpawn];
+  vel = [0, 0, 0];
+  onGround = false;
+  wasJump  = false;
+  duckAmount = 0;
+  phyDucked  = false;
+  duckViewOfs = 0;
+  smoothCamY = null;
+  recoilPitch = recoilYaw = 0;
+  punchPitch = punchVel = punchRoll = punchRollVel = 0;
+  yaw = gsSpawnYaw;
+  pitch = 0;
 }
 
 function categorize() {

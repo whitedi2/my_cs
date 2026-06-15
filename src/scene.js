@@ -12,6 +12,25 @@ const scene  = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB);
 scene.fog = new THREE.Fog(0x87CEEB, 2000, 8000);
 
+// ── Game-asset loading (player/weapon models + their textures), for the Start
+// loading screen. Textures route through _assetMgr (auto-tracked); model fetches
+// (mesh/anim/sil JSON) are counted manually — _trackFetchEnd() is called only
+// after a mesh build has started its textures, so the count never empties early.
+const _assetMgr = new THREE.LoadingManager();
+let _modelFetchTotal = 0, _modelFetchPending = 0;
+function _trackFetchStart() { _modelFetchTotal++; _modelFetchPending++; }
+function _trackFetchEnd()   { _modelFetchPending = Math.max(0, _modelFetchPending - 1); }
+function gameAssetsProgress() {
+  const total  = _modelFetchTotal + _assetMgr.itemsTotal;
+  const loaded = (_modelFetchTotal - _modelFetchPending) + _assetMgr.itemsLoaded;
+  return total > 0 ? loaded / total : 0;
+}
+function gameAssetsReady() {
+  return _modelFetchTotal > 0 && _modelFetchPending === 0
+      && _assetMgr.itemsLoaded >= _assetMgr.itemsTotal
+      && !!player.root && !!(typeof curW === 'function' && curW() && curW().root);
+}
+
 const camera = new THREE.PerspectiveCamera(73.74, innerWidth / innerHeight, 1, 12000);
 
 // FPS camera hierarchy: scene → yawObj (Y rotation) → pitchObj (X rotation) → camera
@@ -21,6 +40,41 @@ const pitchObj = new THREE.Object3D();
 pitchObj.add(camera);
 yawObj.add(pitchObj);
 scene.add(yawObj);
+
+// ── Menu backdrop camera: orbiting bird's-eye of the whole map, shown in the right
+// part of the screen (the menu card sits on the left). Auto-rotates; drag to spin.
+const menuCamera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 1, 80000);
+const MENU_LEFT_FRAC = 0.42;          // left fraction reserved for the menu card
+let _mapBox = null;
+let menuAzimuth = 0.7, menuElev = 1.02;   // orbit angles (elev: 0=horizon, π/2=top-down)
+
+// The right-hand viewport rect (CSS px; three.js scales by pixelRatio) for the map.
+function _menuRegion() {
+  const x = Math.round(innerWidth * MENU_LEFT_FRAC);
+  return { x, y: 0, w: innerWidth - x, h: innerHeight };
+}
+
+function frameMenuCamera(box) {
+  if (box) _mapBox = box;
+  if (!_mapBox) return;
+  const aspect = (innerWidth * (1 - MENU_LEFT_FRAC)) / innerHeight;
+  menuCamera.aspect = aspect;
+  const c = _mapBox.getCenter(new THREE.Vector3());
+  const s = _mapBox.getSize(new THREE.Vector3());
+  const fov = menuCamera.fov * Math.PI / 180;
+  const halfV = Math.tan(fov / 2), halfH = halfV * aspect;
+  const span = Math.max(s.x, s.z);                 // horizontal extent (rotates, so use max)
+  const dist = (span / 2) / Math.min(halfH, halfV) * 1.2 + s.y;
+  const ce = Math.cos(menuElev), se = Math.sin(menuElev);
+  menuCamera.position.set(
+    c.x + dist * ce * Math.sin(menuAzimuth),
+    c.y + dist * se,
+    c.z + dist * ce * Math.cos(menuAzimuth)
+  );
+  menuCamera.up.set(0, 1, 0);
+  menuCamera.lookAt(c.x, c.y, c.z);
+  menuCamera.updateProjectionMatrix();
+}
 
 // ── View-model scene (knife, rendered on top of world) ────────────────────
 const vmScene  = new THREE.Scene();
@@ -124,5 +178,37 @@ function _tickFlash() {
   if (age >= _FLASH_MS) { _flashMesh2D.visible = false; return; }
   _flashMesh2D.visible = true;
   _flashMat2D.opacity = 1 - age / _FLASH_MS;
+}
+
+// ── World-space muzzle flash (third-person: a billboard sprite at the gun muzzle) ──
+const _worldFlashMat = new THREE.SpriteMaterial({
+  map: null, blending: THREE.AdditiveBlending,
+  depthWrite: false, transparent: true, fog: false, toneMapped: false,
+});
+const _worldFlash = new THREE.Sprite(_worldFlashMat);
+_worldFlash.visible = false;
+_worldFlash.frustumCulled = false;
+scene.add(_worldFlash);
+let _worldFlashStart = -Infinity;
+
+function _showFlashWorld(pos, wpn) {
+  const key = (wpn.id === 'm4' && wpn.silencer) ? 'm4sil' : wpn.id;
+  const frames = _mflashFrames[key] ?? _mflashFrames.usp;
+  const frame = frames[Math.floor(Math.random() * frames.length)];
+  if (!frame.tex) return;
+  _worldFlashMat.map = frame.tex; _worldFlashMat.needsUpdate = true;
+  _worldFlash.position.copy(pos);
+  const sz = (wpn.silencer ? 9 : 18) + Math.random() * 6;   // world units
+  _worldFlash.scale.set(sz, sz, sz);
+  _worldFlashMat.rotation = Math.random() * Math.PI * 2;
+  _worldFlash.visible = true;
+  _worldFlashStart = performance.now();
+}
+
+function _tickFlashWorld() {
+  if (!_worldFlash.visible) return;
+  const age = performance.now() - _worldFlashStart;
+  if (age >= _FLASH_MS) { _worldFlash.visible = false; return; }
+  _worldFlashMat.opacity = 1 - age / _FLASH_MS;
 }
 
