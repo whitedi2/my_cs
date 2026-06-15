@@ -502,11 +502,15 @@ function updateWeapon(dt) {
     applySkeletalAnimation(wpn, dt);
   }
 
-  // Fire effects deferred until after animation so _muzzleLocal/_ejectionLocal are current
+  // Fire effects deferred until after animation so _muzzleLocal/_ejectionLocal are current.
+  // Muzzle flash and shells are computed in view-model space (relative to the camera),
+  // so they're meaningless in third-person (the camera sits behind the player) — skip them.
   if (wpn._pendingFire) {
     wpn._pendingFire = false;
-    _showFlash(wpn);
-    _ejectShell(wpn);
+    if (!thirdPerson) {
+      _showFlash(wpn);
+      _ejectShell(wpn);
+    }
   }
 }
 

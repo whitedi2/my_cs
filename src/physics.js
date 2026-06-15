@@ -247,10 +247,12 @@ function playerMove(dt) {
   const fwdX = -Math.sin(yaw), fwdY = Math.cos(yaw);
   const rgtX =  Math.cos(yaw), rgtY = Math.sin(yaw);
   let wx = 0, wy = 0;
-  if (keys['KeyW'] || keys['ArrowUp'])    { wx += fwdX; wy += fwdY; }
-  if (keys['KeyS'] || keys['ArrowDown'])  { wx -= fwdX; wy -= fwdY; }
-  if (keys['KeyA'] || keys['ArrowLeft'])  { wx -= rgtX; wy -= rgtY; }
-  if (keys['KeyD'] || keys['ArrowRight']) { wx += rgtX; wy += rgtY; }
+  // In third-person the arrow keys orbit the camera, so they must not also move.
+  const arrowMove = !thirdPerson;
+  if (keys['KeyW'] || (arrowMove && keys['ArrowUp']))    { wx += fwdX; wy += fwdY; }
+  if (keys['KeyS'] || (arrowMove && keys['ArrowDown']))  { wx -= fwdX; wy -= fwdY; }
+  if (keys['KeyA'] || (arrowMove && keys['ArrowLeft']))  { wx -= rgtX; wy -= rgtY; }
+  if (keys['KeyD'] || (arrowMove && keys['ArrowRight'])) { wx += rgtX; wy += rgtY; }
   const wlen = Math.hypot(wx, wy);
   const wSpd = Math.min(wlen, 1) * maxSpd;
   const wDir = wlen > 0 ? [wx/wlen, wy/wlen, 0] : [0, 0, 0];

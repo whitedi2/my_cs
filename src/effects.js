@@ -17,7 +17,13 @@ let   _shellRayTargets = null;   // rebuilt once after map load
 
 function _rebuildShellRayTargets() {
   _shellRayTargets = [];
-  scene.traverse(o => { if (o.isMesh && !_shellMeshSet.has(o) && !_decalMeshSet.has(o)) _shellRayTargets.push(o); });
+  // Exclude shells, decals, and the third-person player/weapon rigs (userData
+  // .noHitscan) — the latter load before the big map mesh, so without this the
+  // bullet/knife ray hits the player's own model and the decal sticks to it.
+  scene.traverse(o => {
+    if (o.isMesh && !o.userData.noHitscan && !_shellMeshSet.has(o) && !_decalMeshSet.has(o))
+      _shellRayTargets.push(o);
+  });
 }
 
 // ── Bullet hole / knife mark decals ───────────────────────────────────────

@@ -32,6 +32,7 @@ Runtime разбит по файлам (порядок загрузки = пор
 | `src/scene.js` | рендерер, сцены (мир / вьюмодель / 2D-вспышка), камеры, muzzle flash | `vmScene`, `_flashScene2D`, `_showFlash`, `_tickFlash`, `_loadAdditiveSprite` |
 | `src/effects.js` | гильзы + декали пуль/ножа | `_ejectShell`, `_updateShells`, `_spawnDecal`, `_getDecalMat`, `_makeSlashTexture`, `_drawTaperedCut` |
 | `src/weapons.js` | конфиги оружия, переключение, скелетка, стрельба/отдача, ближний бой | `WPNS`, `switchWeapon`, `_beginDraw`, `toggleSilencer`, `updateWeapon` (стейт-машина `ws`), `applySkeletalAnimation`, `computeBoneWorlds`, `boneEulerMat`, `_startMeleeAttack` |
+| `src/player.js` | модель игрока от 3-го лица (CT `gign`, `PLAYER_MODEL`): двухслойная анимация (ноги=походка, верх=прицел/стрельба/перезарядка по оружию), оружие в руке, чейз-камера с орбитой | `updatePlayerModel`, `_skinRig`, `_updateWeaponAttachment`, `_resolveUpperPose`/`_aimPose`/`_clipPose`, `updateChaseCamera`, `updateOrbit`, `toggleThirdPerson`, `thirdPerson` |
 | `src/hud.js` | прицел и HUD | `drawCrosshair`, `updateHUD` |
 | `src/physics.js` | BSP-трасса + физика игрока | `pointContents`, `_check`, `traceMove`, `playerMove`, `slideMove`, `categorize`, `accel`, `applyFriction`, `initPhysics` |
 | `src/load.js` | загрузка карты/ассетов (после physics, чтобы `initPhysics` была определена) | `objPromise`, `hullPromise`, `Promise.all(...).then(...)` |
@@ -85,6 +86,13 @@ docs/              PLAN.md, BROWSER_GUIDE.md
 
 - `mdl_to_json.py` — MDL → `models/v_*.json` (+ текстуры оружия в `textures/`).
 - `extract_anim.py` — анимации → `models/v_*_anim.json`.
+- `player_to_json.py` — модель игрока (`models/player/<name>/<name>.mdl`) → `models/player_<name>.json`
+  (меш тела + кости + только движенческие секвенции idle/walk/run/crouch/jump) + текстуры в `textures/player_*`.
+  Сейчас сконвертирован CT `gign` (`python tools/player_to_json.py gign`); модель в рантайме
+  выбирается константой `PLAYER_MODEL` в `src/player.js`.
+- `pweapon_to_json.py` — мировая модель оружия `p_<weapon>.mdl` → `models/p_<weapon>.json`
+  (меш ствола + кости `Bip01…` + bind-поза). Рантайм гонит этот скелет позой игрока (по имени кости),
+  оружие крепится к кисти. Готовы `p_m4a1`, `p_usp`, `p_knife`.
 - `bsp_to_obj.py` — BSP → `maps/de_dust2.obj/.mtl` + `maps/textures/`.
 - `bsp_phys.py` — BSP → `maps/de_dust2_hull.json`.
 - `extract_spr.py` → `sprites/`, `extract_decals.py` → `decals/` (пути в этих двух — абсолютные, поправь под себя).
@@ -107,9 +115,16 @@ docs/              PLAN.md, BROWSER_GUIDE.md
   (`duckAmount>0.5`); угол ставится мгновенно, выравнивается плавно (`punchRoll *= exp(-dt*4)`).
 - **Анти-фолл-тру:** `slideMove` не принимает ход «сквозь солид» при `startsolid`/`allsolid`
   (выталкивает вверх). Не убирать — иначе провал сквозь горки/ящики.
+- **Только оригинальная анимация — никакой отсебятины.** Анимация модели/оружия должна браться из
+  оригинальных MDL CS 1.6 (или, как запас, из Half-Life GoldSrc). Не выдумывать движения и не
+  синтезировать жесты, которых нет в исходных секвенциях. Если нужного движения в модели нет — спросить,
+  а не сочинять. (Допустимо: кросс-фейд/слёрп между *существующими* позами, как делает движок — это не
+  новая анимация, а интерполяция оригинальных.)
 - Никакой сборки/линтера/тестов — правки идут прямо в `viewer.html`, проверка глазами в браузере.
 
 ## Документы
 
 - `docs/PLAN.md` — исходный план разработки (фазы, параметры физики из оригинала).
 - `docs/BROWSER_GUIDE.md` — запуск во встроенном браузере VS Code.
+- `docs/DIFFERENCES.md` — намеренные/вынужденные отличия от оригинала CS 1.6 (следы ножа, присед,
+  третье лицо и т.д.). Обновлять при любом сознательном расхождении с оригиналом.

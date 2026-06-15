@@ -51,6 +51,7 @@ document.getElementById('opt-invert-y').addEventListener('change',   e => { inve
 document.getElementById('opt-widescreen').addEventListener('change', e => { widescreenFOV = e.target.checked; updateFOV(); });
 document.getElementById('opt-right-hand').addEventListener('change', e => { rightHand = e.target.checked; updateVmCamera(); });
 document.getElementById('opt-dynamic-crosshair').addEventListener('change', e => { dynamicCrosshair = e.target.checked; });
+document.getElementById('opt-third-person').addEventListener('change', e => { toggleThirdPerson(e.target.checked); });
 
 // ── Mouse look ────────────────────────────────────────────────────────────
 let yaw = 0, pitch = 0;
@@ -72,11 +73,14 @@ const keys = {};
 document.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (!isLocked) return;
+  // Arrow keys orbit the third-person camera — keep them from scrolling the page.
+  if (thirdPerson && e.code.startsWith('Arrow')) e.preventDefault();
   if (e.code === 'Digit1') switchWeapon(WPNS.findIndex(w => w.id === 'm4'));
   if (e.code === 'Digit2') switchWeapon(WPNS.findIndex(w => w.id === 'usp'));
   if (e.code === 'Digit3') switchWeapon(WPNS.findIndex(w => w.id === 'knife'));
   if (e.code === 'KeyQ')   switchWeapon((curWpnIdx + WPNS.length - 1) % WPNS.length);
   if (e.code === 'KeyF')   toggleSilencer();
+  if (e.code === 'KeyV')   toggleThirdPerson();
   if (e.code === 'KeyR') {
     const wpn = curW();
     if (wpn.type === 'gun' && ws === WS.IDLE && wpn.ammo < wpn.maxAmmo && wpn.reserve > 0) {
@@ -140,6 +144,7 @@ function animate(t) {
   if (isLocked && gsPos) {
     playerMove(dt);
     updateWeapon(dt);
+    updatePlayerModel(dt);
     updateHUD();
     const spd = Math.hypot(vel[0], vel[1]);
     document.getElementById('pos').textContent =
@@ -155,22 +160,37 @@ function animate(t) {
   if (!isFinite(recoilPitch)) recoilPitch = 0;
   if (!isFinite(recoilYaw))   recoilYaw   = 0;
 
-  // FPS camera: yaw on parent (world Y), pitch on child (local X), roll on view axis
-  yawObj.rotation.y   = isFinite(yaw)   ? yaw   + recoilYaw   : 0;
-  pitchObj.rotation.x = isFinite(pitch) ? pitch + punchPitch + recoilPitch : 0;
-  camera.rotation.z   = punchRoll;   // landing tilt to one side
+  // Camera orientation. First-person: follows mouse-look (+ recoil/punch).
+  // Third-person: DECOUPLED from the mouse — the camera holds a fixed angle
+  // (orbited only by arrow keys) so the mouse turns just the player model; this
+  // lets you watch the body/torso posture change as you look around.
+  updateOrbit(dt);
+  if (thirdPerson) {
+    yawObj.rotation.y   = orbitYaw;
+    pitchObj.rotation.x = orbitPitch;
+    camera.rotation.z   = 0;
+  } else {
+    yawObj.rotation.y   = isFinite(yaw)   ? yaw   + recoilYaw   : 0;
+    pitchObj.rotation.x = isFinite(pitch) ? pitch + punchPitch + recoilPitch : 0;
+    camera.rotation.z   = punchRoll;   // landing tilt to one side
+  }
+  updateChaseCamera();               // third-person: pull camera back; else recenter
 
   renderer.clear();
   renderer.render(scene, camera);
   renderer.clearDepth();
-  vmCamera.updateProjectionMatrix();
-  const shouldFlip = curW().id === 'knife' ? !rightHand : rightHand;
-  if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
-  vmCamera.projectionMatrixInverse.copy(vmCamera.projectionMatrix).invert();
   _updateShells(dt);
-  _tickFlash();
-  renderer.render(_flashScene2D, _flashOrtho);
-  renderer.render(vmScene, vmCamera);
+  // In third-person the view-model/muzzle-flash overlay is hidden (we see the
+  // world-space player model instead).
+  if (!thirdPerson) {
+    vmCamera.updateProjectionMatrix();
+    const shouldFlip = curW().id === 'knife' ? !rightHand : rightHand;
+    if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
+    vmCamera.projectionMatrixInverse.copy(vmCamera.projectionMatrix).invert();
+    _tickFlash();
+    renderer.render(_flashScene2D, _flashOrtho);
+    renderer.render(vmScene, vmCamera);
+  }
 }
 animate(0);
 
