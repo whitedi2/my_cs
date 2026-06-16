@@ -4,6 +4,51 @@
 
 // ── Weapon configs ────────────────────────────────────────────────────────
 const D = Math.PI / 180;
+
+// Builds a standard auto-rifle entry (shared rig offsets + idle1/shoot1-3/reload/draw
+// sequences). Stats (damage/rangeMod/fireInterval/clip/reload) come from CS/ReGameDLL.
+function _autoRifle(id, label, s) {
+  const fire = s.fire || ['shoot1', 'shoot2', 'shoot3'];
+  return [{
+    id, label,
+    jsonFile: `models/v_${id}.json`,
+    idleSeq: s.idle || 'idle1', drawSeq: 'draw', reloadSeq: 'reload',
+    fireSeq: fire[0], fireSeqsUnsil: fire,
+    silencer: false, autofire: true,
+    fireInterval: s.fireInterval, spread: s.spread,
+    damage: s.damage, rangeMod: s.rangeMod,
+    recoilProc: { pitch: s.recoilP, stemShots: 3, latBase: 0.4, latGrow: 0.09, latMax: 1.1, flipChance: 5 },
+    pos: new THREE.Vector3(-0.04, -0.20, -0.75),
+    rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
+    scale: 0.12, type: 'gun', shellType: s.shellType || 'rifle',
+    flashSX: 0.5, flashSY: 0.5,
+    ammo: s.ammo, maxAmmo: s.ammo, reserve: s.reserve || 90, reloadTime: s.reload,
+    slot: 'primary',
+    root: null,
+  }];
+}
+
+// Standard semi-auto pistol entry (shared rig offsets). Per-weapon fire sequences.
+function _pistol(id, label, s) {
+  return [{
+    id, label,
+    jsonFile: `models/v_${id}.json`,
+    idleSeq: s.idle || 'idle1', drawSeq: 'draw', reloadSeq: 'reload',
+    fireSeq: s.fire[0], fireSeqsUnsil: s.fire,
+    silencer: false, autofire: false,
+    fireInterval: s.fireInterval, recoilKick: s.recoilKick,
+    spread: s.spread, spreadGrow: s.spreadGrow ?? 0.004, spreadMax: s.spreadMax ?? 0.05,
+    damage: s.damage, rangeMod: s.rangeMod,
+    pos: new THREE.Vector3(-0.04, -0.20, -0.75),
+    rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
+    scale: 0.12, type: 'gun', shellType: 'pistol',
+    flashSX: 0.5, flashSY: 0.5,
+    ammo: s.ammo, maxAmmo: s.ammo, reserve: s.reserve, reloadTime: s.reload,
+    slot: 'secondary',
+    root: null,
+  }];
+}
+
 const WPNS = [
   {
     id: 'm4', label: 'M4A1',
@@ -18,6 +63,8 @@ const WPNS = [
     autofire: true,
     fireInterval: 0.09,
     spread: 0.012,
+    // CS 1.6: 32/bullet (33 silenced), range falloff ×rangeMod per 500u
+    damage: 32, rangeMod: 0.97, damageSil: 33, rangeModSil: 0.95,
     // CS 1.6-style procedural recoil (KickBack): vertical grows each shot (the
     // T's stem), lateral starts after a few shots and grows, applied in a
     // direction that RANDOMLY flips — so the horizontal bar is different every
@@ -38,8 +85,25 @@ const WPNS = [
     flashSX: 0.5, flashSY: 0.5,
     ammo: 30, maxAmmo: 30,
     reserve: 90, reloadTime: 3.1,
+    slot: 'primary',
     root: null,
   },
+  // ── Auto-rifles (group 1). Stats verified vs ReGameDLL; view-model placement
+  // reuses the shared rig offsets; muzzle/ejection bones omitted (flash/shell fall
+  // back to centered) — to be tuned per model later. Sequences: idle1/shoot1-3/reload/draw.
+  ..._autoRifle('ak47',  'AK-47',          { damage: 36, rangeMod: 0.98,  fireInterval: 0.0955, ammo: 30, reload: 2.45, recoilP: 1.05, spread: 0.016 }),
+  ..._autoRifle('galil', 'IDF Defender',   { damage: 30, rangeMod: 0.98,  fireInterval: 0.0875, ammo: 35, reload: 2.45, recoilP: 0.9,  spread: 0.014 }),
+  ..._autoRifle('famas', 'Clarion 5.56',   { damage: 30, rangeMod: 0.96,  fireInterval: 0.0825, ammo: 25, reload: 3.3,  recoilP: 0.8,  spread: 0.013 }),
+  ..._autoRifle('aug',   'Bullpup',        { damage: 32, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 30, reload: 3.3,  recoilP: 0.85, spread: 0.013 }),
+  ..._autoRifle('sg552', 'Krieg 552',      { damage: 33, rangeMod: 0.955, fireInterval: 0.0825, ammo: 30, reload: 3.0,  recoilP: 0.95, spread: 0.014 }),
+  // ── SMGs (group 3, full-auto, 9mm/.45 shells). Stats verified vs ReGameDLL.
+  ..._autoRifle('mp5',   'MP5 Navy',  { damage: 26, rangeMod: 0.84,  fireInterval: 0.0857, ammo: 30, reserve: 120, reload: 2.6, recoilP: 0.55, spread: 0.016, shellType: 'pistol' }),
+  ..._autoRifle('tmp',   'TMP',       { damage: 20, rangeMod: 0.85,  fireInterval: 0.07,   ammo: 30, reserve: 120, reload: 2.1, recoilP: 0.4,  spread: 0.016, shellType: 'pistol', fire: ['shoot'] }),
+  ..._autoRifle('mac10', 'MAC-10',    { damage: 29, rangeMod: 0.82,  fireInterval: 0.07,   ammo: 30, reserve: 100, reload: 3.1, recoilP: 0.6,  spread: 0.02,  shellType: 'pistol' }),
+  ..._autoRifle('ump45', 'UMP45',     { damage: 30, rangeMod: 0.82,  fireInterval: 0.0857, ammo: 25, reserve: 100, reload: 3.5, recoilP: 0.55, spread: 0.016, shellType: 'pistol' }),
+  ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.3, recoilP: 0.5,  spread: 0.016, shellType: 'pistol', idle: 'idle' }),
+  // ── Machine gun (group 5, full-auto). Verified vs ReGameDLL.
+  ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.0857, ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.02, fire: ['shoot1', 'shoot2'] }),
   {
     id: 'usp', label: 'USP',
     jsonFile: 'models/v_usp.json', jsonFileSil: 'models/v_usp_sil.json',
@@ -50,6 +114,8 @@ const WPNS = [
     fireSeqLastUnsil: 'shootlast_unsil',
     fireSeqLastSil:   'shootlast',
     reloadSeq: 'reload_unsil', reloadSeqSil: 'reload',
+    // CS 1.6: 34/bullet (30 silenced), fast range falloff (pistol)
+    damage: 34, rangeMod: 0.79, damageSil: 30, rangeModSil: 0.79,
     recoilKick: 0.04,    // vertical-only screen kick (unchanged)
     // Bullet scatter widens with fast spam (decal only — screen stays vertical),
     // shrinks back to a tight tap once you pause.
@@ -66,8 +132,15 @@ const WPNS = [
     flashSX: 0.5, flashSY: 0.5,
     ammo: 12, maxAmmo: 12,
     reserve: 100, reloadTime: 2.7,
+    slot: 'secondary',
     root: null,
   },
+  // ── Pistols (group 2, semi-auto). Stats verified vs ReGameDLL. Elite (dual-wield)
+  // deferred — it needs alternating left/right shoot sequences.
+  ..._pistol('glock18',   'Glock-18',     { damage: 25, rangeMod: 0.75,  ammo: 20, reserve: 120, reload: 2.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.010, fire: ['shoot', 'shoot2', 'shoot3'] }),
+  ..._pistol('deagle',    'Desert Eagle', { damage: 54, rangeMod: 0.81,  ammo: 7,  reserve: 35,  reload: 2.2, fireInterval: 0.225, recoilKick: 0.08,  spread: 0.006, fire: ['shoot1', 'shoot2'] }),
+  ..._pistol('p228',      'P228 Compact', { damage: 32, rangeMod: 0.8,   ammo: 13, reserve: 52,  reload: 2.7, fireInterval: 0.15,  recoilKick: 0.045, spread: 0.008, fire: ['shoot1', 'shoot2', 'shoot3'] }),
+  ..._pistol('fiveseven', 'Five-SeveN',   { damage: 20, rangeMod: 0.885, ammo: 20, reserve: 100, reload: 3.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.008, fire: ['shoot1', 'shoot2'] }),
   {
     id: 'knife', label: 'KNIFE',
     jsonFile: 'models/v_knife.json',
@@ -77,11 +150,13 @@ const WPNS = [
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12,
     type: 'melee',
+    slashDamage: 20, stabDamage: 65, backstabMult: 3,   // CS 1.6 knife (swing/stab); ×3 from behind
+    slot: 'melee',
     root: null,
   },
 ];
 
-let curWpnIdx  = 2;
+let curWpnIdx  = WPNS.findIndex(w => w.id === 'knife');   // start on the knife
 let nextWpnIdx = -1;
 
 const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5, SILENCER: 6 };
@@ -209,6 +284,8 @@ function _finishSilencer(wpn) {
 
 function switchWeapon(idx) {
   if (idx === curWpnIdx || idx < 0 || idx >= WPNS.length) return;
+  // Only switch to a weapon the player actually owns (knife always owned).
+  if (typeof ownedWeapons !== 'undefined' && !ownedWeapons.has(WPNS[idx].id)) return;
   // Разрешить переключение во время перезарядки или глушителя, но отметить прерывание
   if (ws === WS.RELOAD) {
     WPNS[curWpnIdx]._reloadInterrupted = true;
@@ -281,6 +358,11 @@ function _startMeleeAttack(wpn, isStab) {
     cutRoll = handSign * -0.35 + (Math.random() - 0.5) * 0.12;  // LMB → shallow diagonal upper-left→lower-right
   }
   if (hit) _spawnDecal('knife', 64, 0, cutRoll);
+  if (typeof enemyTryShoot === 'function') enemyTryShoot(48, {   // knife the dummy if in range
+    melee: true,
+    damage: isStab ? (wpn.stabDamage ?? 65) : (wpn.slashDamage ?? 25),
+    backstabMult: wpn.backstabMult ?? 3,
+  });
   wsT = 0; wsHit = false;
   meleeCooldown = cd;
   if (wpn.anim) {
@@ -423,6 +505,14 @@ function updateWeapon(dt) {
         }
         xhairGap += wpn.xhairKick ?? 5;             // each shot kicks the crosshair open
         _spawnDecal('bullet', 4096, shotSpread);
+        let _hitBody = false;
+        if (typeof enemyTryShoot === 'function')                        // hit the target dummy?
+          _hitBody = enemyTryShoot(4096, {
+            damage:   (wpn.silencer && wpn.damageSil   != null) ? wpn.damageSil   : (wpn.damage ?? 30),
+            rangeMod: (wpn.silencer && wpn.rangeModSil != null) ? wpn.rangeModSil : (wpn.rangeMod ?? 0.98),
+          });
+        // Enhanced gore: stain the wall behind a hit body with a blood splat.
+        if (_hitBody && typeof enhancedGore !== 'undefined' && enhancedGore) _spawnDecal('blood', 4096, 0);
         lastShotAge = 0;           // keep recoil in slow-decay (accumulate) mode through the burst
         wpn._pendingFire = true;   // defer flash+eject until _muzzleLocal is current
         wpn._shotCount = sc + 1;
@@ -752,6 +842,16 @@ function applySkeletalAnimation(wpn, dt) {
     _muzzleGsTmp.add(cur.T[wpn.muzzleBone]);
     if (!wpn._muzzleLocal) wpn._muzzleLocal = new THREE.Vector3();
     wpn._muzzleLocal.set(_muzzleGsTmp.x, _muzzleGsTmp.z, -_muzzleGsTmp.y);
+  } else if (wpn.muzzleBone === undefined && wpn.type === 'gun') {
+    // No hand-tuned muzzle bone → use the gun's forward-most vertex (barrel tip).
+    // In view-model space the barrel points +X, so the muzzle is the max-X vertex
+    // (verified: matches the M4's tuned muzzle). Works for any converted gun.
+    let bx = -Infinity, by = 0, bz = 0;
+    wpn.root.children.forEach(mesh => {
+      const pa = mesh.geometry.getAttribute('position').array;
+      for (let i = 0; i < pa.length; i += 3) if (pa[i] > bx) { bx = pa[i]; by = pa[i + 1]; bz = pa[i + 2]; }
+    });
+    if (bx > -Infinity) { if (!wpn._muzzleLocal) wpn._muzzleLocal = new THREE.Vector3(); wpn._muzzleLocal.set(bx, by, bz); }
   }
   if (wpn.ejectionBone !== undefined && cur.T[wpn.ejectionBone]) {
     const org = wpn.ejectionOrg;

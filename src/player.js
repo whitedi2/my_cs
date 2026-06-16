@@ -7,7 +7,7 @@
 // + boneEulerQuat live in weapons.js). Only visible when third-person is enabled.
 
 // Which player model to show (matches a models/player_<name>.json bundle).
-const PLAYER_MODEL = 'gign';
+let playerModelName = 'gign';   // chosen by the team/class menu before the model loads
 
 // ── Third-person toggle (read by input.js / render loop) ────────────────────
 let thirdPerson = false;
@@ -84,7 +84,7 @@ function loadPlayerModel() {
   if (_playerLoaded) return;
   _playerLoaded = true;
   _trackFetchStart();
-  fetch(`models/player_${PLAYER_MODEL}.json`).then(r => r.json()).then(data => {
+  fetch(`models/player_${playerModelName}.json`).then(r => r.json()).then(data => {
   const rig = _buildRig(data.meshes);
   rig.root.visible = false;
   scene.add(rig.root);
@@ -133,7 +133,15 @@ function loadPlayerModel() {
 // so the gun follows the hand; bones the gun adds (flash/muzzle) keep their bind
 // pose. Rigs are parented to player.root, so they inherit its world placement.
 const _gunRigs = {};                                  // weapon id → rig
-const _GUN_FILES = { m4: 'models/p_m4a1.json', usp: 'models/p_usp.json', knife: 'models/p_knife.json' };
+const _GUN_FILES = {
+  m4: 'models/p_m4a1.json', usp: 'models/p_usp.json', knife: 'models/p_knife.json',
+  ak47: 'models/p_ak47.json', galil: 'models/p_galil.json', famas: 'models/p_famas.json',
+  aug: 'models/p_aug.json', sg552: 'models/p_sg552.json',
+  glock18: 'models/p_glock18.json', deagle: 'models/p_deagle.json',
+  p228: 'models/p_p228.json', fiveseven: 'models/p_fiveseven.json',
+  mp5: 'models/p_mp5.json', tmp: 'models/p_tmp.json', mac10: 'models/p_mac10.json',
+  ump45: 'models/p_ump45.json', p90: 'models/p_p90.json', m249: 'models/p_m249.json',
+};
 
 function _loadGunRigs() {
   for (const [id, file] of Object.entries(_GUN_FILES)) {

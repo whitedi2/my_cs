@@ -20,7 +20,11 @@ from pathlib import Path
 
 # Movement sequences we actually drive in third-person. Bind pose = first entry.
 WANTED_SEQS = ['idle1', 'crouch_idle', 'walk', 'run', 'crouchrun', 'jump', 'longjump']
+DEATH_SEQS  = ['death1', 'death2', 'death3', 'head', 'gutshot', 'crouch_die']   # added with --deaths (enemy targets)
+FLINCH_SEQS = ['head_flinch', 'gut_flinch']   # non-lethal hit reactions (with --deaths)
 BIND_SEQ    = 'idle1'
+if '--deaths' in sys.argv:
+    WANTED_SEQS = WANTED_SEQS + DEATH_SEQS
 
 # ── Args ────────────────────────────────────────────────────────────────────
 name = 'urban'
@@ -368,6 +372,23 @@ for s in ANIM_SETS:
     have = ', '.join(aim_sets[s].keys())
     print(f"  Aim set {s!r}: {have}")
 
+# ── Flinch (non-lethal hit reactions) ──────────────────────────────────────
+# 2-frame upper-body twitch, 9 directional blends in the original. We export the
+# center blend (neutral direction) — enough to show a hit reaction on the dummy.
+flinch_out = {}
+if '--deaths' in sys.argv:
+    for sname in FLINCH_SEQS:
+        si = seq_index(sname)
+        if si is None:
+            print(f"  (skip flinch {sname!r}: not in model)"); continue
+        os_ = OSEQ + si * SEQ_SZ
+        nb = i32(os_ + 120); mid = nb // 2
+        fps = f32(os_ + 32); numframes = i32(os_ + 56)
+        frames = [r5(decode_frame(si, f, mid)) for f in range(numframes) if decode_frame(si, f, mid)]
+        if frames:
+            flinch_out[sname] = {'fps': fps, 'frames': frames}
+            print(f"  Flinch {sname!r}: {len(frames)} frames (blend {mid})")
+
 # ── Write bundle ────────────────────────────────────────────────────────────
 result = {
     'name':      name,
@@ -377,6 +398,7 @@ result = {
     'sequences': sequences,
     'bindSeq':   BIND_SEQ,
     'aimSets':   aim_sets,
+    'flinch':    flinch_out,
 }
 out_path = OUT_DIR / "models" / f"player_{name}.json"
 with open(out_path, 'w') as fh:

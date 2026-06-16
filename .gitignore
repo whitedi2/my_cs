@@ -6,3 +6,6 @@ __pycache__/
 *.pyd
 .vscode/
 .idea/
+
+# headless screenshot artifacts (tools/shot.sh)
+_*.png

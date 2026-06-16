@@ -30,6 +30,7 @@ function _rebuildShellRayTargets() {
 const DECAL_MAX         = 64;
 const DECAL_SIZE_BULLET = 14;   // GoldSrc units
 const DECAL_SIZE_KNIFE  = 28;   // GoldSrc units (slash mark)
+const DECAL_SIZE_BLOOD  = 30;   // GoldSrc units (blood splatter)
 const _activeDecals     = [];
 const _decalMeshSet     = new Set();
 const _decalRaycaster   = new THREE.Raycaster();
@@ -107,9 +108,39 @@ function _makeSlashTexture(seed) {
   return tex;
 }
 
+// Procedural blood splat for the wall behind a hit body (enhanced-gore only).
+// Red blobs on white → under MultiplyBlending the white is identity and the blobs
+// stain the wall red (same scheme as the knife marks).
+function _makeBloodSplatTexture(seed) {
+  const S = 64, cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, S, S);
+  let r = seed * 9301 + 49297;
+  const rnd = () => { r = (r * 9301 + 49297) % 233280; return r / 233280; };
+  const blob = (x, y, rad, a) => {
+    const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+    gr.addColorStop(0.0, `rgba(120,6,6,${a})`);
+    gr.addColorStop(0.6, `rgba(150,18,18,${a * 0.8})`);
+    gr.addColorStop(1.0, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, rad, 0, Math.PI * 2); g.fill();
+  };
+  blob(S/2 + (rnd()-0.5)*6, S/2 + (rnd()-0.5)*6, S * 0.28 * (0.8 + rnd()*0.3), 0.85);
+  const k = 4 + Math.floor(rnd() * 4);
+  for (let i = 0; i < k; i++) {
+    const ang = rnd() * Math.PI * 2, d = S * (0.18 + rnd() * 0.26);
+    blob(S/2 + Math.cos(ang)*d, S/2 + Math.sin(ang)*d, S * (0.03 + rnd()*0.06), 0.7 + rnd()*0.25);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
+
 const _decalTex = {
   bullet: [1,2,3,4,5].map(i => _loadDecalTex('decals/shot' + i + '.png' + _decalCacheBust)),
   knife:  [0,1,2,3,4].map(s => _makeSlashTexture(s * 1000 + 7)),   // experimental cut marks
+  blood:  [0,1,2,3].map(s => _makeBloodSplatTexture(s * 1234 + 17)),
 };
 const _decalMatsCache = {};
 const _decalGeo       = new THREE.PlaneGeometry(1, 1);
@@ -169,7 +200,7 @@ function _spawnDecal(type, maxDist, spread, roll) {
   const texArr = _decalTex[type];
   const tex    = texArr[Math.floor(Math.random() * texArr.length)];
   const mat    = _getDecalMat(tex);
-  const size   = type === 'knife' ? DECAL_SIZE_KNIFE : DECAL_SIZE_BULLET;
+  const size   = type === 'knife' ? DECAL_SIZE_KNIFE : type === 'blood' ? DECAL_SIZE_BLOOD : DECAL_SIZE_BULLET;
 
   const mesh = new THREE.Mesh(_decalGeo, mat);
   mesh.scale.setScalar(size);
@@ -296,6 +327,176 @@ function _spawnShell(type, pos, vel) {
     angVel: new THREE.Vector3(rv()*18, rv()*28, rv()*18),
     life: 0, bounces: 0, grounded: false,
   });
+}
+
+// ── Blood (dummy hits) ──────────────────────────────────────────────────────
+// Two modes, pooled camera-facing sprites either way; amount scales with the HP
+// damage dealt (unarmored headshot sprays hard, armored body hit barely bleeds):
+//   • default       — original GoldSrc blood sprites (bloodspray.spr animated puff
+//                      + blood/blooddrop droplets, grayscale tinted red like the engine).
+//   • "Улучшенный урон" (enhancedGore) — our procedural radial-gradient spray + mist.
+const BLOOD_MAX = 90;
+const BLOOD_G   = 600;
+const _bloodPool = [];
+const _ZEROV = new THREE.Vector3();
+
+// Original sprite frames (extracted by tools/extract_spr.py from valve/sprites).
+// The sprites are grayscale (the engine tints them with the blood color); we bake
+// the red in per-pixel at load so the tint never depends on material.color.
+function _bloodSpr(name) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 64;
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  const img = new Image();
+  img.onload = () => {
+    cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+    const g = cv.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const d = g.getImageData(0, 0, cv.width, cv.height), a = d.data;
+    for (let i = 0; i < a.length; i += 4) {
+      // Grayscale → saturated blood red. Floor the red high so dark source pixels
+      // (e.g. blooddrop ≈ 11) don't read as near-black; green/blue stay tiny.
+      const k = ((a[i] + a[i + 1] + a[i + 2]) / 3) / 255;
+      a[i] = Math.min(255, 150 + 105 * k); a[i + 1] = Math.round(16 * k); a[i + 2] = Math.round(16 * k);
+    }
+    g.putImageData(d, 0, 0);
+    tex.needsUpdate = true;
+  };
+  img.src = 'sprites/' + name + '.png';
+  return tex;
+}
+const _spraySprFrames = Array.from({ length: 10 }, (_, i) => _bloodSpr('bloodspray_0' + i));
+const _dropSprTex     = ['blood_03', 'blood_05', 'blooddrop_00', 'blooddrop_01'].map(_bloodSpr);
+
+// Procedural (enhanced) soft droplet.
+function _makeBloodTexture() {
+  const S = 64, cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d');
+  const grad = g.createRadialGradient(S/2, S/2, 0, S/2, S/2, S/2);
+  grad.addColorStop(0.0, 'rgba(140,2,2,1)');
+  grad.addColorStop(0.55, 'rgba(110,0,0,0.85)');
+  grad.addColorStop(1.0, 'rgba(80,0,0,0)');
+  g.fillStyle = grad;
+  g.beginPath(); g.arc(S/2, S/2, S/2, 0, Math.PI*2); g.fill();
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const _bloodTex = _makeBloodTexture();
+
+function _newBloodParticle() {
+  const mat = new THREE.SpriteMaterial({
+    map: null, color: 0xaa0000, transparent: true,
+    depthWrite: false, fog: false, toneMapped: false, opacity: 1,
+  });
+  const sp = new THREE.Sprite(mat);
+  sp.visible = false; sp.frustumCulled = false;
+  scene.add(sp);
+  const p = { sprite: sp, mat, active: false, vel: new THREE.Vector3(),
+              life: 0, ttl: 0, s0: 1, s1: 1, grow: false, gravity: false, fade: 1, frames: null };
+  _bloodPool.push(p);
+  return p;
+}
+
+function _getBloodParticle() {
+  for (const p of _bloodPool) if (!p.active) return p;
+  if (_bloodPool.length < BLOOD_MAX) return _newBloodParticle();
+  let oldest = _bloodPool[0];                 // recycle the longest-lived one
+  for (const p of _bloodPool) if (p.life > oldest.life) oldest = p;
+  return oldest;
+}
+
+// Configure & launch one pooled particle.
+function _emitBlood(cfg) {
+  const p = _getBloodParticle();
+  p.sprite.position.copy(cfg.pos);
+  p.vel.copy(cfg.vel || _ZEROV);
+  p.life = 0; p.ttl = cfg.ttl;
+  p.frames = cfg.frames || null;
+  p.grow = !!cfg.grow; p.gravity = !!cfg.gravity;
+  p.s0 = cfg.s0; p.s1 = cfg.s1 != null ? cfg.s1 : cfg.s0;
+  p.fade = cfg.fade != null ? cfg.fade : 1;
+  p.mat.map = p.frames ? p.frames[0] : cfg.tex;
+  p.mat.color.setHex(cfg.color != null ? cfg.color : 0xffffff);   // red is baked into the textures
+  p.mat.alphaTest = cfg.alphaTest || 0;
+  p.mat.opacity = p.fade; p.mat.rotation = cfg.rot || 0; p.mat.needsUpdate = true;
+  p.sprite.scale.setScalar(p.s0);
+  p.sprite.visible = true; p.active = true;
+}
+
+const _backV = new THREE.Vector3();
+function _bloodBack(dir) {   // unit vector back toward the shooter
+  if (dir) _backV.copy(dir).multiplyScalar(-1); else _backV.set(0, 0, -1);
+  return _backV;
+}
+
+// Original GoldSrc-style: an animated bloodspray puff + a few falling droplets.
+function _spawnBloodOriginal(pos, dir, dmg, hg) {
+  const head = hg === 1;
+  const back = _bloodBack(dir).clone();
+  _emitBlood({
+    pos, vel: back.clone().multiplyScalar(14).setY(18),
+    ttl: 0.26 + Math.random() * 0.1, frames: _spraySprFrames, grow: true,
+    s0: head ? 7 : 4, s1: (head ? 22 : 13) + dmg * 0.06,
+    alphaTest: 0.3, rot: Math.random() * 6.28,
+  });
+  const n = Math.max(2, Math.min(14, Math.round(1 + dmg / 10)));
+  for (let i = 0; i < n; i++) {
+    const v = new THREE.Vector3(
+      back.x + (Math.random() - 0.5), back.y + 0.2 + Math.random() * 0.5, back.z + (Math.random() - 0.5),
+    ).normalize().multiplyScalar(50 + Math.random() * 110 + (head ? 60 : 0));
+    _emitBlood({
+      pos, vel: v, ttl: 0.3 + Math.random() * 0.3, gravity: true,
+      tex: _dropSprTex[(Math.random() * _dropSprTex.length) | 0],
+      s0: 2 + Math.random() * 2.4, alphaTest: 0.3,
+    });
+  }
+}
+
+// Our procedural version: a denser soft spray + a mist puff.
+function _spawnBloodEnhanced(pos, dir, dmg, hg) {
+  const head = hg === 1;
+  const back = _bloodBack(dir).clone();
+  const n = Math.max(2, Math.min(22, Math.round(2 + dmg / 8)));
+  for (let i = 0; i < n; i++) {
+    const v = new THREE.Vector3(
+      back.x + (Math.random() - 0.5) * 1.2, back.y + 0.3 + Math.random() * 0.7, back.z + (Math.random() - 0.5) * 1.2,
+    ).normalize().multiplyScalar(55 + Math.random() * 120 + (head ? 70 : 0));
+    _emitBlood({
+      pos, vel: v, ttl: 0.35 + Math.random() * 0.3, gravity: true, tex: _bloodTex,
+      s0: 1.4 + Math.random() * 2.2 + (head ? 1.4 : 0), color: 0xaa0000,
+    });
+  }
+  const base = (head ? 13 : 8);
+  _emitBlood({ pos, vel: back.clone().multiplyScalar(18), ttl: 0.2, tex: _bloodTex,
+    grow: true, s0: base * 0.5, s1: base * 1.8, color: 0x880000, fade: 0.55 });
+}
+
+// pos: world hit point; dir: bullet travel direction (eye→target); dmg: HP damage; hg: hitgroup.
+function _spawnBlood(pos, dir, dmg, hg) {
+  if (!(dmg > 0)) return;
+  if (typeof enhancedGore !== 'undefined' && enhancedGore) _spawnBloodEnhanced(pos, dir, dmg, hg);
+  else _spawnBloodOriginal(pos, dir, dmg, hg);
+}
+
+function _updateBlood(dt) {
+  for (const p of _bloodPool) {
+    if (!p.active) continue;
+    p.life += dt;
+    if (p.life >= p.ttl) { p.active = false; p.sprite.visible = false; continue; }
+    const t = p.life / p.ttl;
+    if (p.frames) {
+      const fi = Math.min(p.frames.length - 1, (t * p.frames.length) | 0);
+      if (p.mat.map !== p.frames[fi]) { p.mat.map = p.frames[fi]; p.mat.needsUpdate = true; }
+    }
+    if (p.gravity) p.vel.y -= BLOOD_G * dt;
+    p.sprite.position.addScaledVector(p.vel, dt);
+    p.sprite.scale.setScalar(p.grow ? (p.s0 + (p.s1 - p.s0) * t) : p.s0 * (1 - 0.3 * t));
+    p.mat.opacity = p.fade * (p.grow ? (1 - t) : (1 - t * t));
+  }
 }
 
 function _updateShells(dt) {

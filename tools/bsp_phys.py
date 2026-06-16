@@ -44,10 +44,15 @@ headnodes   = list(struct.unpack_from('<4i', data, moff + 36))   # model 0
 
 model_hull1 = []
 model_hull3 = []
+model_aabb  = []   # (mins, maxs) per model, for non-solid trigger brushes (buy zones)
 for i in range(num_models):
-    hn = list(struct.unpack_from('<4i', data, moff + i * MODEL_SIZE + 36))
+    base = moff + i * MODEL_SIZE
+    hn = list(struct.unpack_from('<4i', data, base + 36))
     model_hull1.append(hn[1])
     model_hull3.append(hn[3])
+    mins = list(struct.unpack_from('<3f', data, base))
+    maxs = list(struct.unpack_from('<3f', data, base + 12))
+    model_aabb.append((mins, maxs))
 
 # ── Spawn points + brush entity hull heads from entity lump ───────────────────
 eoff, elen = lump(data, 0)
@@ -63,6 +68,7 @@ NON_SOLID = {
 }
 
 spawns           = {'ct': [], 't': []}
+buyzones         = []   # {min, max} AABBs of func_buyzone brushes (team assigned below)
 solid_heads      = []
 solid_heads_duck = []
 brush_cls        = {}   # classname → count, for diagnostics
@@ -74,9 +80,24 @@ for block in re.findall(r'\{([^}]+)\}', ent_text):
     # Spawns
     if cls in ('info_player_start', 'info_player_deathmatch') and 'origin' in props:
         xyz   = list(map(float, props['origin'].split()))
-        angle = float(props.get('angle', 0))
+        # Yaw is the middle value of "angles" "pitch yaw roll"; fall back to "angle".
+        if 'angles' in props:
+            parts = props['angles'].split()
+            angle = float(parts[1]) if len(parts) >= 2 else 0.0
+        else:
+            angle = float(props.get('angle', 0))
         team  = 'ct' if cls == 'info_player_start' else 't'
         spawns[team].append({'origin': xyz, 'angle': angle})
+
+    # Buy zones (non-solid trigger brushes) — keep their AABB for the buy rule.
+    if cls == 'func_buyzone' and props.get('model', '').startswith('*'):
+        try:
+            idx = int(props['model'][1:])
+            if 0 < idx < len(model_aabb):
+                mins, maxs = model_aabb[idx]
+                buyzones.append({'min': [round(v, 1) for v in mins], 'max': [round(v, 1) for v in maxs]})
+        except ValueError:
+            pass
 
     # All brush entities (have a "*N" model key)
     model_key = props.get('model', '')
@@ -102,6 +123,14 @@ for h1, h3 in zip(solid_heads, solid_heads_duck):
 solid_heads      = sh1
 solid_heads_duck = sh3
 
+# Assign each buy zone a team by which team's spawns fall inside it.
+def _inside(p, z):
+    return all(z['min'][i] <= p[i] <= z['max'][i] for i in range(3))
+for z in buyzones:
+    ct = sum(1 for s in spawns['ct'] if _inside(s['origin'], z))
+    t  = sum(1 for s in spawns['t']  if _inside(s['origin'], z))
+    z['team'] = 'ct' if ct >= t else 't'
+
 # ── Output ────────────────────────────────────────────────────────────────────
 out_path = Path(__file__).parent.parent / "maps" / (Path(BSP).stem + '_hull.json')
 result = {
@@ -112,6 +141,7 @@ result = {
     'planes':       planes,
     'clipnodes':    clipnodes,
     'spawns':       spawns,
+    'buyzones':     buyzones,
 }
 
 with open(out_path, 'w') as f:

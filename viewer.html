@@ -89,10 +89,65 @@
     display: none; text-align: right; letter-spacing: 2px;
     text-shadow: 0 0 5px #000;
   }
+  /* ── Target dummy status (top-center) ── */
+  #target-hud {
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    width: 230px; display: none; flex-direction: column; gap: 5px;
+    font-family: 'Segoe UI', system-ui, sans-serif; color: #e8e8ea;
+    text-shadow: 0 0 4px #000; pointer-events: none;
+  }
+  #th-name { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,.6); text-align: center; }
+  .th-row { display: flex; align-items: center; gap: 7px; }
+  .th-ico { width: 16px; text-align: center; font-size: 13px; }
+  .th-bar { flex: 1; height: 7px; background: rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.15); border-radius: 4px; overflow: hidden; }
+  .th-bar > div { height: 100%; width: 100%; transition: width .12s ease; }
+  #th-hp { background: linear-gradient(90deg, #4caf50, #8bc34a); }
+  #th-ap { background: linear-gradient(90deg, #3d7ce8, #78a8f0); }
+  .th-num { width: 30px; text-align: right; font-size: 13px; font-weight: 600; }
+  #th-last { text-align: center; font-size: 12px; font-weight: 700; letter-spacing: 1px; min-height: 15px; transition: opacity .25s; }
   #ammo-display {
     font-size: 24px; font-weight: bold; letter-spacing: 3px;
     color: rgba(255,255,255,.95);
   }
+  /* ── Money + buy message (bottom-left, above the position HUD) ── */
+  #money {
+    position: absolute; bottom: 60px; left: 16px;
+    font-family: 'Segoe UI', system-ui, sans-serif; font-size: 26px; font-weight: 800;
+    color: #6f6; text-shadow: 0 0 6px #000; display: none;
+  }
+  #buymsg {
+    position: absolute; bottom: 96px; left: 16px;
+    font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; font-weight: 600;
+    color: #e8a33d; text-shadow: 0 0 5px #000;
+  }
+  /* ── Team / buy menus (old-style numeric overlays) ── */
+  #teammenu, #buymenu {
+    position: absolute; top: 50%; left: 40px; transform: translateY(-50%);
+    display: none; min-width: 300px; padding: 4px 0;
+    background: rgba(8,10,14,.82); border: 1px solid rgba(232,163,61,.45); border-radius: 6px;
+    font-family: 'Segoe UI', system-ui, sans-serif; color: #d8d8da;
+    box-shadow: 0 10px 40px rgba(0,0,0,.6); z-index: 8; -webkit-user-select: none; user-select: none;
+  }
+  .tm-title, .bm-head {
+    padding: 10px 16px; font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+    color: #e8a33d; border-bottom: 1px solid rgba(255,255,255,.12); display: flex; justify-content: space-between;
+  }
+  .bm-cat { padding: 7px 16px 3px; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,.4); }
+  .bm-zone { font-size: 11px; font-weight: 600; color: rgba(255,255,255,.5); text-transform: none; letter-spacing: 0; }
+  .tm-row, .bm-row {
+    display: flex; align-items: center; padding: 7px 16px; font-size: 14px; gap: 10px;
+  }
+  .tm-k, .bm-k {
+    display: inline-block; min-width: 18px; text-align: center; font-weight: 700; color: #e8a33d;
+    border: 1px solid rgba(232,163,61,.5); border-radius: 4px; font-size: 12px; padding: 1px 0;
+  }
+  .bm-p { margin-left: auto; color: #6f6; font-weight: 600; }
+  .bm-row.bm-own .bm-p { color: rgba(255,255,255,.5); }
+  .bm-row.bm-own { color: rgba(255,255,255,.55); }
+  .bm-row.bm-no  .bm-p { color: #d66; }
+  .bm-row.bm-na  { color: rgba(255,255,255,.32); }
+  .bm-row.bm-na  .bm-p { color: rgba(255,255,255,.32); }
+  .bm-row.bm-back, .bm-back .bm-k { color: rgba(255,255,255,.55); border-color: rgba(255,255,255,.25); }
 </style>
 </head>
 <script src="config.js"></script>
@@ -112,6 +167,8 @@
       <label><input type="checkbox" id="opt-widescreen" checked> Широкоэкранный FOV</label>
       <label><input type="checkbox" id="opt-right-hand" checked> Правая рука</label>
       <label><input type="checkbox" id="opt-dynamic-crosshair"> Динамичный прицел</label>
+      <label><input type="checkbox" id="opt-enhanced-gore"> Улучшенный урон (кровь)</label>
+      <label><input type="checkbox" id="opt-show-hitboxes"> Показать хитбоксы (отладка)</label>
       <label><input type="checkbox" id="opt-third-person"> Вид от третьего лица (V)</label>
     </div>
     <div id="hint">WASD — движение · Мышь — обзор · Space — прыжок · Shift — шаг · Ctrl — присед<br>
@@ -138,6 +195,16 @@
 <div id="weapon-hud">
   <div id="ammo-display"></div>
   <div id="weapon-name">KNIFE</div>
+</div>
+<div id="money"></div>
+<div id="buymsg"></div>
+<div id="teammenu"></div>
+<div id="buymenu"></div>
+<div id="target-hud">
+  <div id="th-name">Манекен (T) — мишень</div>
+  <div class="th-row"><span class="th-ico" style="color:#8bc34a">♥</span><div class="th-bar"><div id="th-hp"></div></div><span class="th-num" id="th-hp-n">100</span></div>
+  <div class="th-row"><span class="th-ico" style="color:#78a8f0">⛊</span><div class="th-bar"><div id="th-ap"></div></div><span class="th-num" id="th-ap-n">100</span></div>
+  <div id="th-last"></div>
 </div>
 
 <script type="importmap">
@@ -168,10 +235,13 @@
     'src/effects.js',
     'src/weapons.js',
     'src/player.js',
+    'src/enemy.js',
     'src/hud.js',
     'src/physics.js',
+    'src/game.js',
     'src/load.js',
     'src/input.js',
+    'src/autotest.js',
   ];
   for (const src of modules) {
     await new Promise((resolve, reject) => {

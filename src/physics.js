@@ -82,7 +82,14 @@ function traceMove(from, to) {
 
 // ── Player physics ────────────────────────────────────────────────────────
 let gsPos, vel, onGround, wasJump;
-let gsSpawn = null, gsSpawnYaw = 0;   // spawn point/angle (for respawn)
+let gsSpawn = null, gsSpawnYaw = 0;   // reference CT spawn[0] (stable anchor, e.g. for the dummies)
+let spawnPoints = { ct: [], t: [] };  // all team spawn points (origin + angle) from the BSP
+let buyZones    = [];                 // func_buyzone AABBs {min,max,team} from the BSP
+let playerTeam  = 'ct';               // current team — picks which spawns respawn() uses
+
+// GoldSrc entity yaw (deg, 0=+X, 90=+Y) → our yaw. forward(yaw)=(-sin,cos) in GoldSrc,
+// entity forward=(cos θ,sin θ) → yaw = θ − 90°.
+function _angleToYaw(deg) { return (deg - 90) * Math.PI / 180; }
 let duckAmount = 0;          // 0 = standing, 1 = fully crouched
 let phyDucked  = false;      // duck hull (hull3) is physically active
 let smoothCamY = null;       // smoothed camera Y for stair interpolation
@@ -109,18 +116,36 @@ function initPhysics(hull) {
   gEntitySolidHeads     = hull.solid_heads      || [];
   gEntitySolidHeadsDuck = hull.solid_heads_duck || gEntitySolidHeads;
 
-  // Spawn at first CT spawn; fall back to map center
-  const sp = hull.spawns.ct[0];
-  gsSpawn = sp ? [...sp.origin] : [0, 0, 200];
-  gsSpawn[2] += 1;   // tiny lift so we're not exactly on the boundary
-  gsSpawnYaw = sp ? -(sp.angle * Math.PI / 180) : 0;
+  // All spawn points from the BSP (origin + real yaw from "angles").
+  spawnPoints.ct = (hull.spawns && hull.spawns.ct) || [];
+  spawnPoints.t  = (hull.spawns && hull.spawns.t)  || [];
+  buyZones = hull.buyzones || [];
+  // Stable reference = first CT spawn (used to anchor the test dummies).
+  const ref = spawnPoints.ct[0];
+  gsSpawn = ref ? [...ref.origin] : [0, 0, 200];
+  gsSpawn[2] += 1;
+  gsSpawnYaw = ref ? _angleToYaw(ref.angle || 0) : 0;
   respawn();
 }
 
-// Reset the player to the spawn (used by the menu's "Заново").
+// Pick a spawn point for the given team and place the player there facing the
+// point's fixed angle. CS assigns spawns sequentially at round start; for this
+// sandbox we pick a random one each respawn (shows the different fixed view angles).
+function pickSpawn(team) {
+  const list = (spawnPoints[team] && spawnPoints[team].length) ? spawnPoints[team] : spawnPoints.ct;
+  const sp = (list && list.length) ? list[Math.floor(Math.random() * list.length)] : null;
+  if (sp) {
+    gsPos = [sp.origin[0], sp.origin[1], sp.origin[2] + 1];
+    yaw   = _angleToYaw(sp.angle || 0);
+  } else {
+    gsPos = [...gsSpawn];
+    yaw   = gsSpawnYaw;
+  }
+}
+
+// Reset the player to a (re)spawn point. Used by initPhysics and the menu.
 function respawn() {
-  if (!gsSpawn) return;
-  gsPos = [...gsSpawn];
+  pickSpawn(playerTeam);
   vel = [0, 0, 0];
   onGround = false;
   wasJump  = false;
@@ -130,8 +155,13 @@ function respawn() {
   smoothCamY = null;
   recoilPitch = recoilYaw = 0;
   punchPitch = punchVel = punchRoll = punchRollVel = 0;
-  yaw = gsSpawnYaw;
   pitch = 0;
+}
+
+// Switch team and respawn at that team's points (called by the team-select menu).
+function setTeam(team) {
+  playerTeam = (team === 't') ? 't' : 'ct';
+  respawn();
 }
 
 function categorize() {

@@ -34,7 +34,8 @@ Runtime разбит по файлам (порядок загрузки = пор
 | `src/weapons.js` | конфиги оружия, переключение, скелетка, стрельба/отдача, ближний бой | `WPNS`, `switchWeapon`, `_beginDraw`, `toggleSilencer`, `updateWeapon` (стейт-машина `ws`), `applySkeletalAnimation`, `computeBoneWorlds`, `boneEulerMat`, `_startMeleeAttack` |
 | `src/player.js` | модель игрока от 3-го лица (CT `gign`, `PLAYER_MODEL`): двухслойная анимация (ноги=походка, верх=прицел/стрельба/перезарядка по оружию), оружие в руке, чейз-камера с орбитой | `updatePlayerModel`, `_skinRig`, `_updateWeaponAttachment`, `_resolveUpperPose`/`_aimPose`/`_clipPose`, `updateChaseCamera`, `updateOrbit`, `toggleThirdPerson`, `thirdPerson` |
 | `src/hud.js` | прицел и HUD | `drawCrosshair`, `updateHUD` |
-| `src/physics.js` | BSP-трасса + физика игрока | `pointContents`, `_check`, `traceMove`, `playerMove`, `slideMove`, `categorize`, `accel`, `applyFriction`, `initPhysics` |
+| `src/physics.js` | BSP-трасса + физика игрока; точки спауна/угол, зоны закупки, выбор команды | `pointContents`, `traceMove`, `playerMove`, `slideMove`, `categorize`, `accel`, `applyFriction`, `initPhysics`, `pickSpawn`, `respawn`, `setTeam`, `spawnPoints`, `buyZones` |
+| `src/game.js` | состояние матча: команда/класс-меню, деньги, владение оружием, закупка (после physics/weapons/player) | `BUY_CATALOG`, `CLASSES`, `buyItem`, `inBuyZone`, `openBuyMenu`/`buyMenuKey`, `openTeamMenu`/`teamMenuKey`, `ownedWeapons`, `playerMoney`, `updateBuyHUD` |
 | `src/load.js` | загрузка карты/ассетов (после physics, чтобы `initPhysics` была определена) | `objPromise`, `hullPromise`, `Promise.all(...).then(...)` |
 | `src/input.js` | pointer lock, настройки, мышь/клавиатура/оружие, **главный цикл** | `animate(t)`, `updateFOV`, обработчики ввода, `animate(0)` в конце |
 
@@ -115,6 +116,12 @@ docs/              PLAN.md, BROWSER_GUIDE.md
   (`duckAmount>0.5`); угол ставится мгновенно, выравнивается плавно (`punchRoll *= exp(-dt*4)`).
 - **Анти-фолл-тру:** `slideMove` не принимает ход «сквозь солид» при `startsolid`/`allsolid`
   (выталкивает вверх). Не убирать — иначе провал сквозь горки/ящики.
+- **Цель — перенести оригинальные механики CS 1.6, не выдумывать свои.** Числа и формулы геймплея
+  (урон оружия, спад по дистанции, множители hitgroup, броня, отдача/разброс, тайминги, физика) берём
+  из оригинала: ассеты GoldSrc (MDL/BSP/SPR) и логика из **ReGameDLL_CS** (точная реверс-реализация
+  game-dll) / HLSDK. Не подбирать «на глаз», если можно свериться с источником. Любое сознательное
+  или вынужденное расхождение — фиксировать в `docs/DIFFERENCES.md` (и помечать приближения 🔹).
+  Если для механики нет данных в оригинале — спросить, а не сочинять.
 - **Только оригинальная анимация — никакой отсебятины.** Анимация модели/оружия должна браться из
   оригинальных MDL CS 1.6 (или, как запас, из Half-Life GoldSrc). Не выдумывать движения и не
   синтезировать жесты, которых нет в исходных секвенциях. Если нужного движения в модели нет — спросить,

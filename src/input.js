@@ -7,7 +7,7 @@ let isLocked = false, hasStarted = false;
 const $overlay    = document.getElementById('overlay');
 const $btnPlay    = document.getElementById('btn-play');
 const $btnRestart = document.getElementById('btn-restart');
-let gameLoading = false;
+let gameLoading = false, gameLoadStart = 0;
 const $gameload = document.getElementById('gameload');
 const $glFill = document.getElementById('gl-fill');
 const $glPct  = document.getElementById('gl-pct');
@@ -15,10 +15,10 @@ const $glPct  = document.getElementById('gl-pct');
 function _startGame() {
   if (!mapReady) return;          // map still streaming
   loadWeaponModels();             // other assets load lazily on first Start
-  loadPlayerModel();
+  loadEnemy();                    // player model loads after team/class is chosen
   // Lock now (needs the click gesture); cover the still-loading models with a
   // progress screen and reveal the game only once everything is ready.
-  if (!gameAssetsReady()) { gameLoading = true; $gameload.style.display = 'flex'; }
+  if (!gameAssetsReady()) { gameLoading = true; gameLoadStart = performance.now(); $gameload.style.display = 'flex'; }
   renderer.domElement.requestPointerLock();
 }
 $btnPlay.addEventListener('click', _startGame);
@@ -64,18 +64,25 @@ function _renderMenuBackdrop(dt) {
 let mouseIgnore = 0;   // events to skip after pointer lock (avoid initial large delta)
 document.addEventListener('pointerlockchange', () => {
   isLocked = document.pointerLockElement === renderer.domElement;
-  if (isLocked) { mouseIgnore = 5; hasStarted = true; }
-  else {
+  if (isLocked) {
+    mouseIgnore = 5; hasStarted = true;
+    // First time in: choose team & class (old-style menu) before playing.
+    if (typeof hasJoined !== 'undefined' && !hasJoined) openTeamMenu();
+  } else {
     // Menu shown (first time or paused): primary button label + restart visibility.
     $btnPlay.textContent      = hasStarted ? 'Продолжить' : 'Начать игру';
     $btnRestart.style.display = hasStarted ? '' : 'none';
     gameLoading = false; $gameload.style.display = 'none';   // ESC during load → back to menu
+    if (typeof closeBuyMenu === 'function') closeBuyMenu();
+    document.getElementById('teammenu').style.display = 'none';
   }
   $overlay.style.display = isLocked ? 'none' : 'flex';
   document.getElementById('crosshair').style.display  = isLocked ? 'block' : 'none';
   document.getElementById('hud').style.display        = isLocked ? 'block' : 'none';
   document.getElementById('keys').style.display       = isLocked ? 'block' : 'none';
   document.getElementById('weapon-hud').style.display = isLocked ? 'block' : 'none';
+  document.getElementById('target-hud').style.display = isLocked ? 'flex'  : 'none';
+  document.getElementById('money').style.display      = isLocked ? 'block' : 'none';
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────
@@ -83,6 +90,8 @@ let invertY          = CONFIG.invertY;
 let widescreenFOV    = CONFIG.widescreenFOV;
 let rightHand        = CONFIG.rightHand;
 let dynamicCrosshair = CONFIG.dynamicCrosshair ?? false;  // cl_dynamiccrosshair (off by default)
+let enhancedGore     = CONFIG.enhancedGore ?? false;      // our procedural blood vs original sprites (off = original)
+let showHitboxes     = false;                             // debug: draw dummy hit-zone cylinders
 
 function updateFOV() {
   if (widescreenFOV) {
@@ -110,6 +119,8 @@ document.getElementById('opt-invert-y').addEventListener('change',   e => { inve
 document.getElementById('opt-widescreen').addEventListener('change', e => { widescreenFOV = e.target.checked; updateFOV(); });
 document.getElementById('opt-right-hand').addEventListener('change', e => { rightHand = e.target.checked; updateVmCamera(); });
 document.getElementById('opt-dynamic-crosshair').addEventListener('change', e => { dynamicCrosshair = e.target.checked; });
+document.getElementById('opt-enhanced-gore').addEventListener('change', e => { enhancedGore = e.target.checked; });
+document.getElementById('opt-show-hitboxes').addEventListener('change', e => { showHitboxes = e.target.checked; if (typeof setHitboxDebug === 'function') setHitboxDebug(showHitboxes); });
 document.getElementById('opt-third-person').addEventListener('change', e => { toggleThirdPerson(e.target.checked); });
 
 // ── Mouse look ────────────────────────────────────────────────────────────
@@ -132,12 +143,28 @@ const keys = {};
 document.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (!isLocked) return;
+  // Team/buy menus are numeric (CS-style): route number keys to them, block gameplay.
+  if (teamStage || buyOpen) {
+    const m = e.code.match(/^(?:Digit|Numpad)(\d)$/);
+    if (m) { const n = +m[1]; if (teamStage) teamMenuKey(n); else buyMenuKey(n); e.preventDefault(); return; }
+    if (buyOpen && e.code === 'KeyB') { closeBuyMenu(); return; }
+    if (teamStage) return;                 // nothing else works during team select
+  }
+  if (e.code === 'KeyB') { openBuyMenu(); return; }
   // Arrow keys orbit the third-person camera — keep them from scrolling the page.
   if (thirdPerson && e.code.startsWith('Arrow')) e.preventDefault();
-  if (e.code === 'Digit1') switchWeapon(WPNS.findIndex(w => w.id === 'm4'));
-  if (e.code === 'Digit2') switchWeapon(WPNS.findIndex(w => w.id === 'usp'));
-  if (e.code === 'Digit3') switchWeapon(WPNS.findIndex(w => w.id === 'knife'));
-  if (e.code === 'KeyQ')   switchWeapon((curWpnIdx + WPNS.length - 1) % WPNS.length);
+  // Slot keys pick the OWNED weapon in that slot (1 primary, 2 secondary, 3 knife).
+  const _ownedSlot = slot => WPNS.findIndex(w => w.slot === slot &&
+    (slot === 'melee' || typeof ownedWeapons === 'undefined' || ownedWeapons.has(w.id)));
+  if (e.code === 'Digit1') { const i = _ownedSlot('primary');   if (i >= 0) switchWeapon(i); }
+  if (e.code === 'Digit2') { const i = _ownedSlot('secondary'); if (i >= 0) switchWeapon(i); }
+  if (e.code === 'Digit3') { const i = _ownedSlot('melee');     if (i >= 0) switchWeapon(i); }
+  if (e.code === 'KeyQ') {   // previous owned weapon
+    for (let k = 1; k < WPNS.length; k++) {
+      const i = (curWpnIdx + WPNS.length - k) % WPNS.length;
+      if (WPNS[i].slot === 'melee' || typeof ownedWeapons === 'undefined' || ownedWeapons.has(WPNS[i].id)) { switchWeapon(i); break; }
+    }
+  }
   if (e.code === 'KeyF')   toggleSilencer();
   if (e.code === 'KeyV')   toggleThirdPerson();
   if (e.code === 'KeyR') {
@@ -204,15 +231,24 @@ function animate(t) {
   if (gameLoading) {
     const p = Math.round(gameAssetsProgress() * 100);
     $glFill.style.width = p + '%';
-    $glPct.textContent = p + '%';
-    if (gameAssetsReady()) { gameLoading = false; $gameload.style.display = 'none'; }
+    $glPct.textContent = `${p}%  (модели ${_modelFetchTotal - _modelFetchPending}/${_modelFetchTotal}, текстуры ${_assetMgr.itemsLoaded}/${_assetMgr.itemsTotal})`;
+    let ready = false;
+    try { ready = gameAssetsReady(); } catch (e) { console.error('gameAssetsReady', e); ready = true; }
+    // Safety: never hang the loading screen — reveal after 15s no matter what.
+    if (ready || performance.now() - gameLoadStart > 15000) {
+      gameLoading = false; $gameload.style.display = 'none';
+    }
   }
 
   if (isLocked && gsPos && !gameLoading) {
-    playerMove(dt);
-    updateWeapon(dt);
+    if (!teamStage) {              // frozen while choosing team/class
+      playerMove(dt);
+      updateWeapon(dt);
+    }
     updatePlayerModel(dt);
+    updateEnemy(dt);
     updateHUD();
+    if (typeof updateBuyHUD === 'function') updateBuyHUD();
     const spd = Math.hypot(vel[0], vel[1]);
     document.getElementById('pos').textContent =
       `XYZ  ${gsPos[0].toFixed(0)}  ${gsPos[1].toFixed(0)}  ${gsPos[2].toFixed(0)}`;
@@ -251,6 +287,7 @@ function animate(t) {
     renderer.render(scene, camera);
     renderer.clearDepth();
     _updateShells(dt);
+    _updateBlood(dt);              // blood spray/mist from dummy hits
     // In third-person the view-model/muzzle-flash overlay is hidden (we see the
     // world-space player model instead).
     if (!thirdPerson) {

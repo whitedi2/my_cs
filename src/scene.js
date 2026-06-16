@@ -26,9 +26,13 @@ function gameAssetsProgress() {
   return total > 0 ? loaded / total : 0;
 }
 function gameAssetsReady() {
+  // Gate on the model fetches (incl. the multi-MB anim JSONs) + the visible rigs.
+  // Textures route through _assetMgr but we don't hard-gate on it: a single
+  // texture error could leave it unbalanced forever, and the small textures finish
+  // well before the big anim fetches the counter already waits on.
+  // Player model loads after team/class selection, so don't gate on it here.
   return _modelFetchTotal > 0 && _modelFetchPending === 0
-      && _assetMgr.itemsLoaded >= _assetMgr.itemsTotal
-      && !!player.root && !!(typeof curW === 'function' && curW() && curW().root);
+      && !!(typeof curW === 'function' && curW() && curW().root);
 }
 
 const camera = new THREE.PerspectiveCamera(73.74, innerWidth / innerHeight, 1, 12000);

@@ -77,7 +77,13 @@ def extract_spr(filepath, outdir):
     print(f"{filepath}: {frame_idx} frames extracted")
 
 sprites_src = "D:/SteamLibrary/steamapps/common/Half-Life/cstrike/sprites/"
+valve_src   = "D:/SteamLibrary/steamapps/common/Half-Life/valve/sprites/"
 out_dir     = "d:/Code/my_cs/sprites/"
 
 for name in ["muzzleflash1.spr", "muzzleflash2.spr", "muzzleflash3.spr", "muzzleflash4.spr"]:
     extract_spr(os.path.join(sprites_src, name), out_dir)
+
+# Blood sprites live in the Half-Life base game (valve/), not cstrike/.
+# blood.spr = spray cloud (animated), bloodspray.spr = streaks, blooddrop.spr = drop.
+for name in ["blood.spr", "bloodspray.spr", "blooddrop.spr"]:
+    extract_spr(os.path.join(valve_src, name), out_dir)
