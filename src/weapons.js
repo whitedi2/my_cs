@@ -21,7 +21,9 @@ function _autoRifle(id, label, s) {
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12, type: 'gun', shellType: s.shellType || 'rifle',
-    flashSX: 0.5, flashSY: 0.5,
+    flashSX: 0.5, flashSY: 0.5, flashType: s.flashType || 'rifle',
+    muzzleBone: s.muzzleBone, muzzleOrg: s.muzzleOrg,         // attachment 0 from the MDL
+    ejectionBone: s.ejectBone, ejectionOrg: s.ejectOrg,      // attachment 1 from the MDL
     ammo: s.ammo, maxAmmo: s.ammo, reserve: s.reserve || 90, reloadTime: s.reload,
     slot: 'primary',
     root: null,
@@ -42,7 +44,9 @@ function _pistol(id, label, s) {
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12, type: 'gun', shellType: 'pistol',
-    flashSX: 0.5, flashSY: 0.5,
+    flashSX: 0.5, flashSY: 0.5, flashType: 'pistol',
+    muzzleBone: s.muzzleBone, muzzleOrg: s.muzzleOrg,         // attachment 0 from the MDL
+    ejectionBone: s.ejectBone, ejectionOrg: s.ejectOrg,      // attachment 1 from the MDL
     ammo: s.ammo, maxAmmo: s.ammo, reserve: s.reserve, reloadTime: s.reload,
     slot: 'secondary',
     root: null,
@@ -82,7 +86,7 @@ const WPNS = [
     scale: 0.12, type: 'gun',
     muzzleBone: 41, muzzleOrg: [0, -14.25, 0], muzzleOrgSil: [0, -18.5, 0],
     ejectionBone: 41, ejectionOrg: [0, -1.25, 0], shellType: 'rifle',
-    flashSX: 0.5, flashSY: 0.5,
+    flashSX: 0.5, flashSY: 0.5, flashType: 'rifle',
     ammo: 30, maxAmmo: 30,
     reserve: 90, reloadTime: 3.1,
     slot: 'primary',
@@ -91,19 +95,19 @@ const WPNS = [
   // ── Auto-rifles (group 1). Stats verified vs ReGameDLL; view-model placement
   // reuses the shared rig offsets; muzzle/ejection bones omitted (flash/shell fall
   // back to centered) — to be tuned per model later. Sequences: idle1/shoot1-3/reload/draw.
-  ..._autoRifle('ak47',  'AK-47',          { damage: 36, rangeMod: 0.98,  fireInterval: 0.0955, ammo: 30, reload: 2.45, recoilP: 1.05, spread: 0.016 }),
-  ..._autoRifle('galil', 'IDF Defender',   { damage: 30, rangeMod: 0.98,  fireInterval: 0.0875, ammo: 35, reload: 2.45, recoilP: 0.9,  spread: 0.014 }),
-  ..._autoRifle('famas', 'Clarion 5.56',   { damage: 30, rangeMod: 0.96,  fireInterval: 0.0825, ammo: 25, reload: 3.3,  recoilP: 0.8,  spread: 0.013 }),
-  ..._autoRifle('aug',   'Bullpup',        { damage: 32, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 30, reload: 3.3,  recoilP: 0.85, spread: 0.013 }),
-  ..._autoRifle('sg552', 'Krieg 552',      { damage: 33, rangeMod: 0.955, fireInterval: 0.0825, ammo: 30, reload: 3.0,  recoilP: 0.95, spread: 0.014 }),
+  ..._autoRifle('ak47',  'AK-47',          { damage: 36, rangeMod: 0.98,  fireInterval: 0.0955, ammo: 30, reload: 2.45, recoilP: 1.05, spread: 0.016, muzzleBone: 20, muzzleOrg: [2.75, -22.5, 2.9],  ejectBone: 41, ejectOrg: [0, -3.0, 0] }),
+  ..._autoRifle('galil', 'IDF Defender',   { damage: 30, rangeMod: 0.98,  fireInterval: 0.0875, ammo: 35, reload: 2.45, recoilP: 0.9,  spread: 0.014, muzzleBone: 12, muzzleOrg: [0, -20.18, 0.42],  ejectBone: 12, ejectOrg: [-0.6, -3.9, 1.0] }),
+  ..._autoRifle('famas', 'Clarion 5.56',   { damage: 30, rangeMod: 0.96,  fireInterval: 0.0825, ammo: 25, reload: 3.3,  recoilP: 0.8,  spread: 0.013, muzzleBone: 45, muzzleOrg: [0, 14.5, -2.9],    ejectBone: 45, ejectOrg: [-0.8, -4.4, -3.2] }),
+  ..._autoRifle('aug',   'Bullpup',        { damage: 32, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 30, reload: 3.3,  recoilP: 0.85, spread: 0.013, muzzleBone: 20, muzzleOrg: [2.4, -15.7, 1.1],   ejectBone: 41, ejectOrg: [-0.75, 4.0, 0.75] }),
+  ..._autoRifle('sg552', 'Krieg 552',      { damage: 33, rangeMod: 0.955, fireInterval: 0.0825, ammo: 30, reload: 3.0,  recoilP: 0.95, spread: 0.014, muzzleBone: 38, muzzleOrg: [0, -11.25, -0.5],  ejectBone: 38, ejectOrg: [0, -1.0, 0] }),
   // ── SMGs (group 3, full-auto, 9mm/.45 shells). Stats verified vs ReGameDLL.
-  ..._autoRifle('mp5',   'MP5 Navy',  { damage: 26, rangeMod: 0.84,  fireInterval: 0.0857, ammo: 30, reserve: 120, reload: 2.6, recoilP: 0.55, spread: 0.016, shellType: 'pistol' }),
-  ..._autoRifle('tmp',   'TMP',       { damage: 20, rangeMod: 0.85,  fireInterval: 0.07,   ammo: 30, reserve: 120, reload: 2.1, recoilP: 0.4,  spread: 0.016, shellType: 'pistol', fire: ['shoot'] }),
-  ..._autoRifle('mac10', 'MAC-10',    { damage: 29, rangeMod: 0.82,  fireInterval: 0.07,   ammo: 30, reserve: 100, reload: 3.1, recoilP: 0.6,  spread: 0.02,  shellType: 'pistol' }),
-  ..._autoRifle('ump45', 'UMP45',     { damage: 30, rangeMod: 0.82,  fireInterval: 0.0857, ammo: 25, reserve: 100, reload: 3.5, recoilP: 0.55, spread: 0.016, shellType: 'pistol' }),
-  ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.3, recoilP: 0.5,  spread: 0.016, shellType: 'pistol', idle: 'idle' }),
+  ..._autoRifle('mp5',   'MP5 Navy',  { damage: 26, rangeMod: 0.84,  fireInterval: 0.0857, ammo: 30, reserve: 120, reload: 2.6, recoilP: 0.55, spread: 0.016, shellType: 'pistol', muzzleBone: 20, muzzleOrg: [3.4, -13.7, 2.5],  ejectBone: 38, ejectOrg: [0, -1.5, 0] }),
+  ..._autoRifle('tmp',   'TMP',       { damage: 20, rangeMod: 0.85,  fireInterval: 0.07,   ammo: 30, reserve: 120, reload: 2.1, recoilP: 0.4,  spread: 0.016, shellType: 'pistol', fire: ['shoot'], muzzleBone: 20, muzzleOrg: [2.5, -15.8, 2.25],  ejectBone: 40, ejectOrg: [0, -1.0, 0.5] }),
+  ..._autoRifle('mac10', 'MAC-10',    { damage: 29, rangeMod: 0.82,  fireInterval: 0.07,   ammo: 30, reserve: 100, reload: 3.1, recoilP: 0.6,  spread: 0.02,  shellType: 'pistol', muzzleBone: 20, muzzleOrg: [2.0, -8.0, 0.5],   ejectBone: 40, ejectOrg: [0, -2.0, 0] }),
+  ..._autoRifle('ump45', 'UMP45',     { damage: 30, rangeMod: 0.82,  fireInterval: 0.0857, ammo: 25, reserve: 100, reload: 3.5, recoilP: 0.55, spread: 0.016, shellType: 'pistol', muzzleBone: 41, muzzleOrg: [0, -8.3, 0],       ejectBone: 41, ejectOrg: [0, -1.0, 0] }),
+  ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.3, recoilP: 0.5,  spread: 0.016, shellType: 'pistol', idle: 'idle', muzzleBone: 20, muzzleOrg: [1.9, -8.6, 1.5],   ejectBone: 39, ejectOrg: [1.0, -2.0, 0] }),
   // ── Machine gun (group 5, full-auto). Verified vs ReGameDLL.
-  ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.0857, ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.02, fire: ['shoot1', 'shoot2'] }),
+  ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.0857, ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.02, fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [3.6, -18.4, 2.75],  ejectBone: 49, ejectOrg: [0, 0, 0] }),
   {
     id: 'usp', label: 'USP',
     jsonFile: 'models/v_usp.json', jsonFileSil: 'models/v_usp_sil.json',
@@ -129,7 +133,7 @@ const WPNS = [
     scale: 0.12, type: 'gun',
     muzzleBone: 20, muzzleOrg: [2.6, -8.1, 1.5], muzzleOrgSil: [2.6, -13.3, 2.0],
     ejectionBone: 42, ejectionOrg: [0, -1.5, 0], shellType: 'pistol',
-    flashSX: 0.5, flashSY: 0.5,
+    flashSX: 0.5, flashSY: 0.5, flashType: 'pistol',
     ammo: 12, maxAmmo: 12,
     reserve: 100, reloadTime: 2.7,
     slot: 'secondary',
@@ -137,10 +141,10 @@ const WPNS = [
   },
   // ── Pistols (group 2, semi-auto). Stats verified vs ReGameDLL. Elite (dual-wield)
   // deferred — it needs alternating left/right shoot sequences.
-  ..._pistol('glock18',   'Glock-18',     { damage: 25, rangeMod: 0.75,  ammo: 20, reserve: 120, reload: 2.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.010, fire: ['shoot', 'shoot2', 'shoot3'] }),
-  ..._pistol('deagle',    'Desert Eagle', { damage: 54, rangeMod: 0.81,  ammo: 7,  reserve: 35,  reload: 2.2, fireInterval: 0.225, recoilKick: 0.08,  spread: 0.006, fire: ['shoot1', 'shoot2'] }),
-  ..._pistol('p228',      'P228 Compact', { damage: 32, rangeMod: 0.8,   ammo: 13, reserve: 52,  reload: 2.7, fireInterval: 0.15,  recoilKick: 0.045, spread: 0.008, fire: ['shoot1', 'shoot2', 'shoot3'] }),
-  ..._pistol('fiveseven', 'Five-SeveN',   { damage: 20, rangeMod: 0.885, ammo: 20, reserve: 100, reload: 3.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.008, fire: ['shoot1', 'shoot2'] }),
+  ..._pistol('glock18',   'Glock-18',     { damage: 25, rangeMod: 0.75,  ammo: 20, reserve: 120, reload: 2.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.010, fire: ['shoot', 'shoot2', 'shoot3'], muzzleBone: 20, muzzleOrg: [2.5, -8.7, 1.7],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
+  ..._pistol('deagle',    'Desert Eagle', { damage: 54, rangeMod: 0.81,  ammo: 7,  reserve: 35,  reload: 2.2, fireInterval: 0.225, recoilKick: 0.08,  spread: 0.006, fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [2.6, -8.8, 1.4],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
+  ..._pistol('p228',      'P228 Compact', { damage: 32, rangeMod: 0.8,   ammo: 13, reserve: 52,  reload: 2.7, fireInterval: 0.15,  recoilKick: 0.045, spread: 0.008, fire: ['shoot1', 'shoot2', 'shoot3'], muzzleBone: 20, muzzleOrg: [2.6, -6.8, 1.5],  ejectBone: 39, ejectOrg: [0, -2.0, 0] }),
+  ..._pistol('fiveseven', 'Five-SeveN',   { damage: 20, rangeMod: 0.885, ammo: 20, reserve: 100, reload: 3.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.008, fire: ['shoot1', 'shoot2'], muzzleBone: 41, muzzleOrg: [0, -6.0, 0],  ejectBone: 41, ejectOrg: [0, -2.5, 0] }),
   {
     id: 'knife', label: 'KNIFE',
     jsonFile: 'models/v_knife.json',
@@ -243,6 +247,14 @@ function loadWeaponModels() {
       fetch(animFile).then(r => r.ok ? r.json() : Promise.reject())
         .then(animData => {
           wpn.anim = { bones: animData.bones, seqs: animData.sequences, curFrame: 0 };
+          // Resolve idle sequence name against what this MDL actually contains
+          // (some use 'idle', others 'idle1'). A wrong name leaves idleWorld null,
+          // which aborts the whole skeletal update (no animation, no muzzle/shell).
+          const has = n => animData.sequences.some(s => s.name === n);
+          if (wpn.idleSeq && !has(wpn.idleSeq)) {
+            const found = animData.sequences.find(s => /idle/i.test(s.name));
+            if (found) { console.warn(`${wpn.id}: idle '${wpn.idleSeq}' missing → using '${found.name}'`); wpn.idleSeq = found.name; }
+          }
           console.log(`Anim loaded: ${wpn.id} (${animData.bones.length} bones)`);
         }).catch(() => {}).finally(_trackFetchEnd);
 
@@ -835,23 +847,19 @@ function applySkeletalAnimation(wpn, dt) {
     posAttr.needsUpdate = true;
   });
 
-  // Cache muzzle and ejection port positions in vmScene-local space
+  // Cache muzzle and ejection port positions in vmScene-local space.
+  // Both come from the MDL attachments (0 = muzzle, 1 = shell port) — no guessing.
+  // If a gun has no muzzle/ejection bone configured, the effect is simply skipped
+  // (warn once) rather than placed at an invented spot.
   if (wpn.muzzleBone !== undefined && cur.T[wpn.muzzleBone]) {
     const org = (wpn.silencer && wpn.muzzleOrgSil) ? wpn.muzzleOrgSil : wpn.muzzleOrg;
     _muzzleGsTmp.set(org[0], org[1], org[2]).applyMatrix4(cur.R[wpn.muzzleBone]);
     _muzzleGsTmp.add(cur.T[wpn.muzzleBone]);
     if (!wpn._muzzleLocal) wpn._muzzleLocal = new THREE.Vector3();
     wpn._muzzleLocal.set(_muzzleGsTmp.x, _muzzleGsTmp.z, -_muzzleGsTmp.y);
-  } else if (wpn.muzzleBone === undefined && wpn.type === 'gun') {
-    // No hand-tuned muzzle bone → use the gun's forward-most vertex (barrel tip).
-    // In view-model space the barrel points +X, so the muzzle is the max-X vertex
-    // (verified: matches the M4's tuned muzzle). Works for any converted gun.
-    let bx = -Infinity, by = 0, bz = 0;
-    wpn.root.children.forEach(mesh => {
-      const pa = mesh.geometry.getAttribute('position').array;
-      for (let i = 0; i < pa.length; i += 3) if (pa[i] > bx) { bx = pa[i]; by = pa[i + 1]; bz = pa[i + 2]; }
-    });
-    if (bx > -Infinity) { if (!wpn._muzzleLocal) wpn._muzzleLocal = new THREE.Vector3(); wpn._muzzleLocal.set(bx, by, bz); }
+  } else if (wpn.type === 'gun' && !wpn._warnedMuzzle) {
+    wpn._warnedMuzzle = true;
+    console.warn(`${wpn.id}: no muzzle bone (MDL attachment 0) — muzzle flash disabled`);
   }
   if (wpn.ejectionBone !== undefined && cur.T[wpn.ejectionBone]) {
     const org = wpn.ejectionOrg;
@@ -859,6 +867,9 @@ function applySkeletalAnimation(wpn, dt) {
     _muzzleGsTmp.add(cur.T[wpn.ejectionBone]);
     if (!wpn._ejectionLocal) wpn._ejectionLocal = new THREE.Vector3();
     wpn._ejectionLocal.set(_muzzleGsTmp.x, _muzzleGsTmp.z, -_muzzleGsTmp.y);
+  } else if (wpn.type === 'gun' && wpn.shellType && !wpn._warnedEject) {
+    wpn._warnedEject = true;
+    console.warn(`${wpn.id}: no ejection bone (MDL attachment 1) — shell ejection disabled`);
   }
 }
 

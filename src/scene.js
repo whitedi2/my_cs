@@ -110,10 +110,12 @@ function _loadAdditiveSprite(src) {
   return ref;
 }
 
+// Flash sprite sets keyed by flashType: 'rifle' = big M4-style flash (muzzleflash3),
+// 'pistol' = small flash (muzzleflash2). 'sil' = suppressed (small, dim — used for M4 silencer).
 const _mflashFrames = {
-  m4:    [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash3_0${n}.png`)),
-  m4sil: [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash2_0${n}.png`)),
-  usp:   [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash2_0${n}.png`)),
+  rifle:  [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash3_0${n}.png`)),
+  pistol: [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash2_0${n}.png`)),
+  sil:    [0,1,2].map(n => _loadAdditiveSprite(`sprites/muzzleflash2_0${n}.png`)),
 };
 
 // Orthographic 2D flash scene — aspect-ratio aware so square plane = square on screen
@@ -150,8 +152,8 @@ function _vmProjectNDC(v) {
 
 function _showFlash(wpn) {
   if (wpn.type !== 'gun') return;
-  const key = (wpn.id === 'm4' && wpn.silencer) ? 'm4sil' : wpn.id;
-  const frames = _mflashFrames[key] ?? _mflashFrames.usp;
+  const key = wpn.silencer ? 'sil' : (wpn.flashType || 'pistol');
+  const frames = _mflashFrames[key] ?? _mflashFrames.pistol;
   const frame  = frames[Math.floor(Math.random() * frames.length)];
   if (!frame.tex) return;
   _flashMat2D.map = frame.tex;
@@ -196,8 +198,8 @@ scene.add(_worldFlash);
 let _worldFlashStart = -Infinity;
 
 function _showFlashWorld(pos, wpn) {
-  const key = (wpn.id === 'm4' && wpn.silencer) ? 'm4sil' : wpn.id;
-  const frames = _mflashFrames[key] ?? _mflashFrames.usp;
+  const key = wpn.silencer ? 'sil' : (wpn.flashType || 'pistol');
+  const frames = _mflashFrames[key] ?? _mflashFrames.pistol;
   const frame = frames[Math.floor(Math.random() * frames.length)];
   if (!frame.tex) return;
   _worldFlashMat.map = frame.tex; _worldFlashMat.needsUpdate = true;

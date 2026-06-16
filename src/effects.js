@@ -279,22 +279,17 @@ function _ejectShell(wpn) {
   // _vmProjectNDC returns the same screen NDC as the world camera projection,
   // so we can use it to find the matching world position at SPAWN_DEPTH.
   let pos;
-  if (wpn._ejectionLocal) {
-    wpn.root.updateMatrixWorld();
-    const vmPos = wpn._ejectionLocal.clone();
-    wpn.root.localToWorld(vmPos);
-    const [nx, ny] = _vmProjectNDC(vmPos);
-    pos = eyePos.clone()
-      .addScaledVector(fwd,      SPAWN_DEPTH)
-      .addScaledVector(camRight, nx * ar * SPAWN_DEPTH / fy)
-      .addScaledVector(camUp,    ny      * SPAWN_DEPTH / fy);
-  } else {
-    const ejectSign = rightHand ? -1 : 1;
-    pos = eyePos.clone()
-      .addScaledVector(fwd, SPAWN_DEPTH)
-      .addScaledVector(camRight, ejectSign * 5)
-      .addScaledVector(camUp, -6);
-  }
+  // Shell port comes from the MDL attachment 1 (wpn._ejectionLocal). If it isn't
+  // resolved, skip the shell rather than ejecting from a guessed offset.
+  if (!wpn._ejectionLocal) return;
+  wpn.root.updateMatrixWorld();
+  const vmPos = wpn._ejectionLocal.clone();
+  wpn.root.localToWorld(vmPos);
+  const [nx, ny] = _vmProjectNDC(vmPos);
+  pos = eyePos.clone()
+    .addScaledVector(fwd,      SPAWN_DEPTH)
+    .addScaledVector(camRight, nx * ar * SPAWN_DEPTH / fy)
+    .addScaledVector(camUp,    ny      * SPAWN_DEPTH / fy);
 
   // Velocity in camera-local space so shells eject correctly regardless of aim direction
   const ejectSign = rightHand ? -1 : 1;
