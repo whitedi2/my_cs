@@ -170,9 +170,10 @@
       <label><input type="checkbox" id="opt-enhanced-gore"> Улучшенный урон (кровь)</label>
       <label><input type="checkbox" id="opt-show-hitboxes"> Показать хитбоксы (отладка)</label>
       <label><input type="checkbox" id="opt-third-person"> Вид от третьего лица (V)</label>
+      <label>Громкость <input type="range" id="opt-volume" min="0" max="100" value="70" style="flex:1; accent-color:#e8a33d;"></label>
     </div>
     <div id="hint">WASD — движение · Мышь — обзор · Space — прыжок · Shift — шаг · Ctrl — присед<br>
-      1/2/3 — оружие · R — перезарядка · ЛКМ/ПКМ — атака · V — 3-е лицо · ESC — пауза</div>
+      1/2/3 — оружие · R — перезарядка · G — выбросить · ЛКМ/ПКМ — атака · V — 3-е лицо · ESC — пауза</div>
   </div>
 </div>
 <div id="gameload">
@@ -232,6 +233,7 @@
   // input.js is last because it starts the render loop.
   const modules = [
     'src/scene.js',
+    'src/audio.js',
     'src/effects.js',
     'src/weapons.js',
     'src/player.js',
@@ -239,6 +241,7 @@
     'src/hud.js',
     'src/physics.js',
     'src/game.js',
+    'src/pickups.js',
     'src/load.js',
     'src/input.js',
     'src/autotest.js',

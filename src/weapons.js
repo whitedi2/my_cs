@@ -16,6 +16,7 @@ function _autoRifle(id, label, s) {
     fireSeq: fire[0], fireSeqsUnsil: fire,
     silencer: false, autofire: true,
     fireInterval: s.fireInterval, spread: s.spread,
+    fireSound: s.fireSound,                                  // code-driven gunfire (random over the list)
     damage: s.damage, rangeMod: s.rangeMod,
     recoilProc: { pitch: s.recoilP, stemShots: 3, latBase: 0.4, latGrow: 0.09, latMax: 1.1, flipChance: 5 },
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
@@ -40,6 +41,7 @@ function _pistol(id, label, s) {
     silencer: false, autofire: false,
     fireInterval: s.fireInterval, recoilKick: s.recoilKick,
     spread: s.spread, spreadGrow: s.spreadGrow ?? 0.004, spreadMax: s.spreadMax ?? 0.05,
+    fireSound: s.fireSound,                                  // code-driven gunfire (random over the list)
     damage: s.damage, rangeMod: s.rangeMod,
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
@@ -48,6 +50,9 @@ function _pistol(id, label, s) {
     muzzleBone: s.muzzleBone, muzzleOrg: s.muzzleOrg,         // attachment 0 from the MDL
     ejectionBone: s.ejectBone, ejectionOrg: s.ejectOrg,      // attachment 1 from the MDL
     ammo: s.ammo, maxAmmo: s.ammo, reserve: s.reserve, reloadTime: s.reload,
+    // Burst fire (Glock): RMB toggles a 3-round burst per trigger pull.
+    burstCapable: s.burstCapable, burstCount: s.burstCount,
+    burstInterval: s.burstInterval, burstCooldown: s.burstCooldown,
     slot: 'secondary',
     root: null,
   }];
@@ -67,6 +72,9 @@ const WPNS = [
     autofire: true,
     fireInterval: 0.09,
     spread: 0.012,
+    // Code-driven gunfire (random over the list). Silenced uses its own sample.
+    fireSound:    ['weapons/m4a1_unsil-1.wav', 'weapons/m4a1_unsil-2.wav'],
+    fireSoundSil: ['weapons/m4a1-1.wav'],
     // CS 1.6: 32/bullet (33 silenced), range falloff ×rangeMod per 500u
     damage: 32, rangeMod: 0.97, damageSil: 33, rangeModSil: 0.95,
     // CS 1.6-style procedural recoil (KickBack): vertical grows each shot (the
@@ -95,19 +103,19 @@ const WPNS = [
   // ── Auto-rifles (group 1). Stats verified vs ReGameDLL; view-model placement
   // reuses the shared rig offsets; muzzle/ejection bones omitted (flash/shell fall
   // back to centered) — to be tuned per model later. Sequences: idle1/shoot1-3/reload/draw.
-  ..._autoRifle('ak47',  'AK-47',          { damage: 36, rangeMod: 0.98,  fireInterval: 0.0955, ammo: 30, reload: 2.45, recoilP: 1.05, spread: 0.016, muzzleBone: 20, muzzleOrg: [2.75, -22.5, 2.9],  ejectBone: 41, ejectOrg: [0, -3.0, 0] }),
-  ..._autoRifle('galil', 'IDF Defender',   { damage: 30, rangeMod: 0.98,  fireInterval: 0.0875, ammo: 35, reload: 2.45, recoilP: 0.9,  spread: 0.014, muzzleBone: 12, muzzleOrg: [0, -20.18, 0.42],  ejectBone: 12, ejectOrg: [-0.6, -3.9, 1.0] }),
-  ..._autoRifle('famas', 'Clarion 5.56',   { damage: 30, rangeMod: 0.96,  fireInterval: 0.0825, ammo: 25, reload: 3.3,  recoilP: 0.8,  spread: 0.013, muzzleBone: 45, muzzleOrg: [0, 14.5, -2.9],    ejectBone: 45, ejectOrg: [-0.8, -4.4, -3.2] }),
-  ..._autoRifle('aug',   'Bullpup',        { damage: 32, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 30, reload: 3.3,  recoilP: 0.85, spread: 0.013, muzzleBone: 20, muzzleOrg: [2.4, -15.7, 1.1],   ejectBone: 41, ejectOrg: [-0.75, 4.0, 0.75] }),
-  ..._autoRifle('sg552', 'Krieg 552',      { damage: 33, rangeMod: 0.955, fireInterval: 0.0825, ammo: 30, reload: 3.0,  recoilP: 0.95, spread: 0.014, muzzleBone: 38, muzzleOrg: [0, -11.25, -0.5],  ejectBone: 38, ejectOrg: [0, -1.0, 0] }),
+  ..._autoRifle('ak47',  'AK-47',          { damage: 36, rangeMod: 0.98,  fireInterval: 0.0975, ammo: 30, reload: 2.45, recoilP: 1.05, spread: 0.016, fireSound: ['weapons/ak47-1.wav', 'weapons/ak47-2.wav'], muzzleBone: 20, muzzleOrg: [2.75, -22.5, 2.9],  ejectBone: 41, ejectOrg: [0, -3.0, 0] }),
+  ..._autoRifle('galil', 'IDF Defender',   { damage: 30, rangeMod: 0.98,  fireInterval: 0.0875, ammo: 35, reload: 2.45, recoilP: 0.9,  spread: 0.014, fireSound: ['weapons/galil-1.wav', 'weapons/galil-2.wav'], muzzleBone: 12, muzzleOrg: [0, -20.18, 0.42],  ejectBone: 12, ejectOrg: [-0.6, -3.9, 1.0] }),
+  ..._autoRifle('famas', 'Clarion 5.56',   { damage: 30, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 25, reload: 3.3,  recoilP: 0.8,  spread: 0.013, fireSound: ['weapons/famas-1.wav', 'weapons/famas-2.wav'], muzzleBone: 45, muzzleOrg: [0, 14.5, -2.9],    ejectBone: 45, ejectOrg: [-0.8, -4.4, -3.2] }),
+  ..._autoRifle('aug',   'Bullpup',        { damage: 32, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 30, reload: 3.3,  recoilP: 0.85, spread: 0.013, fireSound: ['weapons/aug-1.wav'], muzzleBone: 20, muzzleOrg: [2.4, -15.7, 1.1],   ejectBone: 41, ejectOrg: [-0.75, 4.0, 0.75] }),
+  ..._autoRifle('sg552', 'Krieg 552',      { damage: 33, rangeMod: 0.955, fireInterval: 0.0825, ammo: 30, reload: 3.0,  recoilP: 0.95, spread: 0.014, fireSound: ['weapons/sg552-1.wav', 'weapons/sg552-2.wav'], muzzleBone: 38, muzzleOrg: [0, -11.25, -0.5],  ejectBone: 38, ejectOrg: [0, -1.0, 0] }),
   // ── SMGs (group 3, full-auto, 9mm/.45 shells). Stats verified vs ReGameDLL.
-  ..._autoRifle('mp5',   'MP5 Navy',  { damage: 26, rangeMod: 0.84,  fireInterval: 0.0857, ammo: 30, reserve: 120, reload: 2.6, recoilP: 0.55, spread: 0.016, shellType: 'pistol', muzzleBone: 20, muzzleOrg: [3.4, -13.7, 2.5],  ejectBone: 38, ejectOrg: [0, -1.5, 0] }),
-  ..._autoRifle('tmp',   'TMP',       { damage: 20, rangeMod: 0.85,  fireInterval: 0.07,   ammo: 30, reserve: 120, reload: 2.1, recoilP: 0.4,  spread: 0.016, shellType: 'pistol', fire: ['shoot'], muzzleBone: 20, muzzleOrg: [2.5, -15.8, 2.25],  ejectBone: 40, ejectOrg: [0, -1.0, 0.5] }),
-  ..._autoRifle('mac10', 'MAC-10',    { damage: 29, rangeMod: 0.82,  fireInterval: 0.07,   ammo: 30, reserve: 100, reload: 3.1, recoilP: 0.6,  spread: 0.02,  shellType: 'pistol', muzzleBone: 20, muzzleOrg: [2.0, -8.0, 0.5],   ejectBone: 40, ejectOrg: [0, -2.0, 0] }),
-  ..._autoRifle('ump45', 'UMP45',     { damage: 30, rangeMod: 0.82,  fireInterval: 0.0857, ammo: 25, reserve: 100, reload: 3.5, recoilP: 0.55, spread: 0.016, shellType: 'pistol', muzzleBone: 41, muzzleOrg: [0, -8.3, 0],       ejectBone: 41, ejectOrg: [0, -1.0, 0] }),
-  ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.3, recoilP: 0.5,  spread: 0.016, shellType: 'pistol', idle: 'idle', muzzleBone: 20, muzzleOrg: [1.9, -8.6, 1.5],   ejectBone: 39, ejectOrg: [1.0, -2.0, 0] }),
+  ..._autoRifle('mp5',   'MP5 Navy',  { damage: 26, rangeMod: 0.84,  fireInterval: 0.08,   ammo: 30, reserve: 120, reload: 2.6, recoilP: 0.55, spread: 0.016, fireSound: ['weapons/mp5-1.wav', 'weapons/mp5-2.wav'], shellType: 'pistol', muzzleBone: 20, muzzleOrg: [3.4, -13.7, 2.5],  ejectBone: 38, ejectOrg: [0, -1.5, 0] }),
+  ..._autoRifle('tmp',   'TMP',       { damage: 20, rangeMod: 0.85,  fireInterval: 0.07,   ammo: 30, reserve: 120, reload: 2.1, recoilP: 0.4,  spread: 0.016, fireSound: ['weapons/tmp-1.wav', 'weapons/tmp-2.wav'], shellType: 'pistol', fire: ['shoot'], muzzleBone: 20, muzzleOrg: [2.5, -15.8, 2.25],  ejectBone: 40, ejectOrg: [0, -1.0, 0.5] }),
+  ..._autoRifle('mac10', 'MAC-10',    { damage: 29, rangeMod: 0.82,  fireInterval: 0.075,  ammo: 30, reserve: 100, reload: 3.1, recoilP: 0.6,  spread: 0.02,  fireSound: ['weapons/mac10-1.wav'], shellType: 'pistol', muzzleBone: 20, muzzleOrg: [2.0, -8.0, 0.5],   ejectBone: 40, ejectOrg: [0, -2.0, 0] }),
+  ..._autoRifle('ump45', 'UMP45',     { damage: 30, rangeMod: 0.82,  fireInterval: 0.095,  ammo: 25, reserve: 100, reload: 3.5, recoilP: 0.55, spread: 0.016, fireSound: ['weapons/ump45-1.wav'], shellType: 'pistol', muzzleBone: 41, muzzleOrg: [0, -8.3, 0],       ejectBone: 41, ejectOrg: [0, -1.0, 0] }),
+  ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.3, recoilP: 0.5,  spread: 0.016, fireSound: ['weapons/p90-1.wav'], shellType: 'pistol', idle: 'idle', muzzleBone: 20, muzzleOrg: [1.9, -8.6, 1.5],   ejectBone: 39, ejectOrg: [1.0, -2.0, 0] }),
   // ── Machine gun (group 5, full-auto). Verified vs ReGameDLL.
-  ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.0857, ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.02, fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [3.6, -18.4, 2.75],  ejectBone: 49, ejectOrg: [0, 0, 0] }),
+  ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.10,   ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.02, fireSound: ['weapons/m249-1.wav', 'weapons/m249-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [3.6, -18.4, 2.75],  ejectBone: 49, ejectOrg: [0, 0, 0] }),
   {
     id: 'usp', label: 'USP',
     jsonFile: 'models/v_usp.json', jsonFileSil: 'models/v_usp_sil.json',
@@ -118,8 +126,12 @@ const WPNS = [
     fireSeqLastUnsil: 'shootlast_unsil',
     fireSeqLastSil:   'shootlast',
     reloadSeq: 'reload_unsil', reloadSeqSil: 'reload',
+    // Code-driven gunfire (random over the list). Silenced uses its own samples.
+    fireSound:    ['weapons/usp_unsil-1.wav'],
+    fireSoundSil: ['weapons/usp1.wav', 'weapons/usp2.wav'],
     // CS 1.6: 34/bullet (30 silenced), fast range falloff (pistol)
     damage: 34, rangeMod: 0.79, damageSil: 30, rangeModSil: 0.79,
+    fireInterval: 0.15,  // semi-auto cycletime (was missing → defaulted to a too-fast 0.12)
     recoilKick: 0.04,    // vertical-only screen kick (unchanged)
     // Bullet scatter widens with fast spam (decal only — screen stays vertical),
     // shrinks back to a tight tap once you pause.
@@ -141,10 +153,10 @@ const WPNS = [
   },
   // ── Pistols (group 2, semi-auto). Stats verified vs ReGameDLL. Elite (dual-wield)
   // deferred — it needs alternating left/right shoot sequences.
-  ..._pistol('glock18',   'Glock-18',     { damage: 25, rangeMod: 0.75,  ammo: 20, reserve: 120, reload: 2.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.010, fire: ['shoot', 'shoot2', 'shoot3'], muzzleBone: 20, muzzleOrg: [2.5, -8.7, 1.7],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
-  ..._pistol('deagle',    'Desert Eagle', { damage: 54, rangeMod: 0.81,  ammo: 7,  reserve: 35,  reload: 2.2, fireInterval: 0.225, recoilKick: 0.08,  spread: 0.006, fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [2.6, -8.8, 1.4],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
-  ..._pistol('p228',      'P228 Compact', { damage: 32, rangeMod: 0.8,   ammo: 13, reserve: 52,  reload: 2.7, fireInterval: 0.15,  recoilKick: 0.045, spread: 0.008, fire: ['shoot1', 'shoot2', 'shoot3'], muzzleBone: 20, muzzleOrg: [2.6, -6.8, 1.5],  ejectBone: 39, ejectOrg: [0, -2.0, 0] }),
-  ..._pistol('fiveseven', 'Five-SeveN',   { damage: 20, rangeMod: 0.885, ammo: 20, reserve: 100, reload: 3.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.008, fire: ['shoot1', 'shoot2'], muzzleBone: 41, muzzleOrg: [0, -6.0, 0],  ejectBone: 41, ejectOrg: [0, -2.5, 0] }),
+  ..._pistol('glock18',   'Glock-18',     { damage: 25, rangeMod: 0.75,  ammo: 20, reserve: 120, reload: 2.2, fireInterval: 0.2,   recoilKick: 0.03,  spread: 0.010, fireSound: ['weapons/glock18-2.wav'], fire: ['shoot', 'shoot2', 'shoot3'], burstCapable: true, burstCount: 3, burstInterval: 0.1, burstCooldown: 0.3, muzzleBone: 20, muzzleOrg: [2.5, -8.7, 1.7],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
+  ..._pistol('deagle',    'Desert Eagle', { damage: 54, rangeMod: 0.81,  ammo: 7,  reserve: 35,  reload: 2.2, fireInterval: 0.225, recoilKick: 0.08,  spread: 0.006, spreadGrow: 0.06, spreadMax: 0.10, fireSound: ['weapons/deagle-1.wav', 'weapons/deagle-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [2.6, -8.8, 1.4],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
+  ..._pistol('p228',      'P228 Compact', { damage: 32, rangeMod: 0.8,   ammo: 13, reserve: 52,  reload: 2.7, fireInterval: 0.15,  recoilKick: 0.045, spread: 0.008, fireSound: ['weapons/p228-1.wav'], fire: ['shoot1', 'shoot2', 'shoot3'], muzzleBone: 20, muzzleOrg: [2.6, -6.8, 1.5],  ejectBone: 39, ejectOrg: [0, -2.0, 0] }),
+  ..._pistol('fiveseven', 'Five-SeveN',   { damage: 20, rangeMod: 0.885, ammo: 20, reserve: 100, reload: 3.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.008, fireSound: ['weapons/fiveseven-1.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 41, muzzleOrg: [0, -6.0, 0],  ejectBone: 41, ejectOrg: [0, -2.5, 0] }),
   {
     id: 'knife', label: 'KNIFE',
     jsonFile: 'models/v_knife.json',
@@ -155,6 +167,12 @@ const WPNS = [
     scale: 0.12,
     type: 'melee',
     slashDamage: 20, stabDamage: 65, backstabMult: 3,   // CS 1.6 knife (swing/stab); ×3 from behind
+    // Code-driven knife sounds (no MDL events): swing/stab + flesh/wall hits.
+    deploySound:   'weapons/knife_deploy1.wav',
+    slashSound:    ['weapons/knife_slash1.wav', 'weapons/knife_slash2.wav'],
+    stabSound:     'weapons/knife_stab.wav',
+    hitFleshSound: ['weapons/knife_hit1.wav', 'weapons/knife_hit2.wav', 'weapons/knife_hit3.wav', 'weapons/knife_hit4.wav'],
+    hitWallSound:  'weapons/knife_hitwall1.wav',
     slot: 'melee',
     root: null,
   },
@@ -165,6 +183,7 @@ let nextWpnIdx = -1;
 
 const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5, SILENCER: 6 };
 let ws = WS.DRAW, wsT = 0, wsIdleT = 0, wsHit = false;
+let _firePending = false;       // semi-auto: a click made during the cooldown, fired when it ends
 let meleeCooldown = 0;          // time (s) until the next knife attack is allowed
 let bobCycle = 0, bobAmt = 0;  // weapon bob state
 
@@ -318,8 +337,23 @@ function _beginDraw(idx) {
   const wpn = WPNS[curWpnIdx];
   wpn._reloadInterrupted = false;  // Очистить флаг прерывания при переключении на новое оружие
   wpn._silencerInterrupted = false;  // Очистить флаг глушителя при переключении
+  wpn._bursting = false; wpn._burstLeft = 0;   // cancel any in-progress burst on draw
+  _firePending = false;                        // drop any queued semi-auto click
   if (wpn.anim) { wpn.anim._drawAnimDone = false; wpn.anim.curFrame = 0; }
   if (wpn.root) wpn.root.visible = true;
+  // Guns play their deploy sound via an MDL event; the knife has none, so emit
+  // its code-driven deploy here. Warm the rest of this weapon's samples too.
+  if (typeof warmWeaponSounds === 'function') warmWeaponSounds(wpn);
+  if (wpn.deploySound && typeof playSound === 'function') playSound(wpn.deploySound);
+}
+
+// Begin a new shot (a fresh trigger pull). Used by every fire-start point so burst
+// initialization lives in one place. ws/wsT/wsHit are shared globals. For a
+// burst-mode weapon (Glock with RMB toggle) one pull queues a 3-round burst.
+function _beginFire(wpn) {
+  wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
+  if (wpn._burstMode) { wpn._bursting = true; wpn._burstLeft = (wpn.burstCount || 3) - 1; }
+  else { wpn._bursting = false; wpn._burstLeft = 0; }
 }
 
 function hitCheck(maxDist) {
@@ -370,11 +404,25 @@ function _startMeleeAttack(wpn, isStab) {
     cutRoll = handSign * -0.35 + (Math.random() - 0.5) * 0.12;  // LMB → shallow diagonal upper-left→lower-right
   }
   if (hit) _spawnDecal('knife', 64, 0, cutRoll);
-  if (typeof enemyTryShoot === 'function') enemyTryShoot(48, {   // knife the dummy if in range
+  let bodyHit = false;
+  if (typeof enemyTryShoot === 'function') bodyHit = enemyTryShoot(48, {   // knife the dummy if in range
     melee: true,
     damage: isStab ? (wpn.stabDamage ?? 65) : (wpn.slashDamage ?? 25),
     backstabMult: wpn.backstabMult ?? 3,
   });
+  // Original knife sounds (code-driven, no MDL events): swing swoosh on every
+  // attack (LMB slash and RMB stab both swing the blade), then the impact sample
+  // — flesh hit, wall hit, or the stab thunk. CHAN_WEAPON so fast swings don't
+  // pile up; a moment later the impact replaces the swoosh, as in the engine.
+  if (typeof playSound === 'function') {
+    playRandom(wpn.slashSound, { channel: 'weapon' });               // swing whoosh (LMB + RMB)
+    if (bodyHit) {
+      if (isStab) playSound(wpn.stabSound, { channel: 'weapon' });   // meaty stab thunk
+      else        playRandom(wpn.hitFleshSound, { channel: 'weapon' });
+    } else if (hit) {
+      playSound(wpn.hitWallSound, { channel: 'weapon' });            // blade on world geometry
+    }
+  }
   wsT = 0; wsHit = false;
   meleeCooldown = cd;
   if (wpn.anim) {
@@ -410,9 +458,9 @@ function updateWeapon(dt) {
     _moveGap = Math.max(0, _spd2d - 40) / 250 * 16;          // running opens it
     if (phyDucked) _moveGap *= 0.4;                          // crouch tightens
   }
-  xhairGap *= Math.exp(-dt * 3.0);                           // slow contraction
-  if (_moveGap > xhairGap) xhairGap = _moveGap;              // movement holds it open
+  xhairGap *= Math.exp(-dt * 3.0);                           // firing expansion: slow contraction
   if (xhairGap > 60) xhairGap = 60;
+  xhairMoveGap = _moveGap;                                   // movement expansion tracks speed/air
 
   if (nextWpnIdx >= 0 && ws === WS.IDLE) { _beginDraw(nextWpnIdx); return; }
 
@@ -428,7 +476,7 @@ function updateWeapon(dt) {
           ws = WS.RELOAD; wsT = 0;
         } else if (lmbHeld && wpn.type === 'gun' && wpn.ammo > 0) {
           // Если LMB зажата во время draw и есть патроны - начать стрельбу
-          wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
+          _beginFire(wpn);
         }
       }
       break;
@@ -487,7 +535,10 @@ function updateWeapon(dt) {
       break;
     }
     case WS.FIRE: {
-      const DUR = wpn.fireInterval || 0.12;
+      // Burst mode (Glock): rounds 1-2 use a short interval; the last round holds for
+      // the burst cooldown so you can't re-trigger until the whole burst + pause ends.
+      let DUR = wpn.fireInterval || 0.12;
+      if (wpn._bursting) DUR = wpn._burstLeft > 0 ? (wpn.burstInterval || 0.1) : (wpn.burstCooldown || 0.3);
       const t   = Math.min(wsT / DUR, 1);
       const kick = t < 0.3 ? t/0.3 : 1 - (t-0.3)/0.7;
       p.set(wpn.pos.x + bobX, wpn.pos.y + kick*0.03, wpn.pos.z + kick*0.04 + bobZ);
@@ -516,6 +567,12 @@ function updateWeapon(dt) {
           shotSpread += m;
         }
         xhairGap += wpn.xhairKick ?? 5;             // each shot kicks the crosshair open
+        // Original gunfire sound (code-driven, like the engine's WeaponSound).
+        // Silenced weapons use their own sample; the engine randomises -1/-2 lists.
+        const _fireSnd = (wpn.silencer && wpn.fireSoundSil) ? wpn.fireSoundSil : wpn.fireSound;
+        // CHAN_WEAPON: each shot cuts the previous one so bursts/fast taps stay
+        // crisp instead of overlapping into a drone (matches the engine).
+        if (typeof playRandom === 'function') playRandom(_fireSnd, { volume: 1.0, channel: 'weapon' });
         _spawnDecal('bullet', 4096, shotSpread);
         let _hitBody = false;
         if (typeof enemyTryShoot === 'function')                        // hit the target dummy?
@@ -548,10 +605,20 @@ function updateWeapon(dt) {
         }
       }
       if (t >= 1) {
-        if (lmbHeld && wpn.autofire && wpn.ammo > 0) {
+        if (wpn._bursting && wpn._burstLeft > 0 && wpn.ammo > 0) {
+          // Continue the burst — fires the next round regardless of the LMB state
+          // (one trigger pull = the full 3-round burst, as in CS).
+          wpn.ammo--; wpn._burstLeft--; wsT = 0; wsHit = false;
+        } else if (lmbHeld && wpn.autofire && wpn.ammo > 0) {
           wpn.ammo--; wsT = 0; wsHit = false;
+        } else if (_firePending && wpn.ammo > 0 && !wpn.autofire) {
+          // A click made during this shot's cooldown → fire it now, so rapid
+          // semi-auto clicking lands at the cap rate instead of dropping clicks.
+          _firePending = false; _beginFire(wpn);
         } else {
           wsHit = false;
+          _firePending = false;
+          wpn._bursting = false; wpn._burstLeft = 0;
           // Don't reset _shotCount here — the spray index is reset on the next
           // shot only if enough time passed (see lastShotAge check above), so
           // fast semi-auto taps continue advancing the pattern.
@@ -573,7 +640,7 @@ function updateWeapon(dt) {
         wpn._reloadInterrupted = false;  // Очистить флаг для следующей перезарядки
         // Если LMB зажата во время перезарядки и есть патроны - начать стрельбу
         if (lmbHeld && wpn.ammo > 0) {
-          wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
+          _beginFire(wpn);
         } else {
           ws = WS.IDLE; wsT = 0;
         }
@@ -591,7 +658,7 @@ function updateWeapon(dt) {
         wpn._silencerInterrupted = false;  // Очистить флаг для следующего переключения
         // Если LMB зажата после смены глушителя и есть патроны - начать стрельбу
         if (lmbHeld && wpn.ammo > 0) {
-          wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
+          _beginFire(wpn);
         } else {
           ws = WS.IDLE; wsT = 0;
         }
@@ -765,7 +832,14 @@ function applySkeletalAnimation(wpn, dt) {
   // For non-looping sequences, ignore trailing duplicate frames so the weapon
   // doesn't freeze on a dead "held" pose for a fraction of a second at the end.
   const endLen = (ws === WS.IDLE) ? seq.frames.length : _seqActiveLen(seq);
+  // Fire MDL sound events (event 5004): reload/deploy/silencer samples play at
+  // their original frame as the animation crosses it. A fresh sequence resets the
+  // crossing baseline to -1 so a frame-0 event still triggers.
+  const _evPrevIF = (seqName === wpn.anim._evSeqName) ? Math.floor(wpn.anim.curFrame) : -1;
+  wpn.anim._evSeqName = seqName;
   wpn.anim.curFrame += dt * fps;
+  if (typeof _tickAnimEvents === 'function')
+    _tickAnimEvents(wpn, seq, _evPrevIF, Math.floor(wpn.anim.curFrame));
   if (wpn.anim.curFrame >= endLen) {
     if (ws === WS.IDLE) { wpn.anim.curFrame %= seq.frames.length; }  // loop
     else wpn.anim.curFrame = endLen - 1;

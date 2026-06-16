@@ -30,12 +30,14 @@ Runtime разбит по файлам (порядок загрузки = пор
 | Файл | Содержимое | Ключевые функции / якоря |
 |---|---|---|
 | `src/scene.js` | рендерер, сцены (мир / вьюмодель / 2D-вспышка), камеры, muzzle flash | `vmScene`, `_flashScene2D`, `_showFlash`, `_tickFlash`, `_loadAdditiveSprite` |
+| `src/audio.js` | звук из оригинала (WebAudio): выстрел/нож из кода, перезарядка/деплой/глушитель по MDL-событиям, шаги/приземление (материал по `materials.txt` + трасса пола, каденс по скорости — `pm_shared.c`) | `initAudio`, `playSound`, `playRandom`, `warmWeaponSounds`, `_tickAnimEvents`, `updateMovementSounds`, `setMasterVolume` |
 | `src/effects.js` | гильзы + декали пуль/ножа | `_ejectShell`, `_updateShells`, `_spawnDecal`, `_getDecalMat`, `_makeSlashTexture`, `_drawTaperedCut` |
 | `src/weapons.js` | конфиги оружия, переключение, скелетка, стрельба/отдача, ближний бой | `WPNS`, `switchWeapon`, `_beginDraw`, `toggleSilencer`, `updateWeapon` (стейт-машина `ws`), `applySkeletalAnimation`, `computeBoneWorlds`, `boneEulerMat`, `_startMeleeAttack` |
 | `src/player.js` | модель игрока от 3-го лица (CT `gign`, `PLAYER_MODEL`): двухслойная анимация (ноги=походка, верх=прицел/стрельба/перезарядка по оружию), оружие в руке, чейз-камера с орбитой | `updatePlayerModel`, `_skinRig`, `_updateWeaponAttachment`, `_resolveUpperPose`/`_aimPose`/`_clipPose`, `updateChaseCamera`, `updateOrbit`, `toggleThirdPerson`, `thirdPerson` |
 | `src/hud.js` | прицел и HUD | `drawCrosshair`, `updateHUD` |
 | `src/physics.js` | BSP-трасса + физика игрока; точки спауна/угол, зоны закупки, выбор команды | `pointContents`, `traceMove`, `playerMove`, `slideMove`, `categorize`, `accel`, `applyFriction`, `initPhysics`, `pickSpawn`, `respawn`, `setTeam`, `spawnPoints`, `buyZones` |
 | `src/game.js` | состояние матча: команда/класс-меню, деньги, владение оружием, закупка (после physics/weapons/player) | `BUY_CATALOG`, `CLASSES`, `buyItem`, `inBuyZone`, `openBuyMenu`/`buyMenuKey`, `openTeamMenu`/`teamMenuKey`, `ownedWeapons`, `playerMoney`, `updateBuyHUD` |
+| `src/pickups.js` | дроп (G) и подбор оружия: мировая `p_*`-модель падает на пол, подбор по близости со звуками оригинала (после game.js) | `dropWeapon`, `updatePickups`, `_spawnPickup`, `_buildDropModel`, `DROP_SOUND`/`PICKUP_SOUND` |
 | `src/load.js` | загрузка карты/ассетов (после physics, чтобы `initPhysics` была определена) | `objPromise`, `hullPromise`, `Promise.all(...).then(...)` |
 | `src/input.js` | pointer lock, настройки, мышь/клавиатура/оружие, **главный цикл** | `animate(t)`, `updateFOV`, обработчики ввода, `animate(0)` в конце |
 
@@ -63,6 +65,7 @@ maps/              карта de_dust2 — самодостаточна:
 models/            меши вьюмоделей и гильз: v_<weapon>{,_anim,_sil}.json, rshell/pshell.json
 textures/          текстуры ОРУЖИЯ (json texFile="textures/…" резолвится от корня)
 sprites/           кадры muzzleflash (PNG)
+sounds/            звуки из оригинала (.wav, раскладка GoldSrc: weapons/, items/, player/) + materials.txt (текстура→материал шага)
 decals/            PNG следов пуль (shot1..5); следы ножа — процедурные (не из PNG)
 tools/             Python-конвейер (см. ниже) + config.py
 docs/              PLAN.md, BROWSER_GUIDE.md
@@ -86,9 +89,14 @@ docs/              PLAN.md, BROWSER_GUIDE.md
 корня проекта: `python tools/<script>.py`. Выходные пути уже указывают в нужные каталоги:
 
 - `mdl_to_json.py` — MDL → `models/v_*.json` (+ текстуры оружия в `textures/`).
-- `extract_anim.py` — анимации → `models/v_*_anim.json`.
+- `extract_anim.py` — анимации → `models/v_*_anim.json` (включая звуковые **события** MDL: event
+  5004 → `events:[{frame,sound}]` в каждой секвенции — оригинальный тайминг перезарядки/деплоя/глушителя).
+- `extract_sounds.py` — звуки → `sounds/` (раскладка GoldSrc) + `materials.txt`. Собирает имена
+  автоматически: событийные (5004) из всех `v_*.mdl` + код-зависимые (выстрел/нож + шаги/приземление
+  игрока) из списков в скрипте.
 - `player_to_json.py` — модель игрока (`models/player/<name>/<name>.mdl`) → `models/player_<name>.json`
-  (меш тела + кости + только движенческие секвенции idle/walk/run/crouch/jump) + текстуры в `textures/player_*`.
+  (меш тела + кости + хитбоксы `mstudiobbox_t` (OBB по костям, поле `hitboxes`) + только движенческие
+  секвенции idle/walk/run/crouch/jump) + текстуры в `textures/player_*`.
   Сейчас сконвертирован CT `gign` (`python tools/player_to_json.py gign`); модель в рантайме
   выбирается константой `PLAYER_MODEL` в `src/player.js`.
 - `pweapon_to_json.py` — мировая модель оружия `p_<weapon>.mdl` → `models/p_<weapon>.json`

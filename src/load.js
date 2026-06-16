@@ -39,6 +39,7 @@ Promise.all([objPromise, hullPromise]).then(([obj, hull]) => {
       polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
     });
     if (mat.map) { mat.map.wrapS = mat.map.wrapT = THREE.RepeatWrapping; }
+    mat.name = old ? old.name : '';   // keep the MTL/texture name for footstep material lookup
     child.material = mat;
   });
   scene.add(obj);

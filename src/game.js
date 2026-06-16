@@ -101,11 +101,15 @@ function buyItem(item) {
   if (playerMoney < item.price) return _flashBuy('Недостаточно денег');
   playerMoney -= item.price;
   const w = WPNS[idx];
-  // One weapon per slot — buying a new primary/secondary drops the old one (like CS).
+  // One weapon per slot — buying a new primary/secondary drops the old one (like CS):
+  // it lands on the ground (with its current ammo) so it can be picked back up.
   if (w.slot === 'primary' || w.slot === 'secondary')
     for (const id of [...ownedWeapons]) {
       const o = WPNS.find(x => x.id === id);
-      if (o && o.slot === w.slot && id !== w.id) ownedWeapons.delete(id);
+      if (o && o.slot === w.slot && id !== w.id) {
+        if (typeof _spawnPickup === 'function' && gsPos) _spawnPickup(id, o.ammo, o.reserve);
+        ownedWeapons.delete(id);
+      }
     }
   ownedWeapons.add(item.wid);
   if (w.maxAmmo) { w.ammo = w.maxAmmo; w.reserve = w._reserve0 ?? w.reserve; }   // full on (re)buy

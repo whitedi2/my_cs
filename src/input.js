@@ -14,6 +14,8 @@ const $glPct  = document.getElementById('gl-pct');
 
 function _startGame() {
   if (!mapReady) return;          // map still streaming
+  if (typeof initAudio === 'function') initAudio();   // unlock WebAudio on the click gesture
+  if (typeof warmAllWeaponSounds === 'function') warmAllWeaponSounds();  // decode gunfire up front
   loadWeaponModels();             // other assets load lazily on first Start
   loadEnemy();                    // player model loads after team/class is chosen
   // Lock now (needs the click gesture); cover the still-loading models with a
@@ -89,7 +91,7 @@ document.addEventListener('pointerlockchange', () => {
 let invertY          = CONFIG.invertY;
 let widescreenFOV    = CONFIG.widescreenFOV;
 let rightHand        = CONFIG.rightHand;
-let dynamicCrosshair = CONFIG.dynamicCrosshair ?? false;  // cl_dynamiccrosshair (off by default)
+let dynamicCrosshair = CONFIG.dynamicCrosshair ?? false;  // cl_dynamiccrosshair: только расширение от движения
 let enhancedGore     = CONFIG.enhancedGore ?? false;      // our procedural blood vs original sprites (off = original)
 let showHitboxes     = false;                             // debug: draw dummy hit-zone cylinders
 
@@ -122,6 +124,10 @@ document.getElementById('opt-dynamic-crosshair').addEventListener('change', e =>
 document.getElementById('opt-enhanced-gore').addEventListener('change', e => { enhancedGore = e.target.checked; });
 document.getElementById('opt-show-hitboxes').addEventListener('change', e => { showHitboxes = e.target.checked; if (typeof setHitboxDebug === 'function') setHitboxDebug(showHitboxes); });
 document.getElementById('opt-third-person').addEventListener('change', e => { toggleThirdPerson(e.target.checked); });
+// Null-guarded: if a stale cached viewer.html lacks #opt-volume, a hard throw here
+// would abort the rest of input.js (key handlers, render loop) — so guard it.
+const _volSlider = document.getElementById('opt-volume');
+if (_volSlider) _volSlider.addEventListener('input', e => { if (typeof setMasterVolume === 'function') setMasterVolume(e.target.value / 100); });
 
 // ── Mouse look ────────────────────────────────────────────────────────────
 let yaw = 0, pitch = 0;
@@ -140,6 +146,16 @@ document.addEventListener('mousemove', e => {
 
 // ── Keyboard ──────────────────────────────────────────────────────────────
 const keys = {};
+// The single weapon-switch beep (plays on every weapon-key press, as in the original),
+// with a small cooldown so holding/mashing slot keys doesn't retrigger it every event.
+// No sound when the slot is empty (the engine has no separate "no weapon" beep here).
+let _selSoundT = 0;
+function _playSwitchSound() {
+  const now = performance.now();
+  if (now - _selSoundT < 150) return;
+  _selSoundT = now;
+  if (typeof playSound === 'function') playSound('common/wpn_hudon.wav');
+}
 document.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (!isLocked) return;
@@ -156,16 +172,26 @@ document.addEventListener('keydown', e => {
   // Slot keys pick the OWNED weapon in that slot (1 primary, 2 secondary, 3 knife).
   const _ownedSlot = slot => WPNS.findIndex(w => w.slot === slot &&
     (slot === 'melee' || typeof ownedWeapons === 'undefined' || ownedWeapons.has(w.id)));
-  if (e.code === 'Digit1') { const i = _ownedSlot('primary');   if (i >= 0) switchWeapon(i); }
-  if (e.code === 'Digit2') { const i = _ownedSlot('secondary'); if (i >= 0) switchWeapon(i); }
-  if (e.code === 'Digit3') { const i = _ownedSlot('melee');     if (i >= 0) switchWeapon(i); }
+  // fastswitch-1 selection: a valid slot key plays the switch beep and switches; an
+  // empty slot plays the deny beep. Cooldown so mashing keys doesn't machine-gun it.
+  // Slot keys 1-6 ALWAYS beep (as in the original — even an empty slot makes the
+  // sound); 1/2/3 also switch to the owned weapon in that slot.
+  const _digit = e.code.match(/^Digit([1-6])$/);
+  if (_digit) {
+    _playSwitchSound();
+    const slot = { 1: 'primary', 2: 'secondary', 3: 'melee' }[_digit[1]];
+    if (slot) { const i = _ownedSlot(slot); if (i >= 0) switchWeapon(i); }
+  }
   if (e.code === 'KeyQ') {   // previous owned weapon
     for (let k = 1; k < WPNS.length; k++) {
       const i = (curWpnIdx + WPNS.length - k) % WPNS.length;
-      if (WPNS[i].slot === 'melee' || typeof ownedWeapons === 'undefined' || ownedWeapons.has(WPNS[i].id)) { switchWeapon(i); break; }
+      if (WPNS[i].slot === 'melee' || typeof ownedWeapons === 'undefined' || ownedWeapons.has(WPNS[i].id)) {
+        _playSwitchSound(); switchWeapon(i); break;
+      }
     }
   }
   if (e.code === 'KeyF')   toggleSilencer();
+  if (e.code === 'KeyG' && typeof dropWeapon === 'function') dropWeapon();   // drop current weapon
   if (e.code === 'KeyV')   toggleThirdPerson();
   if (e.code === 'KeyR') {
     const wpn = curW();
@@ -191,17 +217,26 @@ document.addEventListener('mousedown', e => {
     }
     return;
   }
-  if (ws !== WS.IDLE) return;
+  if (wpn.type !== 'gun') return;
+  // RMB: burst toggle (Glock) or silencer toggle (M4/USP). Works from idle only —
+  // toggleSilencer self-gates, burst toggle is harmless mid-fire.
+  if (e.button === 2) {
+    if (wpn.burstCapable) wpn._burstMode = !wpn._burstMode;
+    else                  toggleSilencer();
+    return;
+  }
+  // LMB: fire now if ready; otherwise QUEUE the shot so a click made during the
+  // cooldown fires the instant it ends (rapid clicking → steady cap-rate fire,
+  // instead of dropping clicks and stuttering). One click = one shot (holding
+  // never auto-fires a semi). Auto weapons don't queue — holding already repeats.
   if (e.button === 0) {
-    if (wpn.type === 'gun') {
-      if (wpn.ammo > 0) {
-        wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
-      } else if (wpn.reserve > 0) {
-        ws = WS.RELOAD; wsT = 0;
-      }
+    if (wpn.ammo > 0) {
+      if (ws === WS.IDLE) _beginFire(wpn);
+      else if (!wpn.autofire) _firePending = true;
+    } else if (wpn.reserve > 0 && ws === WS.IDLE) {
+      ws = WS.RELOAD; wsT = 0;
     }
   }
-  if (e.button === 2 && wpn.type === 'gun')   toggleSilencer();
 });
 document.addEventListener('mouseup',  e => {
   if (e.button === 0) lmbHeld = false;
@@ -243,9 +278,13 @@ function animate(t) {
   if (isLocked && gsPos && !gameLoading) {
     if (!teamStage) {              // frozen while choosing team/class
       playerMove(dt);
+      if (typeof updateMovementSounds === 'function') updateMovementSounds(dt);
       updateWeapon(dt);
+    } else {
+      syncCameraToPlayer();        // keep the frozen view at the spawn, not at (0,0,0)
     }
     updatePlayerModel(dt);
+    if (typeof updatePickups === 'function') updatePickups(dt);   // dropped-weapon physics + pickup
     updateEnemy(dt);
     updateHUD();
     if (typeof updateBuyHUD === 'function') updateBuyHUD();

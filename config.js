@@ -27,5 +27,6 @@ const CONFIG = {
   widescreenFOV: true,  // широкоэкранный FOV (90° по горизонту 4:3, растянутый на 16:9)
   invertY:       true,
   rightHand:     true,
+  dynamicCrosshair: false, // cl_dynamiccrosshair: расширение от ДВИЖЕНИЯ (от стрельбы — всегда)
 
 };

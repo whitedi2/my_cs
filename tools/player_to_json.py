@@ -80,6 +80,7 @@ assert i32(4) == 10, f"Unsupported MDL version {i32(4)}"
 print(f"MDL: {cstr(8, 64)!r}")
 
 NBONES   = i32(140); OBONES   = i32(144)
+NHITBOX  = i32(156); OHITBOX  = i32(160)
 NSEQ     = i32(164); OSEQ     = i32(168)
 NTEX     = i32(180); OTEX     = i32(184)
 NSKINREF = i32(192); NSKINFAM = i32(196); OSKIN = i32(200)
@@ -97,6 +98,22 @@ for i in range(NBONES):
         'val':    [round(v, 6) for v in f6(o + 64)],
         'scale':  [round(v, 8) for v in f6(o + 88)],
     })
+
+# ── Hitboxes (mstudiobbox_t, 32 bytes each) ─────────────────────────────────
+# The ORIGINAL CS 1.6 hit detection geometry: per-bone oriented boxes (OBB).
+#   int bone; int group(hitgroup); vec3 bbmin; vec3 bbmax;   (bbmin/max in bone-local space)
+# group is the hitgroup: 0 generic, 1 head, 2 chest, 3 stomach, 4/5 arms, 6/7 legs.
+HITBOX_SZ = 32
+hitboxes = []
+for i in range(NHITBOX):
+    o = OHITBOX + i * HITBOX_SZ
+    hitboxes.append({
+        'bone':  i32(o),
+        'group': i32(o + 4),
+        'bmin':  [round(v, 4) for v in f3(o + 8)],
+        'bmax':  [round(v, 4) for v in f3(o + 20)],
+    })
+print(f"  hitboxes={NHITBOX}")
 
 # ── Sequence frame decoder (RLE, mstudioanimvalue_t) ───────────────────────
 SEQ_SZ = 176
@@ -395,6 +412,7 @@ result = {
     'meshes':    out_meshes,
     'textures':  textures_out,
     'bones':     bones,
+    'hitboxes':  hitboxes,
     'sequences': sequences,
     'bindSeq':   BIND_SEQ,
     'aimSets':   aim_sets,

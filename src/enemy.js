@@ -19,26 +19,17 @@ const ENEMY_HEALTH  = 100;        // CS default
 const ENEMY_ARMOR   = 100;        // kevlar (no helmet → head/legs unprotected)
 const PEN_MULT      = 0.6;        // damage retained after piercing one body
 
-// Hitgroups + CS 1.6 damage multipliers (head 1, chest 2, stomach 3, arm 4, legs 6).
-const _HG_MULT  = { 1: 4, 2: 1, 3: 1.25, 4: 1, 6: 0.75 };
-const _HG_LABEL = { 1: 'ГОЛОВА', 2: 'ГРУДЬ', 3: 'ЖИВОТ', 4: 'РУКА', 6: 'НОГИ' };
+// Hitgroups + CS 1.6 damage multipliers (HLSDK/ReGameDLL): head 1 ×4, chest 2 ×1,
+// stomach 3 ×1.25, arms 4/5 ×1, legs 6/7 ×0.75, generic 0 ×1.
+const _HG_MULT  = { 0: 1, 1: 4, 2: 1, 3: 1.25, 4: 1, 5: 1, 6: 0.75, 7: 0.75 };
+const _HG_LABEL = { 0: 'ТЕЛО', 1: 'ГОЛОВА', 2: 'ГРУДЬ', 3: 'ЖИВОТ', 4: 'РУКА', 5: 'РУКА', 6: 'НОГИ', 7: 'НОГИ' };
 
-// Per-bone capsule hitboxes (like CS): a segment between two bones + radius, mapped
-// to a hitgroup. Bones are matched by NAME (indices differ between models). The 'head'
-// flag extends the capsule beyond the head bone to cover the skull.
-const _CAP_DEFS = [
-  { hg: 3, a: 'Bip01 Pelvis',    b: 'Bip01 Spine1',  r: 7.5 },          // stomach
-  { hg: 2, a: 'Bip01 Spine1',    b: 'Bip01 Neck',    r: 9.0 },          // chest
-  { hg: 1, a: 'Bip01 Head',      b: 'Bip01 Neck',    r: 5.0, head: true }, // head
-  { hg: 4, a: 'Bip01 L UpperArm', b: 'Bip01 L Forearm', r: 4.0 },
-  { hg: 4, a: 'Bip01 L Forearm',  b: 'Bip01 L Hand',    r: 3.5 },
-  { hg: 4, a: 'Bip01 R UpperArm', b: 'Bip01 R Forearm', r: 4.0 },
-  { hg: 4, a: 'Bip01 R Forearm',  b: 'Bip01 R Hand',    r: 3.5 },
-  { hg: 6, a: 'Bip01 L Thigh',   b: 'Bip01 L Calf',  r: 5.5 },
-  { hg: 6, a: 'Bip01 L Calf',    b: 'Bip01 L Foot',  r: 4.5 },
-  { hg: 6, a: 'Bip01 R Thigh',   b: 'Bip01 R Calf',  r: 5.5 },
-  { hg: 6, a: 'Bip01 R Calf',    b: 'Bip01 R Foot',  r: 4.5 },
-];
+// Hitboxes are the ORIGINAL CS 1.6 per-bone oriented boxes (mstudiobbox_t), extracted
+// straight from the MDL into player_<model>.json by tools/player_to_json.py. Each is
+// {bone, group(hitgroup), bmin, bmax} in bone-local GoldSrc space — we transform the
+// box by the live bone world matrix (so it tracks the animated pose) and ray-test it
+// as an OBB. We use the standard body hitgroups 1–7; group ≥8 (a non-standard oversized
+// "weapon" box on the hand in some models) is skipped — see docs/DIFFERENCES.md.
 
 const enemies = [];     // all dummy instances
 let enemyFocus = null;  // the most-recently-hit dummy (drives the HUD readout)
@@ -58,7 +49,7 @@ function _makeEnemyInstance() {
     health: ENEMY_HEALTH, armor: ENEMY_ARMOR,
     flinchSeq: null, flinchT: 0, flinchDur: 0.22, flinchFrame: 0,
     lastHit: null, gsPos: null, faceYaw: null,
-    caps: null, boneIdx: null, debugMeshes: null,
+    hitboxData: null, hboxes: null, debugMeshes: null,
   };
 }
 
@@ -83,6 +74,7 @@ function loadEnemy() {
       inst.root = rig.root; inst.meshes = rig.meshes;
       inst.originalPositions = rig.originalPositions; inst.boneIndices = rig.boneIndices;
       inst.bones = data.bones; inst.seqMap = seqMap; inst.flinch = flinch; inst.bindWorld = bindWorld;
+      inst.hitboxData = data.hitboxes || [];
       inst.frame = Math.random() * idleN;            // desync idle breathing
       _placeEnemy(inst, i);
       enemies.push(inst);
@@ -125,72 +117,77 @@ function _placeEnemy(inst, i) {
   inst.gsPos  = [ex, ey, floorZ];
   inst.faceYaw = gsSpawnYaw + Math.PI;
 
-  // Per-bone CAPSULE hitboxes, built from the bind-pose bone world positions — so
-  // they follow the model's actual pose (forward lean, arms out) instead of a guessed
-  // column. computeBoneWorlds gives bone translations in GoldSrc space; convert to
-  // three-local (x, z, −y) then to world via the (rotated) root.
-  if (!inst.boneIdx) { inst.boneIdx = {}; inst.bones.forEach((b, i) => { inst.boneIdx[b.name] = i; }); }
+  // Per-bone OBB hitboxes from the original MDL. Each box lives in its bone's local
+  // space (bmin/bmax); we compose its world matrix from the live bone transform so it
+  // follows the animated pose. Standard body hitgroups 1–7 only (see header note).
   inst.root.updateMatrixWorld(true);
-  inst.caps = [];
-  for (const def of _CAP_DEFS) {
-    const ia = inst.boneIdx[def.a], ib = inst.boneIdx[def.b];
-    if (ia == null || ib == null) continue;
-    inst.caps.push({ hg: def.hg, r: def.r, ia, ib, head: !!def.head, a: new THREE.Vector3(), b: new THREE.Vector3() });
+  inst.hboxes = [];
+  for (const h of inst.hitboxData) {
+    if (h.group < 1 || h.group > 7) continue;     // skip non-standard oversized boxes
+    const cx = (h.bmin[0] + h.bmax[0]) / 2, cy = (h.bmin[1] + h.bmax[1]) / 2, cz = (h.bmin[2] + h.bmax[2]) / 2;
+    inst.hboxes.push({
+      hg: h.group, bone: h.bone, bmin: h.bmin, bmax: h.bmax,
+      size: [h.bmax[0] - h.bmin[0], h.bmax[1] - h.bmin[1], h.bmax[2] - h.bmin[2]],
+      centerMat: new THREE.Matrix4().makeTranslation(cx, cy, cz),
+      M: new THREE.Matrix4(),
+    });
   }
-  _updateCaps(inst, inst.bindWorld);   // initial endpoints (idle bind pose)
+  _updateHitboxes(inst, inst.bindWorld);   // initial boxes (idle bind pose)
   _buildHitboxDebug(inst);
   inst.health = ENEMY_HEALTH; inst.armor = ENEMY_ARMOR;
 }
 
-// Recompute capsule endpoints from a set of bone world transforms (GoldSrc space).
-// Called every frame with the current animated pose, so the hitboxes track the
-// model (idle breathing, death, etc.). Cheap: just reads bones already computed for
-// skinning. Root never moves after placement, so its matrixWorld stays valid.
-const _capDir = new THREE.Vector3();
-function _updateCaps(inst, bw) {
-  if (!inst.caps) return;
-  for (const c of inst.caps) {
-    const ta = bw.T[c.ia], tb = bw.T[c.ib];
-    c.a.set(ta.x, ta.z, -ta.y); inst.root.localToWorld(c.a);
-    c.b.set(tb.x, tb.z, -tb.y); inst.root.localToWorld(c.b);
-    if (c.head) {                                // extend beyond the head bone to cover the skull
-      _capDir.copy(c.a).sub(c.b).normalize();
-      c.b.copy(c.a).addScaledVector(_capDir, 8);
-      c.a.addScaledVector(_capDir, -2);
-    }
+// GoldSrc (x,y,z Z-up) → three (x, z, −y) axis swap as a matrix, and the bone→world
+// composition. Each hitbox world matrix M = rootWorld · S · [Rbone | Tbone], so a
+// box-local point maps straight to three-world space.
+const _GS2THREE = new THREE.Matrix4().set(
+  1, 0, 0, 0,
+  0, 0, 1, 0,
+  0, -1, 0, 0,
+  0, 0, 0, 1,
+);
+const _boneMat = new THREE.Matrix4();
+
+// Recompose every hitbox's world matrix from the current animated bone transforms,
+// so the boxes track the live pose (idle breathing, death, flinch). Cheap: reuses the
+// bone matrices already computed for skinning. Root is static after placement.
+function _updateHitboxes(inst, bw) {
+  if (!inst.hboxes) return;
+  const rootM = inst.root.matrixWorld;
+  for (const h of inst.hboxes) {
+    const Rb = bw.R[h.bone], Tb = bw.T[h.bone];
+    if (!Rb) continue;
+    _boneMat.copy(Rb); _boneMat.setPosition(Tb.x, Tb.y, Tb.z);
+    h.M.copy(rootM).multiply(_GS2THREE).multiply(_boneMat);
   }
   if ((typeof showHitboxes !== 'undefined') && showHitboxes && inst.debugMeshes)
-    for (let i = 0; i < inst.caps.length; i++) _orientDebug(inst.debugMeshes[i], inst.caps[i]);
+    for (let i = 0; i < inst.hboxes.length; i++) {
+      const h = inst.hboxes[i];
+      inst.debugMeshes[i].matrix.copy(h.M).multiply(h.centerMat);
+    }
 }
 
-// Wireframe capsule (drawn as an oriented cylinder) per bone hitbox — toggled by
-// the "Показать хитбоксы" setting (showHitboxes). Purely visual: excluded from hitscan.
-const _HG_DBGCOL = { 1: 0xff4040, 2: 0xffe04a, 3: 0xff9030, 4: 0x40ff80, 6: 0x60a0ff };
-const _DBG_UP  = new THREE.Vector3(0, 1, 0);
-const _DBG_DIR = new THREE.Vector3();
-function _orientDebug(m, c) {                    // place a unit-height cylinder along capsule a→b
-  _DBG_DIR.copy(c.b).sub(c.a);
-  const len = _DBG_DIR.length() || 0.1;
-  m.position.copy(c.a).addScaledVector(_DBG_DIR, 0.5);
-  m.quaternion.setFromUnitVectors(_DBG_UP, _DBG_DIR.normalize());
-  m.scale.set(1, len, 1);
-}
+// Wireframe OBB per bone hitbox — toggled by the "Показать хитбоксы" setting
+// (showHitboxes). Purely visual: excluded from hitscan. The box geometry is the
+// bone-local size; per frame its matrix is set to M·translate(center).
+const _HG_DBGCOL = { 0: 0xcccccc, 1: 0xff4040, 2: 0xffe04a, 3: 0xff9030, 4: 0x40ff80, 5: 0x40ff80, 6: 0x60a0ff, 7: 0x60a0ff };
 function _buildHitboxDebug(inst) {
   if (inst.debugMeshes) inst.debugMeshes.forEach(m => { scene.remove(m); m.geometry.dispose(); });
   const on = (typeof showHitboxes !== 'undefined') && showHitboxes;
-  inst.debugMeshes = inst.caps.map(c => {
-    const geo = new THREE.CylinderGeometry(c.r, c.r, 1, 12, 1, true);   // height 1 → scaled per frame
+  inst.debugMeshes = inst.hboxes.map(h => {
+    const geo = new THREE.BoxGeometry(h.size[0], h.size[1], h.size[2]);
     const mat = new THREE.MeshBasicMaterial({
-      color: _HG_DBGCOL[c.hg] || 0xffffff, wireframe: true,
+      color: _HG_DBGCOL[h.hg] || 0xffffff, wireframe: true,
       transparent: true, opacity: 0.55, fog: false, toneMapped: false,
     });
     const m = new THREE.Mesh(geo, mat);
     m.userData.noHitscan = true;
+    m.matrixAutoUpdate = false;
+    m.matrix.copy(h.M).multiply(h.centerMat);
     m.visible = on;
     scene.add(m);
     return m;
   });
-  for (let i = 0; i < inst.caps.length; i++) _orientDebug(inst.debugMeshes[i], inst.caps[i]);
 }
 
 function setHitboxDebug(on) {
@@ -198,24 +195,32 @@ function setHitboxDebug(on) {
     if (inst.debugMeshes) for (const m of inst.debugMeshes) m.visible = on;
 }
 
-// Distance along the ray (D normalized) at which it comes within r of segment A–B,
-// or Infinity. Closest-approach between the ray and the segment (clamped).
-function _rayCapsule(O, D, A, B, r) {
-  const vx = B.x - A.x, vy = B.y - A.y, vz = B.z - A.z;       // segment dir
-  const wx = O.x - A.x, wy = O.y - A.y, wz = O.z - A.z;
-  const b = D.x * vx + D.y * vy + D.z * vz;                   // a = D·D = 1
-  const c = vx * vx + vy * vy + vz * vz;
-  const d = D.x * wx + D.y * wy + D.z * wz;
-  const e = vx * wx + vy * wy + vz * wz;
-  const den = c - b * b;                                      // a*c - b² with a=1
-  let t = den > 1e-9 ? (e - b * d) / den : 0;                 // param along segment (a*e-b*d)/den
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  let s = b * t - d;                                          // param along ray (a=1)
-  if (s < 0) { s = 0; t = c > 1e-9 ? e / c : 0; t = t < 0 ? 0 : t > 1 ? 1 : t; }
-  const px = O.x + D.x * s, py = O.y + D.y * s, pz = O.z + D.z * s;
-  const qx = A.x + vx * t, qy = A.y + vy * t, qz = A.z + vz * t;
-  const dx = px - qx, dy = py - qy, dz = pz - qz;
-  return (dx * dx + dy * dy + dz * dz <= r * r) ? s : Infinity;
+// Ray vs oriented box: transform the ray into the box's local space (M⁻¹), then a
+// plain slab test against the axis-aligned [bmin,bmax]. The direction is transformed
+// un-normalised so the returned t is the distance along the original (unit) world
+// ray. Returns the entry distance, or Infinity on a miss.
+const _obbO = new THREE.Vector3(), _obbP = new THREE.Vector3(), _obbMinv = new THREE.Matrix4();
+function _rayOBB(O, D, h) {
+  _obbMinv.copy(h.M).invert();
+  _obbO.copy(O).applyMatrix4(_obbMinv);                       // ray origin → box-local
+  _obbP.copy(O).add(D).applyMatrix4(_obbMinv);                // O+D → box-local
+  const o = [_obbO.x, _obbO.y, _obbO.z];
+  const d = [_obbP.x - _obbO.x, _obbP.y - _obbO.y, _obbP.z - _obbO.z];
+  const bmin = h.bmin, bmax = h.bmax;
+  let tmin = -Infinity, tmax = Infinity;
+  for (let i = 0; i < 3; i++) {
+    if (Math.abs(d[i]) < 1e-9) {
+      if (o[i] < bmin[i] || o[i] > bmax[i]) return Infinity;  // parallel & outside the slab
+    } else {
+      let t1 = (bmin[i] - o[i]) / d[i], t2 = (bmax[i] - o[i]) / d[i];
+      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) return Infinity;
+    }
+  }
+  if (tmax < 0) return Infinity;                              // box fully behind the eye
+  return tmin >= 0 ? tmin : tmax;                             // tmin<0 → eye inside the box
 }
 
 // Per-bone euler-frame lerp (pre-interpolate within a sequence before a quaternion blend).
@@ -276,7 +281,7 @@ function _updateEnemyInstance(inst, dt) {
     cur = computeBoneWorlds(inst.bones, seq.frames[i], poseB, frac);
   }
   _skinRig(inst.meshes, inst.originalPositions, inst.boneIndices, inst.bones, cur, inst.bindWorld);
-  _updateCaps(inst, cur);          // hitboxes follow the live pose
+  _updateHitboxes(inst, cur);      // hitboxes follow the live pose
 }
 
 function _enemyRespawn(inst) {
@@ -285,9 +290,9 @@ function _enemyRespawn(inst) {
   inst.flinchT = 0; inst.lastHit = null;
 }
 
-// Kevlar (no helmet): absorbs torso/stomach/arm hits only; head & legs go straight to HP.
+// Kevlar (no helmet): absorbs chest/stomach/arm hits only; head & legs go straight to HP.
 function _armorAbsorb(inst, dmg, hg) {
-  if (inst.armor <= 0 || (hg !== 2 && hg !== 3 && hg !== 4)) return dmg;
+  if (inst.armor <= 0 || (hg !== 2 && hg !== 3 && hg !== 4 && hg !== 5)) return dmg;
   const RATIO = 0.5, BONUS = 0.5;       // CS mp_armorratio / armor bonus
   let toHealth = dmg * RATIO;
   let toArmor  = (dmg - toHealth) * BONUS;
@@ -367,14 +372,14 @@ function enemyTryShoot(maxDist, opts) {
   const wall = (typeof hitCheck === 'function') ? hitCheck(maxDist) : null;
   const wallDist = wall ? wall.fraction * maxDist : maxDist;
 
-  // Nearest bone capsule per live dummy.
+  // Nearest bone hitbox (OBB) per live dummy.
   const hits = [];
   for (const inst of enemies) {
-    if (!inst.root || inst.state === 'dead' || !inst.caps) continue;
+    if (!inst.root || inst.state === 'dead' || !inst.hboxes) continue;
     let best = Infinity, hg = -1;
-    for (const c of inst.caps) {
-      const t = _rayCapsule(_enemyFrom, _enemyDir, c.a, c.b, c.r);
-      if (t < best) { best = t; hg = c.hg; }
+    for (const h of inst.hboxes) {
+      const t = _rayOBB(_enemyFrom, _enemyDir, h);
+      if (t < best) { best = t; hg = h.hg; }
     }
     if (hg >= 0 && best <= maxDist && best <= wallDist + 1) {
       const pt = _enemyFrom.clone().addScaledVector(_enemyDir, best);

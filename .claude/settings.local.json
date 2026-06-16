@@ -9,7 +9,13 @@
       "PowerShell(py --version 2>&1)",
       "PowerShell(py -3 --version 2>&1)",
       "PowerShell(Stop-Process -Name \"py\" -ErrorAction SilentlyContinue; netstat -ano | findstr \":8080\" | ForEach-Object { \\($_ -split '\\\\s+'\\)[-1] } | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue })",
-      "Bash(python mdl_to_json.py)"
+      "Bash(python mdl_to_json.py)",
+      "Read(//d/Games/Steam/steamapps/common/Half-Life/cstrike/**)",
+      "Read(//d/Games/Steam/steamapps/common/Half-Life/cstrike/sound/**)",
+      "Read(//d/Games/Steam/steamapps/common/Half-Life/cstrike/sound/weapons/**)",
+      "Bash(python -c \"import sys; sys.argv=['x']; sys.path.insert\\(0,'.'\\); exec\\(open\\('/tmp/probe_events.py'\\).read\\(\\).replace\\('try:','try:\\\\n    pass#',1\\)\\)\")",
+      "Bash(PYTHONPATH=. python /tmp/probe_events.py)",
+      "Bash(PYTHONPATH=. python tools/extract_sounds.py)"
     ]
   }
 }

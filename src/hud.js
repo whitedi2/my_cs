@@ -14,9 +14,9 @@ function drawCrosshair() {
   const isPistol = wpn?.type === 'gun' && !wpn?.autofire;
   const baseGap  = isPistol ? 10 : 5;
 
-  // Dynamic gap: smoothed envelope (fast expand on shots/movement, slow contract).
-  // When the dynamic-crosshair option is off, the gap stays fixed (classic static).
-  const gap = baseGap + (dynamicCrosshair ? xhairGap : 0);
+  // Firing expansion always applies (as in the original). Movement expansion
+  // (running/jumping) is gated by cl_dynamiccrosshair — off = static while moving.
+  const gap = baseGap + xhairGap + (dynamicCrosshair ? xhairMoveGap : 0);
   const len = 11;
 
   const lines = [
@@ -40,7 +40,7 @@ function drawCrosshair() {
 function updateHUD() {
   drawCrosshair();
   const wpn = curW();
-  document.getElementById('weapon-name').textContent = wpn.label;
+  document.getElementById('weapon-name').textContent = wpn.label + (wpn._burstMode ? '  •  BURST' : '');
   const ammoEl = document.getElementById('ammo-display');
   if (wpn.type === 'gun') {
     ammoEl.textContent = `${wpn.ammo}  /  ${wpn.reserve}`;

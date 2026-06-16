@@ -118,24 +118,43 @@ for si in range(NSEQ):
     os_ = OSEQ + si * SEQ_SZ
     label = cstr(os_, 32)
     fps = f32(os_ + 32)
+    numevents  = i32(os_ + 48)
+    eventindex = i32(os_ + 52)
     numframes = i32(os_ + 56)
-    
+
     print(f"\n  Sequence {si}: {label!r}  fps={fps}  frames={numframes}")
-    
+
+    # Animation events (mstudioevent_t, 76 bytes: frame:i32, event:i32, type:i32,
+    # options:char[64]). event 5004 = "play sound", options = filename under sound/.
+    # These carry the ORIGINAL reload/deploy/silencer sound timing (frame-accurate).
+    events = []
+    for e in range(numevents):
+        eo = eventindex + e * 76
+        ev_frame = i32(eo)
+        ev_code  = i32(eo + 4)
+        if ev_code == 5004:
+            snd = cstr(eo + 12, 64)
+            if snd:
+                events.append({'frame': ev_frame, 'sound': snd})
+                print(f"    event @{ev_frame}: sound {snd}")
+
     # Decode all frames
     frames = []
     for frame in range(numframes):
         pose = decode_frame(si, frame)
         if pose:
             frames.append(pose)
-    
+
     if frames:
-        sequences.append({
+        seq = {
             'name': label,
             'fps': fps,
             'numframes': numframes,
             'frames': frames,
-        })
+        }
+        if events:
+            seq['events'] = events
+        sequences.append(seq)
         print(f"    Exported {len(frames)} frames")
 
 # ── Write animation JSON ──────────────────────────────────────────────────

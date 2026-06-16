@@ -101,7 +101,8 @@ let punchRollVel = 0;        // spring velocity for roll
 let recoilPitch = 0;         // gun recoil: vertical angle (positive = up)
 let recoilYaw   = 0;         // gun recoil: horizontal angle (negative = right)
 let lastShotAge = 999;       // seconds since last shot — gates recoil accumulate vs recover
-let xhairGap    = 0;         // dynamic crosshair expansion (px): fast expand, slow contract
+let xhairGap     = 0;        // crosshair expansion from FIRING (px): always shown, slow contract
+let xhairMoveGap = 0;        // crosshair expansion from MOVEMENT (px): gated by cl_dynamiccrosshair
 let prevVelZ   = 0;          // z-velocity from previous frame (for landing detection)
 let gHullHeadStand, gHullHeadDuck;
 
@@ -165,6 +166,12 @@ function setTeam(team) {
 }
 
 function categorize() {
+  // GoldSrc PM_CategorizePosition: when moving up fast (just jumped), you're
+  // airborne — don't trace for the floor. Without this guard, on high-refresh
+  // monitors (tiny dt) the player rises <2u in the frame after a jump, the
+  // downward trace still hits the floor, onGround flips back true and vel[2] is
+  // zeroed — so the jump only "twitches up" and rarely takes off. 180 = engine value.
+  if (vel[2] > 180) { onGround = false; return; }
   const down = [gsPos[0], gsPos[1], gsPos[2] - 2];
   const tr   = traceMove(gsPos, down);
   onGround = tr.fraction < 1 && tr.plane && tr.plane[2] > 0.7;
@@ -436,6 +443,17 @@ function playerMove(dt) {
   } else {
     smoothCamY = targetCamY;   // in air: track exactly (no lag on jump/fall)
   }
+  yawObj.position.set(gsPos[0], smoothCamY, -gsPos[1]);
+}
+
+// Place the camera at the current spawn without simulating. Used while the player
+// is frozen (team/class select): playerMove — which normally positions the camera —
+// doesn't run, so without this the camera sits at the world origin (0,0,0) and looks
+// off the map. Puts the eye at the spawn point looking along its angle.
+function syncCameraToPlayer() {
+  if (!gsPos) return;
+  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  smoothCamY = gsPos[2] + eyeH;
   yawObj.position.set(gsPos[0], smoothCamY, -gsPos[1]);
 }
 
