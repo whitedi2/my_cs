@@ -63,6 +63,11 @@ CODE_SOUNDS = [
     'weapons/knife_hit3.wav', 'weapons/knife_hit4.wav',
     'weapons/knife_hitwall1.wav',
     'weapons/knife_stab.wav',
+    # C4 bomb: plant, arming beeps, defuse loop/finish, explosion.
+    'weapons/c4_plant.wav', 'weapons/c4_click.wav',
+    'weapons/c4_beep1.wav', 'weapons/c4_beep2.wav', 'weapons/c4_beep3.wav',
+    'weapons/c4_beep4.wav', 'weapons/c4_beep5.wav',
+    'weapons/c4_disarm.wav', 'weapons/c4_disarmed.wav', 'weapons/c4_explode1.wav',
 ]
 
 # Player movement sounds (code-driven in pm_shared.c: PM_PlayStepSound / landing).
@@ -86,11 +91,29 @@ PLAYER_SOUNDS = (
 # Texture→material-char table for footstep surface selection (PM_CatagorizeTextureType).
 EXTRA_FILES = ['materials.txt']
 
+# Bullet-impact sounds (code-driven in the original):
+#  • surface ricochets — TEXTURETYPE_PlaySound / EV_HLDM texture sound: concrete &
+#    default → ric_conc, metal/vent/grate → ric_metal (the only two bullet-ric sets CS ships);
+#  • victim hits — CBasePlayer::TraceAttack: flesh (no armor), kevlar (torso/arm under
+#    armor), helmet (head under helmet), headshot (head, no helmet).
+HIT_SOUNDS = [
+    'weapons/ric_conc-1.wav', 'weapons/ric_conc-2.wav',
+    'weapons/ric_metal-1.wav', 'weapons/ric_metal-2.wav',
+    'player/bhit_flesh-1.wav', 'player/bhit_flesh-2.wav', 'player/bhit_flesh-3.wav',
+    'player/bhit_kevlar-1.wav', 'player/bhit_helmet-1.wav',
+    'player/headshot1.wav', 'player/headshot2.wav', 'player/headshot3.wav',
+]
+
 # Sounds that live in the Half-Life base game (valve/), not cstrike/: weapon
 # drop/pickup + the HUD weapon-selection confirm / deny beeps.
 VALVE_SOUNDS = ['items/weapondrop1.wav', 'items/gunpickup2.wav',
                 'common/wpn_select.wav', 'common/wpn_denyselect.wav',
-                'common/wpn_moveselect.wav', 'common/wpn_hudon.wav', 'common/wpn_hudoff.wav']
+                'common/wpn_moveselect.wav', 'common/wpn_hudon.wav', 'common/wpn_hudoff.wav',
+                # Ejected-brass bounce (engine TE_BOUNCE_SHELL) — rifle/pistol casings ringing on the floor.
+                'player/pl_shell1.wav', 'player/pl_shell2.wav', 'player/pl_shell3.wav',
+                # Varied ricochet whines — played occasionally over the material impact (the
+                # distinct "zing" that isn't every shot and differs each time).
+                'weapons/ric1.wav', 'weapons/ric2.wav', 'weapons/ric3.wav', 'weapons/ric4.wav', 'weapons/ric5.wav']
 
 
 TARGET_RATE = 22050
@@ -144,7 +167,7 @@ def mdl_event_sounds(mdl_path):
 
 
 def main():
-    wanted = set(CODE_SOUNDS) | set(PLAYER_SOUNDS) | set(EXTRA_FILES)
+    wanted = set(CODE_SOUNDS) | set(PLAYER_SOUNDS) | set(HIT_SOUNDS) | set(EXTRA_FILES)
     for w in WEAPONS:
         mdl = MODELS / f"v_{w}.mdl"
         if mdl.exists():

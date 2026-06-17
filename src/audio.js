@@ -30,6 +30,24 @@ function initAudio() {
   if (_actx.state === 'suspended') _actx.resume();
   _loadMaterials();
   ['pl_step1', 'pl_step2', 'pl_step3', 'pl_step4'].forEach(s => _loadSound('player/' + s + '.wav'));
+  // Grenade world sounds (bounce/detonation) — warm up front so the first throw's
+  // bounce and blast play without an async decode gap.
+  ['weapons/explode3.wav', 'weapons/explode4.wav', 'weapons/explode5.wav',
+   'weapons/debris1.wav', 'weapons/debris2.wav', 'weapons/debris3.wav', 'weapons/he_bounce-1.wav',
+   'weapons/grenade_hit1.wav', 'weapons/grenade_hit2.wav', 'weapons/grenade_hit3.wav',
+   'weapons/flashbang-1.wav', 'weapons/flashbang-2.wav', 'weapons/sg_explode.wav',
+   'weapons/c4_plant.wav', 'weapons/c4_click.wav', 'weapons/c4_explode1.wav',
+   'weapons/c4_beep1.wav', 'weapons/c4_beep2.wav', 'weapons/c4_beep3.wav', 'weapons/c4_beep4.wav', 'weapons/c4_beep5.wav',
+   'weapons/c4_disarm.wav', 'weapons/c4_disarmed.wav',
+   // Bullet impacts (surface ricochets + victim hits) — warm so the first hit is crisp.
+   ...['weapons/ric_conc-1.wav', 'weapons/ric_metal-1.wav', 'weapons/ric_metal-2.wav',
+       'player/bhit_flesh-1.wav', 'player/bhit_flesh-2.wav', 'player/bhit_flesh-3.wav',
+       'player/bhit_kevlar-1.wav', 'player/bhit_helmet-1.wav',
+       'player/headshot1.wav', 'player/headshot2.wav', 'player/headshot3.wav',
+       'weapons/ric1.wav', 'weapons/ric2.wav', 'weapons/ric3.wav', 'weapons/ric4.wav', 'weapons/ric5.wav',
+       'player/pl_shell1.wav', 'player/pl_shell2.wav', 'player/pl_shell3.wav',
+       'items/gunpickup2.wav']]   // spawn "gear-up" + weapon pickup
+    .forEach(s => _loadSound(s));
 }
 
 function setMasterVolume(v) {
@@ -81,7 +99,7 @@ function _playBuffer(buf, opts) {
   const g = _actx.createGain();
   g.gain.value = opts.volume ?? 1;
   src.connect(g).connect(_masterGain);
-  src.start();
+  src.start(_actx.currentTime + (opts.delay || 0));   // opts.delay (s): scheduled later (e.g. impact travel)
   if (ch) {
     const entry = { src, gain: g };
     _channels.set(ch, entry);
@@ -169,6 +187,66 @@ const _STEP_DEFS = {
   S: { base: 'pl_slosh', n: 4, vol: [0.20, 0.50] },   // shallow liquid
   N: { base: 'pl_snow',  n: 6, vol: [0.20, 0.50] },
 };
+
+// ── Bullet impact sounds (original CS) ──────────────────────────────────────
+// Surface ricochet by material (TEXTURETYPE_PlaySound / EV_HLDM texture sound):
+// metal-ish surfaces ring (ric_metal), everything else thuds like concrete
+// (ric_conc) — the only two bullet-ric sets the game ships. de_dust2's untagged
+// sand falls to the concrete default, as in the original.
+// Ricochet "zing" pools (~50% of hits, random). Concrete pools ric_conc-1 with the
+// generic ric1-5 (all ricochets, varied); metal uses ric_metal. ric_conc-2 is the cut
+// shield-block hit (not a wall sound), so it's excluded.
+const _RIC_CONC  = ['weapons/ric_conc-1.wav', 'weapons/ric1.wav', 'weapons/ric2.wav',
+                    'weapons/ric3.wav', 'weapons/ric4.wav', 'weapons/ric5.wav'];        // 6 files
+const _RIC_METAL = [..._RIC_CONC, 'weapons/ric_metal-1.wav', 'weapons/ric_metal-2.wav']; // + metal = 8
+const _RIC_CHANCE = 0.5;
+// The impact sound reaches the shooter a touch after the muzzle blast — the farther
+// the hit, the longer (≈ sound travelling back to the ear). Tiny up close, ~0.1s far.
+const _SND_TRAVEL = 12000;   // GoldSrc units/s (≈ speed of sound). + a small base so even
+function _impactDelay(dist) { return Math.min(0.025 + (dist || 0) / _SND_TRAVEL, 0.2); }   // close hits read as "after the shot"
+// Distance attenuation: FULL volume up close (no fade within ~600u — near hits sound
+// exactly as before), then fades with range to a faint floor by ~2600u.
+function _distAtten(dist) {
+  const d = dist || 0;
+  if (d <= 600) return 1;
+  return Math.max(0.1, 1 - (d - 600) / 2000);
+}
+
+function playBulletImpact(materialName, dist) {
+  const ch = _materials[(materialName || '').toUpperCase().slice(0, 12)] || 'C';
+  const delay = _impactDelay(dist), att = _distAtten(dist);
+  // Base impact: the material's own thud (HLSDK TEXTURETYPE_PlaySound reuses the
+  // footstep samples — concrete→pl_step, metal→pl_metal, …). Quiet: barely audible
+  // under the gunshot, but present on every hit. Delayed by travel so it lands after the shot.
+  const def = _STEP_DEFS[ch] || _STEP_DEFS.C;
+  playSound(`player/${def.base}${1 + ((Math.random() * def.n) | 0)}.wav`, { volume: 0.15 * att, delay });
+  // ~50%: a random ricochet zing over the thud.
+  if (Math.random() < _RIC_CHANCE) {
+    const list = (ch === 'M' || ch === 'V' || ch === 'G') ? _RIC_METAL : _RIC_CONC;
+    playRandom(list, { volume: 0.45 * att, delay });
+  }
+}
+
+// Ejected-brass landing "tink" (engine TE_BOUNCE_SHELL → pl_shell*). Light and varied.
+const _SHELL_DROP = ['player/pl_shell1.wav', 'player/pl_shell2.wav', 'player/pl_shell3.wav'];
+function playShellDrop() { playRandom(_SHELL_DROP, { volume: 0.25 }); }
+
+// Victim hit (CBasePlayer::TraceAttack), bullets only — the knife has its own hits.
+//   head + helmet → helmet ting; head, no helmet → headshot; torso/arm under armor
+//   → kevlar; otherwise flesh.
+const _BHIT_FLESH = ['player/bhit_flesh-1.wav', 'player/bhit_flesh-2.wav', 'player/bhit_flesh-3.wav'];
+const _HEADSHOT   = ['player/headshot1.wav', 'player/headshot2.wav', 'player/headshot3.wav'];
+function playVictimHit(hg, armorAbsorbed, helmet, dist) {
+  const delay = _impactDelay(dist), att = _distAtten(dist);   // later + quieter with range
+  if (hg === 1) {
+    if (helmet) playSound('player/bhit_helmet-1.wav', { volume: 0.9 * att, delay });
+    else        playRandom(_HEADSHOT, { volume: 0.95 * att, delay });
+  } else if (armorAbsorbed) {
+    playSound('player/bhit_kevlar-1.wav', { volume: 0.85 * att, delay });
+  } else {
+    playRandom(_BHIT_FLESH, { volume: 0.85 * att, delay });
+  }
+}
 
 const _footRay    = new THREE.Raycaster();
 const _footDir    = new THREE.Vector3(0, -1, 0);

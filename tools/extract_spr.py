@@ -76,11 +76,22 @@ def extract_spr(filepath, outdir):
 
     print(f"{filepath}: {frame_idx} frames extracted")
 
-sprites_src = "D:/SteamLibrary/steamapps/common/Half-Life/cstrike/sprites/"
-valve_src   = "D:/SteamLibrary/steamapps/common/Half-Life/valve/sprites/"
-out_dir     = "d:/Code/my_cs/sprites/"
+from pathlib import Path
+try:
+    from config import CSTRIKE_PATH
+except Exception:
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from config import CSTRIKE_PATH
 
-for name in ["muzzleflash1.spr", "muzzleflash2.spr", "muzzleflash3.spr", "muzzleflash4.spr"]:
+CS          = Path(CSTRIKE_PATH)
+sprites_src = str(CS / "sprites") + "/"
+valve_src   = str(CS.parent / "valve" / "sprites") + "/"
+out_dir     = str(Path(__file__).parent.parent / "sprites") + "/"
+
+for name in ["muzzleflash1.spr", "muzzleflash2.spr", "muzzleflash3.spr", "muzzleflash4.spr",
+             # Bullet wall-impact dust puffs (CS): fast_wallpuff1 = the quick hit puff,
+             # wall_puff1 = the slightly larger smoke variant.
+             "fast_wallpuff1.spr", "wall_puff1.spr"]:
     extract_spr(os.path.join(sprites_src, name), out_dir)
 
 # Blood sprites live in the Half-Life base game (valve/), not cstrike/.

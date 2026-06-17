@@ -235,6 +235,31 @@ function _spawnDecal(type, maxDist, spread, roll) {
     scene.remove(old);
     _decalMeshSet.delete(old);
   }
+  // Return the hit so the caller can play the material impact sound + spawn a dust
+  // puff. undefined on a miss/early-out. `dist` drives the impact-sound travel delay.
+  return { mat: (hit.object.material && hit.object.material.name) || '', point: hit.point.clone(), normal: norm.clone(), dist: hit.distance };
+}
+
+// Bullet wall-impact dust puff — original CS sprite (fast_wallpuff1.spr, 30 frames,
+// alpha-masked dust). A brief grey billboard that drifts off the wall and fades.
+// Reuses the pooled billboard system (same as blood), so it's cheap.
+function _puffSpr(name) {
+  const tex = _decalTexLoader.load('sprites/' + name + '.png');
+  tex.colorSpace = THREE.SRGBColorSpace; tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
+const _puffFrames = Array.from({ length: 30 }, (_, i) => _puffSpr('fast_wallpuff1_' + String(i).padStart(2, '0')));
+const _puffVel = new THREE.Vector3();
+function _spawnImpactPuff(point, normal) {
+  if (!point || !normal) return;
+  // Drift slightly off the wall and up; no gravity (dust hangs, then fades).
+  _puffVel.copy(normal).multiplyScalar(14); _puffVel.y += 8;
+  _emitBlood({
+    pos: point.clone().addScaledVector(normal, 1.5), vel: _puffVel.clone(),
+    ttl: 0.5, frames: _puffFrames, grow: true,
+    s0: 8, s1: 30, fade: 0.4, color: 0xffffff, alphaTest: 0, rot: Math.random() * 6.28,
+  });
 }
 
 
@@ -351,10 +376,10 @@ function _bloodSpr(name) {
     g.drawImage(img, 0, 0);
     const d = g.getImageData(0, 0, cv.width, cv.height), a = d.data;
     for (let i = 0; i < a.length; i += 4) {
-      // Grayscale → saturated blood red. Floor the red high so dark source pixels
-      // (e.g. blooddrop ≈ 11) don't read as near-black; green/blue stay tiny.
+      // Grayscale → dark blood red. Keep it crimson, not neon: the engine tints
+      // blood a dark red, and toneMapped:false would otherwise blow a 255 red out.
       const k = ((a[i] + a[i + 1] + a[i + 2]) / 3) / 255;
-      a[i] = Math.min(255, 150 + 105 * k); a[i + 1] = Math.round(16 * k); a[i + 2] = Math.round(16 * k);
+      a[i] = Math.round(30 + 110 * k); a[i + 1] = Math.round(6 * k); a[i + 2] = Math.round(6 * k);
     }
     g.putImageData(d, 0, 0);
     tex.needsUpdate = true;
@@ -363,7 +388,6 @@ function _bloodSpr(name) {
   return tex;
 }
 const _spraySprFrames = Array.from({ length: 10 }, (_, i) => _bloodSpr('bloodspray_0' + i));
-const _dropSprTex     = ['blood_03', 'blood_05', 'blooddrop_00', 'blooddrop_01'].map(_bloodSpr);
 
 // Procedural (enhanced) soft droplet.
 function _makeBloodTexture() {
@@ -443,10 +467,11 @@ function _spawnBloodOriginal(pos, dir, dmg, hg) {
     const v = new THREE.Vector3(
       back.x + (Math.random() - 0.5), back.y + 0.2 + Math.random() * 0.5, back.z + (Math.random() - 0.5),
     ).normalize().multiplyScalar(50 + Math.random() * 110 + (head ? 60 : 0));
+    // Round soft droplet (the original blooddrop.spr extracts as a solid square —
+    // it's an additive sprite, wrong under normal blending — so use the round texture).
     _emitBlood({
       pos, vel: v, ttl: 0.3 + Math.random() * 0.3, gravity: true,
-      tex: _dropSprTex[(Math.random() * _dropSprTex.length) | 0],
-      s0: 2 + Math.random() * 2.4, alphaTest: 0.3,
+      tex: _bloodTex, s0: 2 + Math.random() * 2.4, alphaTest: 0,
     });
   }
 }
@@ -530,6 +555,8 @@ function _updateShells(dt) {
       if (s.mesh.position.y <= groundY + 1) {
         s.mesh.position.y = groundY;
         s.bounces++;
+        // Brass "tink" on the first couple of contacts (engine TE_BOUNCE_SHELL).
+        if (s.bounces <= 2 && typeof playShellDrop === 'function') playShellDrop();
         const restitution = 0.4 - s.bounces * 0.08;
         if (restitution > 0.05 && s.bounces < 4) {
           s.vel.y  = Math.abs(s.vel.y) * restitution;

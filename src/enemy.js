@@ -46,7 +46,7 @@ function _makeEnemyInstance() {
     root: null, meshes: null, originalPositions: null, boneIndices: null,
     bones: null, seqMap: null, flinch: null, bindWorld: null,   // shared model data
     state: 'idle', curSeq: 'idle1', frame: 0, deadTime: 0,
-    health: ENEMY_HEALTH, armor: ENEMY_ARMOR,
+    health: ENEMY_HEALTH, armor: ENEMY_ARMOR, helmet: false,
     flinchSeq: null, flinchT: 0, flinchDur: 0.22, flinchFrame: 0,
     lastHit: null, gsPos: null, faceYaw: null,
     hitboxData: null, hboxes: null, debugMeshes: null,
@@ -75,6 +75,7 @@ function loadEnemy() {
       inst.originalPositions = rig.originalPositions; inst.boneIndices = rig.boneIndices;
       inst.bones = data.bones; inst.seqMap = seqMap; inst.flinch = flinch; inst.bindWorld = bindWorld;
       inst.hitboxData = data.hitboxes || [];
+      inst.helmet = (i === 1);                        // middle dummy wears kevlar + helmet (the rest: kevlar only)
       inst.frame = Math.random() * idleN;            // desync idle breathing
       _placeEnemy(inst, i);
       enemies.push(inst);
@@ -319,7 +320,9 @@ function enemyRadiusDamage(origin, baseDmg, radius) {
 
 // Kevlar (no helmet): absorbs chest/stomach/arm hits only; head & legs go straight to HP.
 function _armorAbsorb(inst, dmg, hg) {
-  if (inst.armor <= 0 || (hg !== 2 && hg !== 3 && hg !== 4 && hg !== 5)) return dmg;
+  // Kevlar covers torso/arms; a helmet additionally covers the head (hg 1).
+  const covered = (hg === 2 || hg === 3 || hg === 4 || hg === 5) || (hg === 1 && inst.helmet);
+  if (inst.armor <= 0 || !covered) return dmg;
   const RATIO = 0.5, BONUS = 0.5;       // CS mp_armorratio / armor bonus
   let toHealth = dmg * RATIO;
   let toArmor  = (dmg - toHealth) * BONUS;
@@ -351,11 +354,16 @@ function _enemyDamage(inst, opts, hg, dist, point, penMult) {
     dmg *= penMult;                                           // power lost piercing earlier bodies
   }
   dmg *= (_HG_MULT[hg] ?? 1);     // hitgroup multiplier — CS applies it to the knife too (TraceAttack)
+  // Kevlar absorbs the hit if it covers this zone (torso/arm) and there's armor left.
+  const armorAbsorbed = inst.armor > 0 && (hg === 2 || hg === 3 || hg === 4 || hg === 5);
   dmg = _armorAbsorb(inst, dmg, hg);
   dmg = Math.max(0, Math.round(dmg));
   inst.health -= dmg;
   inst.lastHit = { dmg, hg, t: performance.now() };
   enemyFocus = inst;
+  // Victim hit sound (bullets only — the knife plays its own flesh/wall hits).
+  // No helmet on the dummy yet, so a head hit is a headshot (pass inst.helmet for later).
+  if (!opts.melee && typeof playVictimHit === 'function') playVictimHit(hg, armorAbsorbed, inst.helmet, dist);
   if (typeof _spawnBlood === 'function') _spawnBlood(point, _enemyDir, dmg, hg);
   if (inst.health <= 0) { inst.health = 0; _enemyDie(inst, hg); }
   else                  { _enemyFlinch(inst, hg); }

@@ -64,6 +64,8 @@ const _ZONE_COLOR = { 1: '#ff5252', 2: '#ffd24a', 3: '#ffb04a', 6: '#bcd' };
 function updateTargetHUD() {
   const e = (typeof enemyFocus !== 'undefined') ? enemyFocus : null;
   if (!e || !e.root) return;
+  const nameEl = document.getElementById('th-name');
+  if (nameEl) nameEl.textContent = e.helmet ? 'Манекен (T) — кевлар + шлем' : 'Манекен (T) — кевлар';
   const hp = Math.max(0, e.health), ap = Math.max(0, e.armor);
   document.getElementById('th-hp').style.width   = (hp / ENEMY_HEALTH * 100) + '%';
   document.getElementById('th-ap').style.width   = (ap / ENEMY_ARMOR  * 100) + '%';

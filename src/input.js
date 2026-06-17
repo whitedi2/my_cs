@@ -21,8 +21,35 @@ function _startGame() {
   // Lock now (needs the click gesture); cover the still-loading models with a
   // progress screen and reveal the game only once everything is ready.
   if (!gameAssetsReady()) { gameLoading = true; gameLoadStart = performance.now(); $gameload.style.display = 'flex'; }
+  // Optional fullscreen (settings) — lets the Keyboard Lock API capture reserved Ctrl
+  // combos (Ctrl+W/Ctrl+digit) so crouch-walking can't close/switch the Chrome tab.
+  if (fullscreenMode) {
+    try {
+      const el = document.documentElement;
+      if (el.requestFullscreen && !document.fullscreenElement) el.requestFullscreen().catch(() => {});
+    } catch (e) { /* ignore */ }
+  }
   renderer.domElement.requestPointerLock();
 }
+
+// Capture the game's reserved-combo keys (NOT Escape — keep single-press pause) so
+// Chrome doesn't act on Ctrl+W / Ctrl+digit / Ctrl+T while playing. Requires fullscreen.
+const _LOCK_KEYS = [
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyR', 'KeyF', 'KeyG', 'KeyV', 'KeyQ', 'KeyB', 'KeyE',
+  'KeyT', 'KeyN', 'KeyP', 'KeyJ', 'KeyL', 'Space', 'ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight',
+  'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9', 'Digit0',
+];
+function _kbLock() {
+  try {
+    if (navigator.keyboard && navigator.keyboard.lock && document.fullscreenElement)
+      navigator.keyboard.lock(_LOCK_KEYS).catch(() => {});
+  } catch (e) { /* unsupported */ }
+}
+function _kbUnlock() {
+  try { if (navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock(); } catch (e) { /* unsupported */ }
+}
+// Fullscreen may engage just after the click — lock the keyboard once it does (if playing).
+document.addEventListener('fullscreenchange', () => { if (document.fullscreenElement && isLocked) _kbLock(); });
 $btnPlay.addEventListener('click', _startGame);
 $btnRestart.addEventListener('click', () => { if (typeof respawn === 'function') respawn(); _startGame(); });
 
@@ -68,9 +95,11 @@ document.addEventListener('pointerlockchange', () => {
   isLocked = document.pointerLockElement === renderer.domElement;
   if (isLocked) {
     mouseIgnore = 5; hasStarted = true;
+    _kbLock();                       // grab reserved browser combos while playing
     // First time in: choose team & class (old-style menu) before playing.
     if (typeof hasJoined !== 'undefined' && !hasJoined) openTeamMenu();
   } else {
+    _kbUnlock();
     // Menu shown (first time or paused): primary button label + restart visibility.
     $btnPlay.textContent      = hasStarted ? 'Продолжить' : 'Начать игру';
     $btnRestart.style.display = hasStarted ? '' : 'none';
@@ -95,6 +124,7 @@ let rightHand        = CONFIG.rightHand;
 let dynamicCrosshair = CONFIG.dynamicCrosshair ?? false;  // cl_dynamiccrosshair: только расширение от движения
 let enhancedGore     = CONFIG.enhancedGore ?? false;      // our procedural blood vs original sprites (off = original)
 let showHitboxes     = false;                             // debug: draw dummy hit-zone cylinders
+let fullscreenMode   = CONFIG.fullscreenMode ?? false;    // Start → fullscreen (enables Keyboard Lock vs Ctrl combos)
 
 function updateFOV() {
   // Scoped (AWP): the zoom FOV is the horizontal FOV — derive vertical for the aspect.
@@ -132,6 +162,13 @@ document.getElementById('opt-dynamic-crosshair').addEventListener('change', e =>
 document.getElementById('opt-enhanced-gore').addEventListener('change', e => { enhancedGore = e.target.checked; });
 document.getElementById('opt-show-hitboxes').addEventListener('change', e => { showHitboxes = e.target.checked; if (typeof setHitboxDebug === 'function') setHitboxDebug(showHitboxes); });
 document.getElementById('opt-third-person').addEventListener('change', e => { toggleThirdPerson(e.target.checked); });
+const _optFs = document.getElementById('opt-fullscreen');
+if (_optFs) _optFs.addEventListener('change', e => {
+  fullscreenMode = e.target.checked;
+  // Toggling off while in fullscreen → leave it; toggling on while playing → enter now.
+  if (fullscreenMode && isLocked) { try { document.documentElement.requestFullscreen().catch(() => {}); } catch (e2) {} }
+  else if (!fullscreenMode && document.fullscreenElement) { try { document.exitFullscreen().catch(() => {}); } catch (e2) {} }
+});
 // Null-guarded: if a stale cached viewer.html lacks #opt-volume, a hard throw here
 // would abort the rest of input.js (key handlers, render loop) — so guard it.
 const _volSlider = document.getElementById('opt-volume');
@@ -334,6 +371,7 @@ function animate(t) {
     if (typeof updatePickups === 'function') updatePickups(dt);   // dropped-weapon physics + pickup
     if (typeof updateGrenades === 'function') updateGrenades(dt); // thrown nades: physics + detonation
     updateEnemy(dt);
+    if (typeof updateRound === 'function') updateRound(dt);   // match flow + C4 bomb
     updateHUD();
     if (typeof updateBuyHUD === 'function') updateBuyHUD();
     const spd = Math.hypot(vel[0], vel[1]);

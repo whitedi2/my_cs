@@ -128,6 +128,29 @@
   #th-ap { background: linear-gradient(90deg, #3d7ce8, #78a8f0); }
   .th-num { width: 30px; text-align: right; font-size: 13px; font-weight: 600; }
   #th-last { text-align: center; font-size: 12px; font-weight: 700; letter-spacing: 1px; min-height: 15px; transition: opacity .25s; }
+  /* ── Round flow HUD ── */
+  #round-hud {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    display: none; font-family: 'Segoe UI', system-ui, sans-serif; text-align: center;
+    color: #fff; text-shadow: 0 0 5px #000; pointer-events: none;
+  }
+  #round-hud .rh-time { font-size: 26px; font-weight: 800; letter-spacing: 2px; }
+  #round-hud .rh-time.bomb { color: #ff5252; }
+  #round-hud .rh-time.buy  { color: #6f6; }
+  #round-hud .rh-sub  { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,.6); }
+  #round-banner {
+    position: absolute; top: 38%; left: 50%; transform: translate(-50%,-50%);
+    display: none; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 30px; font-weight: 800;
+    letter-spacing: 2px; text-align: center; text-shadow: 0 2px 10px #000; pointer-events: none;
+  }
+  #bomb-action {
+    position: absolute; top: 58%; left: 50%; transform: translateX(-50%);
+    display: none; font-family: 'Segoe UI', system-ui, sans-serif; text-align: center;
+    color: #fff; text-shadow: 0 0 5px #000; pointer-events: none; width: 260px;
+  }
+  #bomb-action .ba-label { font-size: 13px; letter-spacing: 1px; margin-bottom: 5px; }
+  #bomb-action .ba-bar { height: 8px; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.25); border-radius: 4px; overflow: hidden; }
+  #bomb-action .ba-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #e8a33d, #f0c878); }
   #ammo-display {
     font-size: 24px; font-weight: bold; letter-spacing: 3px;
     color: rgba(255,255,255,.95);
@@ -193,6 +216,7 @@
       <label><input type="checkbox" id="opt-enhanced-gore"> Улучшенный урон (кровь)</label>
       <label><input type="checkbox" id="opt-show-hitboxes"> Показать хитбоксы (отладка)</label>
       <label><input type="checkbox" id="opt-third-person"> Вид от третьего лица (V)</label>
+      <label><input type="checkbox" id="opt-fullscreen"> Полноэкранный режим (хоткеи Ctrl не закрывают вкладку)</label>
       <label>Громкость <input type="range" id="opt-volume" min="0" max="100" value="70" style="flex:1; accent-color:#e8a33d;"></label>
     </div>
     <div id="hint">WASD — движение · Мышь — обзор · Space — прыжок · Shift — шаг · Ctrl — присед<br>
@@ -216,6 +240,8 @@
   1 — M4A1 &nbsp; 2 — USP &nbsp; 3 — knife<br>
   R — reload &nbsp; Q — prev weapon<br>
   LMB — fire / slash &nbsp; RMB — stab<br>
+  B — закупка &nbsp; G — бросить<br>
+  E — заложить / разминировать бомбу (удерживать)<br>
   ESC — pause
 </div>
 <div id="weapon-hud">
@@ -232,6 +258,9 @@
   <div class="th-row"><span class="th-ico" style="color:#78a8f0">⛊</span><div class="th-bar"><div id="th-ap"></div></div><span class="th-num" id="th-ap-n">100</span></div>
   <div id="th-last"></div>
 </div>
+<div id="round-hud"></div>
+<div id="round-banner"></div>
+<div id="bomb-action"></div>
 
 <script type="importmap">
 {
@@ -267,6 +296,7 @@
     'src/physics.js',
     'src/game.js',
     'src/grenades.js',
+    'src/rounds.js',
     'src/pickups.js',
     'src/load.js',
     'src/input.js',

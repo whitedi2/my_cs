@@ -4,6 +4,7 @@
 
 // ── Weapon configs ────────────────────────────────────────────────────────
 const D = Math.PI / 180;
+const SHOT_RANGE = 8192;   // hitscan trace length (GoldSrc engine max) — far targets still register
 
 // Builds a standard auto-rifle entry (shared rig offsets + idle1/shoot1-3/reload/draw
 // sequences). Stats (damage/rangeMod/fireInterval/clip/reload) come from CS/ReGameDLL.
@@ -580,6 +581,11 @@ function updateWeapon(dt) {
         } else if (lmbHeld && wpn.type === 'gun' && wpn.ammo > 0) {
           // Если LMB зажата во время draw и есть патроны - начать стрельбу
           _beginFire(wpn);
+        } else if (lmbHeld && wpn.type === 'grenade') {
+          // LMB held through the deploy (the mousedown fired before idle, so PULLPIN
+          // was never latched) — pull the pin now so the release still throws.
+          ws = WS.PULLPIN; wsT = 0; wsHit = false;
+          if (wpn.anim) { wpn.anim._prevAnimWs = undefined; wpn.anim.curFrame = 0; }
         }
       }
       break;
@@ -605,7 +611,11 @@ function updateWeapon(dt) {
         wsHit = true;
         if (typeof throwGrenade === 'function') throwGrenade(wpn);
       }
-      if (wpn.anim?._grenAnimDone || wsT >= 1.0) {
+      // Only consume/redeploy AFTER the nade has actually left the hand (wsHit). The
+      // state switch runs before applySkeletalAnimation resets _grenAnimDone, so on a
+      // repeated throw that flag is still true from the previous throw — without the
+      // wsHit guard it would consume the grenade on frame 0 and spawn no projectile.
+      if (wsHit && (wpn.anim?._grenAnimDone || wsT >= 1.0)) {
         // Out of this type → switch to the best remaining weapon; else redeploy.
         if (typeof afterGrenadeThrow === 'function') afterGrenadeThrow(wpn);
         else { ws = WS.IDLE; wsT = 0; }
@@ -700,15 +710,22 @@ function updateWeapon(dt) {
         // CHAN_WEAPON: each shot cuts the previous one so bursts/fast taps stay
         // crisp instead of overlapping into a drone (matches the engine).
         if (typeof playRandom === 'function') playRandom(_fireSnd, { volume: 1.0, channel: 'weapon' });
-        _spawnDecal('bullet', 4096, shotSpread);
+        const _hit = _spawnDecal('bullet', SHOT_RANGE, shotSpread);
         let _hitBody = false;
         if (typeof enemyTryShoot === 'function')                        // hit the target dummy?
-          _hitBody = enemyTryShoot(4096, {
+          _hitBody = enemyTryShoot(SHOT_RANGE, {
             damage:   (wpn.silencer && wpn.damageSil   != null) ? wpn.damageSil   : (wpn.damage ?? 30),
             rangeMod: (wpn.silencer && wpn.rangeModSil != null) ? wpn.rangeModSil : (wpn.rangeMod ?? 0.98),
           });
+        // Surface impact (ric sound + dust puff) — only when no body was hit (the body
+        // plays its own flesh/kevlar/headshot sound, in enemy.js). The wall decal
+        // still appears behind a dummy (bodies are excluded from the decal ray).
+        if (!_hitBody && _hit) {
+          if (typeof playBulletImpact === 'function') playBulletImpact(_hit.mat, _hit.dist);
+          if (typeof _spawnImpactPuff === 'function') _spawnImpactPuff(_hit.point, _hit.normal);
+        }
         // Enhanced gore: stain the wall behind a hit body with a blood splat.
-        if (_hitBody && typeof enhancedGore !== 'undefined' && enhancedGore) _spawnDecal('blood', 4096, 0);
+        if (_hitBody && typeof enhancedGore !== 'undefined' && enhancedGore) _spawnDecal('blood', SHOT_RANGE, 0);
         lastShotAge = 0;           // keep recoil in slow-decay (accumulate) mode through the burst
         wpn._pendingFire = true;   // defer flash+eject until _muzzleLocal is current
         wpn._shotCount = sc + 1;

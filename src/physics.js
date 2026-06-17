@@ -85,6 +85,7 @@ let gsPos, vel, onGround, wasJump;
 let gsSpawn = null, gsSpawnYaw = 0;   // reference CT spawn[0] (stable anchor, e.g. for the dummies)
 let spawnPoints = { ct: [], t: [] };  // all team spawn points (origin + angle) from the BSP
 let buyZones    = [];                 // func_buyzone AABBs {min,max,team} from the BSP
+let bombSites   = [];                 // func_bomb_target AABBs {min,max,site:'a'|'b'} from the BSP
 let playerTeam  = 'ct';               // current team — picks which spawns respawn() uses
 
 // GoldSrc entity yaw (deg, 0=+X, 90=+Y) → our yaw. forward(yaw)=(-sin,cos) in GoldSrc,
@@ -121,6 +122,7 @@ function initPhysics(hull) {
   spawnPoints.ct = (hull.spawns && hull.spawns.ct) || [];
   spawnPoints.t  = (hull.spawns && hull.spawns.t)  || [];
   buyZones = hull.buyzones || [];
+  bombSites = hull.bombsites || [];
   // Stable reference = first CT spawn (used to anchor the test dummies).
   const ref = spawnPoints.ct[0];
   gsSpawn = ref ? [...ref.origin] : [0, 0, 200];
@@ -157,6 +159,10 @@ function respawn() {
   recoilPitch = recoilYaw = 0;
   punchPitch = punchVel = punchRoll = punchRollVel = 0;
   pitch = 0;
+  // Spawn "gear-up" sound — the original plays the gun-pickup/equip sound on (re)spawn.
+  // At map-load init this is silent (audio context isn't up yet, so playSound no-ops);
+  // it fires on the real spawns: team select (setTeam) and the restart button.
+  if (typeof playSound === 'function') playSound('items/gunpickup2.wav', { volume: 0.8 });
 }
 
 // Switch team and respawn at that team's points (called by the team-select menu).

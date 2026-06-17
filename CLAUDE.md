@@ -13,6 +13,13 @@ python serve.py          # поднимает http://localhost:8080/viewer.html 
 Нужен HTTP-сервер (не `file://`) — иначе не загрузятся `.json`/ассеты и ES-модуль Three.js.
 Three.js тянется с CDN через `<script type="importmap">` в `viewer.html` — **нужен интернет**.
 
+Хоткеи: присед на Ctrl в комбо (Ctrl+W / Ctrl+цифра) — это зарезервированные комбо Chrome, `preventDefault`
+их не ловит. Перехватывает только **Keyboard Lock API** (`navigator.keyboard.lock`), а он требует fullscreen.
+Принудительно fullscreen **не включаем** (неудобно тестировать). Есть настройка **«Полноэкранный режим»**
+(`opt-fullscreen`, дефолт выкл): включишь — «Начать игру» уходит в fullscreen и Keyboard Lock перехватывает
+Ctrl+W/Ctrl+цифра. Также Keyboard Lock включается сам, если зайти в fullscreen вручную (F11) — через
+`fullscreenchange`. В окне без этого — комбо могут сработать (фолбэк только `preventDefault`).
+
 Проверка изменений = перезагрузить страницу в браузере (Ctrl+Shift+R: декали/текстуры
 кэшируются) и посмотреть глазами. Скриншот-тесты не используем.
 
@@ -30,7 +37,7 @@ Runtime разбит по файлам (порядок загрузки = пор
 | Файл | Содержимое | Ключевые функции / якоря |
 |---|---|---|
 | `src/scene.js` | рендерер, сцены (мир / вьюмодель / 2D-вспышка), камеры, muzzle flash | `vmScene`, `_flashScene2D`, `_showFlash`, `_tickFlash`, `_loadAdditiveSprite` |
-| `src/audio.js` | звук из оригинала (WebAudio): выстрел/нож из кода, перезарядка/деплой/глушитель по MDL-событиям, шаги/приземление (материал по `materials.txt` + трасса пола, каденс по скорости — `pm_shared.c`) | `initAudio`, `playSound`, `playRandom`, `warmWeaponSounds`, `_tickAnimEvents`, `updateMovementSounds`, `setMasterVolume` |
+| `src/audio.js` | звук из оригинала (WebAudio): выстрел/нож из кода, перезарядка/деплой/глушитель по MDL-событиям, шаги/приземление (материал по `materials.txt` + трасса пола, каденс по скорости — `pm_shared.c`), попадания пуль (рикошет по материалу `ric_conc`/`ric_metal` + по жертве: flesh/kevlar/helmet/headshot) | `initAudio`, `playSound`, `playRandom`, `warmWeaponSounds`, `_tickAnimEvents`, `updateMovementSounds`, `playBulletImpact`, `playVictimHit`, `setMasterVolume` |
 | `src/effects.js` | гильзы + декали пуль/ножа | `_ejectShell`, `_updateShells`, `_spawnDecal`, `_getDecalMat`, `_makeSlashTexture`, `_drawTaperedCut` |
 | `src/weapons.js` | конфиги оружия, переключение, скелетка, стрельба/отдача, ближний бой | `WPNS`, `switchWeapon`, `_beginDraw`, `toggleSilencer`, `updateWeapon` (стейт-машина `ws`), `applySkeletalAnimation`, `computeBoneWorlds`, `boneEulerMat`, `_startMeleeAttack` |
 | `src/player.js` | модель игрока от 3-го лица (CT `gign`, `PLAYER_MODEL`): двухслойная анимация (ноги=походка, верх=прицел/стрельба/перезарядка по оружию), оружие в руке, чейз-камера с орбитой | `updatePlayerModel`, `_skinRig`, `_updateWeaponAttachment`, `_resolveUpperPose`/`_aimPose`/`_clipPose`, `updateChaseCamera`, `updateOrbit`, `toggleThirdPerson`, `thirdPerson` |
@@ -38,6 +45,7 @@ Runtime разбит по файлам (порядок загрузки = пор
 | `src/physics.js` | BSP-трасса + физика игрока; точки спауна/угол, зоны закупки, выбор команды | `pointContents`, `traceMove`, `playerMove`, `slideMove`, `categorize`, `accel`, `applyFriction`, `initPhysics`, `pickSpawn`, `respawn`, `setTeam`, `spawnPoints`, `buyZones` |
 | `src/game.js` | состояние матча: команда/класс-меню, деньги, владение оружием, закупка, гранаты-счётчики (после physics/weapons/player) | `BUY_CATALOG`, `CLASSES`, `buyItem`, `inBuyZone`, `openBuyMenu`/`buyMenuKey`, `openTeamMenu`/`teamMenuKey`, `ownedWeapons`, `grenadeCounts`, `afterGrenadeThrow`, `playerMoney`, `updateBuyHUD` |
 | `src/grenades.js` | гранаты (HE/флеш/дым): бросок, физика снаряда (`w_*` + отскок по BSP), запал, детонация (радиус-урон / слепота / дым), эффекты (после game) | `throwGrenade`, `updateGrenades`, `_moveGrenade`, `_detonateHE`/`_detonateFlash`/`_detonateSmoke`, `_updateBlind`, `_updateSmokes`, `clearGrenades`, `GRENADE_DEFS` |
+| `src/rounds.js` | поток матча (закупка→лайв→конец→рестарт) + цель-бомба C4: плант/дефьюз/взрыв (бомбсайты из BSP), таймеры, деньги, HUD раунда (после grenades/enemy/game) | `startMatch`, `startRound`, `endRound`, `updateRound`, `buyTimeOpen`, `_plantBomb`/`_detonateBomb`, `roundPhase` |
 | `src/pickups.js` | дроп (G) и подбор оружия: мировая `p_*`-модель падает на пол, подбор по близости со звуками оригинала (после game.js) | `dropWeapon`, `updatePickups`, `_spawnPickup`, `_buildDropModel`, `DROP_SOUND`/`PICKUP_SOUND` |
 | `src/load.js` | загрузка карты/ассетов (после physics, чтобы `initPhysics` была определена) | `objPromise`, `hullPromise`, `Promise.all(...).then(...)` |
 | `src/input.js` | pointer lock, настройки, мышь/клавиатура/оружие, **главный цикл** | `animate(t)`, `updateFOV`, обработчики ввода, `animate(0)` в конце |
@@ -104,8 +112,10 @@ docs/              PLAN.md, DIFFERENCES.md
   (меш ствола + кости `Bip01…` + bind-поза). Рантайм гонит этот скелет позой игрока (по имени кости),
   оружие крепится к кисти. Готовы `p_m4a1`, `p_usp`, `p_knife`.
 - `bsp_to_obj.py` — BSP → `maps/de_dust2.obj/.mtl` + `maps/textures/`.
-- `bsp_phys.py` — BSP → `maps/de_dust2_hull.json`.
-- `extract_spr.py` → `sprites/`, `extract_decals.py` → `decals/` (пути в этих двух — абсолютные, поправь под себя).
+- `bsp_phys.py` — BSP → `maps/de_dust2_hull.json` (clipnodes/planes + спауны, зоны закупки `func_buyzone`,
+  бомбсайты `func_bomb_target` → `bombsites:[{min,max,site:'a'|'b'}]`). Запуск: `python tools/bsp_phys.py "<путь>/de_dust2.bsp"`.
+- `extract_spr.py` → `sprites/` (muzzleflash, кровь, пуле-пуф `fast_wallpuff1`/`wall_puff1`; пути из `config.py`).
+  `extract_decals.py` → `decals/` (пути абсолютные, поправь под себя).
 - `extract_skin.py`, `list_wad.py`, `debug_wad.py`, `_*.py` — вспомогательные/отладочные.
 
 ## Соглашения и подводные камни

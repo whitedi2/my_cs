@@ -16,63 +16,64 @@ const GRENADE_MAX   = { hegrenade: 1, flashbang: 2, smokegrenade: 1 };
 WPNS.forEach(w => { w._reserve0 = w.reserve; });  // remember full reserve for buy refills
 
 // ── CS 1.6 buy catalog ──────────────────────────────────────────────────────
-// Same categories/order/key-combos as the original menu (B → category → item).
-// `teams` = which side may buy it (canonical CS restrictions; the menu shows only
-// your team's items, renumbered 1..N — exactly like the real buy menu). Prices are
-// the verified CS 1.6 values. `wid` = WPNS id when we have a working model (buyable);
-// items without `wid` show the price + "нет модели" and can't be bought yet.
-const B = ['ct', 't'];   // both teams
+// FIXED slots, exactly like the real menu: each category is a list of numbered slots,
+// and a slot holds either one item for both teams ({both}) or the team-specific
+// equivalent ({ct, t}) — so the SLOT NUMBER never changes between teams and the
+// muscle-memory combos match the original (e.g. Rifles→3 = M4A1 for CT / AK-47 for T,
+// Rifles→4 = AWP). A slot with no item for your team renders as "—" but keeps its
+// number (it doesn't get renumbered away). Prices verified vs CS 1.6 / ReGameDLL.
+// `wid` = WPNS id when we have a working model (buyable); no `wid`/`equip` → shows
+// the price but "нет модели" (not buyable yet).
+//
+// 🔹 Submenu order reconstructed from the canonical CS 1.6 buy menu (verify in-game,
+//    then tweak); top-level category order matches the original exactly.
 const BUY_CATALOG = [
-  { name: 'Пистолеты', items: [
-    { name: 'Glock-18',         price: 400,  teams: B, wid: 'glock18' },
-    { name: 'USP .45 Tactical', price: 500,  teams: B, wid: 'usp' },
-    { name: 'P228 Compact',     price: 600,  teams: B, wid: 'p228' },
-    { name: 'Desert Eagle',     price: 650,  teams: B, wid: 'deagle' },
-    { name: 'Five-SeveN',       price: 750,  teams: ['ct'], wid: 'fiveseven' },
-    { name: 'Dual Berettas',    price: 800,  teams: ['t']  },
+  { name: 'Пистолеты', slots: [
+    { both: { name: 'USP .45 Tactical', price: 500, wid: 'usp' } },
+    { both: { name: 'Glock-18',         price: 400, wid: 'glock18' } },
+    { both: { name: 'Desert Eagle',     price: 650, wid: 'deagle' } },
+    { both: { name: 'P228 Compact',     price: 600, wid: 'p228' } },
+    { both: { name: 'Dual Berettas',    price: 800 } },                  // Elites — both, no model yet
+    { ct:   { name: 'Five-SeveN',       price: 750, wid: 'fiveseven' } }, // CT only
   ] },
-  { name: 'Дробовики', items: [
-    { name: 'M3 Super 90',      price: 1700, teams: B },
-    { name: 'XM1014',           price: 3000, teams: B },
+  { name: 'Дробовики', slots: [
+    { both: { name: 'M3 Super 90',      price: 1700 } },
+    { both: { name: 'XM1014',           price: 3000 } },
   ] },
-  { name: 'Пистолеты-пулемёты', items: [
-    { name: 'MP5 Navy',         price: 1500, teams: B, wid: 'mp5' },
-    { name: 'TMP',              price: 1250, teams: ['ct'], wid: 'tmp' },
-    { name: 'MAC-10',           price: 1400, teams: ['t'],  wid: 'mac10' },
-    { name: 'UMP45',            price: 1700, teams: B, wid: 'ump45' },
-    { name: 'P90',              price: 2350, teams: B, wid: 'p90' },
+  { name: 'Пистолеты-пулемёты', slots: [
+    { both: { name: 'MP5 Navy',         price: 1500, wid: 'mp5' } },
+    { ct: { name: 'TMP', price: 1250, wid: 'tmp' }, t: { name: 'MAC-10', price: 1400, wid: 'mac10' } },
+    { both: { name: 'UMP45',            price: 1700, wid: 'ump45' } },
+    { both: { name: 'P90',              price: 2350, wid: 'p90' } },
   ] },
-  { name: 'Винтовки', items: [
-    { name: 'Galil',            price: 2000, teams: ['t'],  wid: 'galil' },
-    { name: 'FAMAS',            price: 2250, teams: ['ct'], wid: 'famas' },
-    { name: 'AK-47',            price: 2500, teams: ['t'],  wid: 'ak47' },
-    { name: 'M4A1 Carbine',     price: 3100, teams: ['ct'], wid: 'm4' },
-    { name: 'SG-552 Commando',  price: 3500, teams: ['t'],  wid: 'sg552' },
-    { name: 'Steyr AUG',        price: 3500, teams: ['ct'], wid: 'aug' },
-    { name: 'Steyr Scout',      price: 2750, teams: B },
-    { name: 'SG-550 Auto',      price: 4200, teams: ['ct'] },
-    { name: 'G3/SG-1 Auto',     price: 5000, teams: ['t']  },
-    { name: 'AWP',              price: 4750, teams: B, wid: 'awp' },
+  { name: 'Винтовки', slots: [
+    { ct: { name: 'FAMAS',           price: 2250, wid: 'famas' }, t: { name: 'Galil',           price: 2000, wid: 'galil' } },
+    { both: { name: 'Steyr Scout',   price: 2750 } },
+    { ct: { name: 'M4A1 Carbine',    price: 3100, wid: 'm4' },    t: { name: 'AK-47',           price: 2500, wid: 'ak47' } },
+    { both: { name: 'AWP',           price: 4750, wid: 'awp' } },
+    { ct: { name: 'Steyr AUG',       price: 3500, wid: 'aug' },   t: { name: 'SG-552 Commando', price: 3500, wid: 'sg552' } },
+    { ct: { name: 'SG-550 Auto',     price: 4200 },               t: { name: 'G3/SG-1 Auto',    price: 5000 } },
   ] },
-  { name: 'Пулемёты', items: [
-    { name: 'M249 Para',        price: 5750, teams: B, wid: 'm249' },
+  { name: 'Пулемёты', slots: [
+    { both: { name: 'M249 Para',        price: 5750, wid: 'm249' } },
   ] },
-  { name: 'Боезапас (основной)',  ammo: 'primary',   items: [] },
-  { name: 'Боезапас (пистолет)',  ammo: 'secondary', items: [] },
-  { name: 'Снаряжение', items: [
-    { name: 'Кевлар',                 price: 650,  teams: B },
-    { name: 'Кевлар + Шлем',          price: 1000, teams: B },
-    { name: 'Флешка',                 price: 200,  teams: B, wid: 'flashbang' },
-    { name: 'Граната HE',             price: 300,  teams: B, wid: 'hegrenade' },
-    { name: 'Дымовая граната',        price: 300,  teams: B, wid: 'smokegrenade' },
-    { name: 'Дефуз-кит',              price: 200,  teams: ['ct'] },
-    { name: 'Прибор ночного видения', price: 1250, teams: B },
+  { name: 'Боезапас (основной)',  ammo: 'primary'   },
+  { name: 'Боезапас (пистолет)',  ammo: 'secondary' },
+  { name: 'Снаряжение', slots: [
+    { both: { name: 'Кевлар',                 price: 650 } },
+    { both: { name: 'Кевлар + Шлем',          price: 1000 } },
+    { both: { name: 'Флешка',                 price: 200,  wid: 'flashbang' } },
+    { both: { name: 'Граната HE',             price: 300,  wid: 'hegrenade' } },
+    { both: { name: 'Дымовая граната',        price: 300,  wid: 'smokegrenade' } },
+    { ct:   { name: 'Дефуз-кит',              price: 200,  equip: 'defusekit' } },
+    { both: { name: 'Прибор ночного видения', price: 1250 } },
   ] },
 ];
 
-// Items shown to the current team in a category (filtered + original order).
-function _catItems(cat) {
-  return (cat.items || []).filter(it => !it.teams || it.teams.includes(playerTeam));
+// The item in a fixed slot for the current team ({both} or the team-specific one), or
+// null if the slot has nothing for this team (renders as "—" but keeps its number).
+function _slotItem(slot) {
+  return (slot && (slot.both || slot[playerTeam])) || null;
 }
 
 // Selectable player classes per team (only converted models with full anim sets).
@@ -98,8 +99,17 @@ let _buyMsg = '', _buyMsgT = -Infinity;
 function _flashBuy(msg) { _buyMsg = msg; _buyMsgT = performance.now(); }
 
 function buyItem(item) {
+  if (typeof buyTimeOpen === 'function' && !buyTimeOpen()) return _flashBuy('Время закупки вышло');
   if (item.teams && !item.teams.includes(playerTeam)) return _flashBuy('Недоступно вашей команде');
   if (!inBuyZone())     return _flashBuy('Вы не в зоне закупки');
+  // Defuse kit (CT) — sets the faster-defuse flag used by the bomb code.
+  if (item.equip === 'defusekit') {
+    if (typeof hasDefuseKit !== 'undefined' && hasDefuseKit) return _flashBuy('Дефуз-кит уже есть');
+    if (playerMoney < item.price) return _flashBuy('Недостаточно денег');
+    playerMoney -= item.price; hasDefuseKit = true;
+    if (typeof playSound === 'function') playSound('items/gunpickup2.wav', { volume: 0.8 });
+    return _flashBuy(`Куплено: ${item.name}  −$${item.price}`);
+  }
   if (!item.wid)        return _flashBuy('Нет модели — недоступно');
   const idx = WPNS.findIndex(w => w.id === item.wid);
   if (idx < 0)          return _flashBuy('Оружие недоступно');
@@ -112,6 +122,9 @@ function buyItem(item) {
     playerMoney -= item.price;
     grenadeCounts[w.id] = (grenadeCounts[w.id] || 0) + 1;
     ownedWeapons.add(w.id);
+    // Picking a grenade off the buy menu plays the weapon-pickup sound (as in CS).
+    if (typeof playSound === 'function')
+      playSound(typeof PICKUP_SOUND !== 'undefined' ? PICKUP_SOUND : 'items/gunpickup2.wav', { volume: 0.8 });
     switchWeapon(idx);
     return _flashBuy(`Куплено: ${item.name}  −$${item.price}`);
   }
@@ -135,6 +148,7 @@ function buyItem(item) {
 
 // Refill ammo for a slot (CS primary/secondary ammo categories buy one "fill").
 function buyAmmo(slot) {
+  if (typeof buyTimeOpen === 'function' && !buyTimeOpen()) return _flashBuy('Время закупки вышло');
   if (!inBuyZone()) return _flashBuy('Вы не в зоне закупки');
   const isGun = w => w.type === 'gun';
   const cand = WPNS.filter(w => isGun(w) && ownedWeapons.has(w.id) &&
@@ -190,8 +204,11 @@ function buyMenuKey(n) {              // n: 0–9
     }
   } else {
     if (n === 0) { _buyCat = -1; _renderBuyMenu(); return; }
-    const items = _catItems(BUY_CATALOG[_buyCat]);
-    if (n >= 1 && n <= items.length) { buyItem(items[n - 1]); _renderBuyMenu(); }
+    const slots = BUY_CATALOG[_buyCat].slots || [];
+    if (n >= 1 && n <= slots.length) {                       // FIXED slot index (not renumbered)
+      const it = _slotItem(slots[n - 1]);
+      if (it) { buyItem(it); _renderBuyMenu(); }              // empty slot for this team → ignore
+    }
   }
 }
 
@@ -204,11 +221,14 @@ function _renderBuyMenu() {
     rows += `<div class="bm-row bm-back"><span class="bm-k">0</span> Закрыть</div>`;
   } else {
     const cat = BUY_CATALOG[_buyCat];
-    rows = _catItems(cat).map((it, i) => {
+    rows = (cat.slots || []).map((slot, i) => {
+      const it = _slotItem(slot);
+      if (!it) return `<div class="bm-row bm-na"><span class="bm-k">${i + 1}</span> —</div>`;  // empty slot, number kept
+      const buyable = it.wid || it.equip;
       const own = it.wid && ownedWeapons.has(it.wid);
-      const ok  = it.wid && playerMoney >= it.price && zone && !own;
-      const cls = own ? 'bm-own' : (it.wid ? (ok ? '' : 'bm-no') : 'bm-na');
-      const tag = own ? 'есть' : (!it.wid ? 'нет модели' : `$${it.price}`);
+      const ok  = buyable && playerMoney >= it.price && zone && !own;
+      const cls = own ? 'bm-own' : (buyable ? (ok ? '' : 'bm-no') : 'bm-na');
+      const tag = own ? 'есть' : (!buyable ? 'нет модели' : `$${it.price}`);
       return `<div class="bm-row ${cls}"><span class="bm-k">${i + 1}</span> ${it.name}<span class="bm-p">${tag}</span></div>`;
     }).join('');
     rows += `<div class="bm-row bm-back"><span class="bm-k">0</span> Назад</div>`;
@@ -249,6 +269,7 @@ function _chooseClass(i) {
   teamStage = null;
   document.getElementById('teammenu').style.display = 'none';
   hasJoined = true;
+  if (typeof startMatch === 'function') startMatch();   // begin the round flow (buy time → live → …)
   if (inBuyZone()) _flashBuy('B — купить оружие');
 }
 

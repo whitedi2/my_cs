@@ -69,6 +69,7 @@ NON_SOLID = {
 
 spawns           = {'ct': [], 't': []}
 buyzones         = []   # {min, max} AABBs of func_buyzone brushes (team assigned below)
+bombsites        = []   # {min, max} AABBs of func_bomb_target brushes (A/B labelled below)
 solid_heads      = []
 solid_heads_duck = []
 brush_cls        = {}   # classname → count, for diagnostics
@@ -96,6 +97,16 @@ for block in re.findall(r'\{([^}]+)\}', ent_text):
             if 0 < idx < len(model_aabb):
                 mins, maxs = model_aabb[idx]
                 buyzones.append({'min': [round(v, 1) for v in mins], 'max': [round(v, 1) for v in maxs]})
+        except ValueError:
+            pass
+
+    # Bomb sites (func_bomb_target trigger brushes) — AABB for the plant zone.
+    if cls == 'func_bomb_target' and props.get('model', '').startswith('*'):
+        try:
+            idx = int(props['model'][1:])
+            if 0 < idx < len(model_aabb):
+                mins, maxs = model_aabb[idx]
+                bombsites.append({'min': [round(v, 1) for v in mins], 'max': [round(v, 1) for v in maxs]})
         except ValueError:
             pass
 
@@ -131,6 +142,12 @@ for z in buyzones:
     t  = sum(1 for s in spawns['t']  if _inside(s['origin'], z))
     z['team'] = 'ct' if ct >= t else 't'
 
+# Label bomb sites A/B. On de_dust2 the A site (long/platform) sits at the larger X,
+# B (tunnels) at the smaller X — so the higher-center-X site is 'a'.
+bombsites.sort(key=lambda z: -(z['min'][0] + z['max'][0]) / 2)
+for i, z in enumerate(bombsites):
+    z['site'] = 'a' if i == 0 else ('b' if i == 1 else chr(ord('a') + i))
+
 # ── Output ────────────────────────────────────────────────────────────────────
 out_path = Path(__file__).parent.parent / "maps" / (Path(BSP).stem + '_hull.json')
 result = {
@@ -142,6 +159,7 @@ result = {
     'clipnodes':    clipnodes,
     'spawns':       spawns,
     'buyzones':     buyzones,
+    'bombsites':    bombsites,
 }
 
 with open(out_path, 'w') as f:
@@ -151,6 +169,7 @@ print(f"Planes: {len(planes)}, Clipnodes: {len(clipnodes)}, Models: {num_models}
 print(f"Hull 1 headnode: {headnodes[1]},  Hull 3 (duck): {headnodes[3]}")
 print(f"Solid brush entities: {len(solid_heads)}")
 print(f"Spawns — CT: {len(spawns['ct'])}, T: {len(spawns['t'])}")
+print(f"Bomb sites: {[(z['site'], z['min'], z['max']) for z in bombsites]}")
 print(f"Written: {out_path}  ({out_path.stat().st_size // 1024} KB)")
 print("\nBrush entity classnames found:")
 for cls, cnt in sorted(brush_cls.items(), key=lambda x: -x[1]):
