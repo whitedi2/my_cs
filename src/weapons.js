@@ -26,6 +26,7 @@ function _autoRifle(id, label, s) {
     muzzleBone: s.muzzleBone, muzzleOrg: s.muzzleOrg,         // attachment 0 from the MDL
     ejectionBone: s.ejectBone, ejectionOrg: s.ejectOrg,      // attachment 1 from the MDL
     ammo: s.ammo, maxAmmo: s.ammo, reserve: s.reserve || 90, reloadTime: s.reload,
+    maxSpeed: s.maxSpeed || 250,                             // CS 1.6 m_flMaxSpeed (run cap)
     slot: 'primary',
     root: null,
   }];
@@ -50,10 +51,29 @@ function _pistol(id, label, s) {
     muzzleBone: s.muzzleBone, muzzleOrg: s.muzzleOrg,         // attachment 0 from the MDL
     ejectionBone: s.ejectBone, ejectionOrg: s.ejectOrg,      // attachment 1 from the MDL
     ammo: s.ammo, maxAmmo: s.ammo, reserve: s.reserve, reloadTime: s.reload,
+    maxSpeed: s.maxSpeed || 250,                             // CS 1.6 m_flMaxSpeed (run cap)
     // Burst fire (Glock): RMB toggles a 3-round burst per trigger pull.
     burstCapable: s.burstCapable, burstCount: s.burstCount,
     burstInterval: s.burstInterval, burstCooldown: s.burstCooldown,
     slot: 'secondary',
+    root: null,
+  }];
+}
+
+// Throwable (HE / flashbang / smoke): deploy → idle → pullpin (hold) → throw.
+// No ammo/reserve; ownership/count lives in game.js (grenadeCounts). The pin sound
+// fires from the MDL event in 'pullpin'; the projectile + detonation live in grenades.js.
+function _grenade(id, label) {
+  return [{
+    id, label,
+    jsonFile: `models/v_${id}.json`,
+    idleSeq: 'idle', drawSeq: 'deploy',
+    pullpinSeq: 'pullpin', throwSeq: 'throw',
+    throwReleaseT: 0.3,        // seconds into the throw anim when the nade leaves the hand
+    pos: new THREE.Vector3(-0.04, -0.20, -0.75),
+    rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
+    scale: 0.12, type: 'grenade', slot: 'grenade',
+    grenadeType: id,
     root: null,
   }];
 }
@@ -97,25 +117,56 @@ const WPNS = [
     flashSX: 0.5, flashSY: 0.5, flashType: 'rifle',
     ammo: 30, maxAmmo: 30,
     reserve: 90, reloadTime: 3.1,
+    maxSpeed: 230,            // CS 1.6 m_flMaxSpeed (run cap)
     slot: 'primary',
     root: null,
   },
   // ── Auto-rifles (group 1). Stats verified vs ReGameDLL; view-model placement
   // reuses the shared rig offsets; muzzle/ejection bones omitted (flash/shell fall
   // back to centered) — to be tuned per model later. Sequences: idle1/shoot1-3/reload/draw.
-  ..._autoRifle('ak47',  'AK-47',          { damage: 36, rangeMod: 0.98,  fireInterval: 0.0975, ammo: 30, reload: 2.45, recoilP: 1.05, spread: 0.016, fireSound: ['weapons/ak47-1.wav', 'weapons/ak47-2.wav'], muzzleBone: 20, muzzleOrg: [2.75, -22.5, 2.9],  ejectBone: 41, ejectOrg: [0, -3.0, 0] }),
-  ..._autoRifle('galil', 'IDF Defender',   { damage: 30, rangeMod: 0.98,  fireInterval: 0.0875, ammo: 35, reload: 2.45, recoilP: 0.9,  spread: 0.014, fireSound: ['weapons/galil-1.wav', 'weapons/galil-2.wav'], muzzleBone: 12, muzzleOrg: [0, -20.18, 0.42],  ejectBone: 12, ejectOrg: [-0.6, -3.9, 1.0] }),
-  ..._autoRifle('famas', 'Clarion 5.56',   { damage: 30, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 25, reload: 3.3,  recoilP: 0.8,  spread: 0.013, fireSound: ['weapons/famas-1.wav', 'weapons/famas-2.wav'], muzzleBone: 45, muzzleOrg: [0, 14.5, -2.9],    ejectBone: 45, ejectOrg: [-0.8, -4.4, -3.2] }),
-  ..._autoRifle('aug',   'Bullpup',        { damage: 32, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 30, reload: 3.3,  recoilP: 0.85, spread: 0.013, fireSound: ['weapons/aug-1.wav'], muzzleBone: 20, muzzleOrg: [2.4, -15.7, 1.1],   ejectBone: 41, ejectOrg: [-0.75, 4.0, 0.75] }),
-  ..._autoRifle('sg552', 'Krieg 552',      { damage: 33, rangeMod: 0.955, fireInterval: 0.0825, ammo: 30, reload: 3.0,  recoilP: 0.95, spread: 0.014, fireSound: ['weapons/sg552-1.wav', 'weapons/sg552-2.wav'], muzzleBone: 38, muzzleOrg: [0, -11.25, -0.5],  ejectBone: 38, ejectOrg: [0, -1.0, 0] }),
+  ..._autoRifle('ak47',  'AK-47',          { damage: 36, rangeMod: 0.98,  fireInterval: 0.0975, ammo: 30, reload: 2.45, recoilP: 1.05, spread: 0.016, maxSpeed: 221, fireSound: ['weapons/ak47-1.wav', 'weapons/ak47-2.wav'], muzzleBone: 20, muzzleOrg: [2.75, -22.5, 2.9],  ejectBone: 41, ejectOrg: [0, -3.0, 0] }),
+  ..._autoRifle('galil', 'IDF Defender',   { damage: 30, rangeMod: 0.98,  fireInterval: 0.0875, ammo: 35, reload: 2.45, recoilP: 0.9,  spread: 0.014, maxSpeed: 240, fireSound: ['weapons/galil-1.wav', 'weapons/galil-2.wav'], muzzleBone: 12, muzzleOrg: [0, -20.18, 0.42],  ejectBone: 12, ejectOrg: [-0.6, -3.9, 1.0] }),
+  ..._autoRifle('famas', 'Clarion 5.56',   { damage: 30, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 25, reload: 3.3,  recoilP: 0.8,  spread: 0.013, maxSpeed: 240, fireSound: ['weapons/famas-1.wav', 'weapons/famas-2.wav'], muzzleBone: 45, muzzleOrg: [0, 14.5, -2.9],    ejectBone: 45, ejectOrg: [-0.8, -4.4, -3.2] }),
+  ..._autoRifle('aug',   'Bullpup',        { damage: 32, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 30, reload: 3.3,  recoilP: 0.85, spread: 0.013, maxSpeed: 240, fireSound: ['weapons/aug-1.wav'], muzzleBone: 20, muzzleOrg: [2.4, -15.7, 1.1],   ejectBone: 41, ejectOrg: [-0.75, 4.0, 0.75] }),
+  ..._autoRifle('sg552', 'Krieg 552',      { damage: 33, rangeMod: 0.955, fireInterval: 0.0825, ammo: 30, reload: 3.0,  recoilP: 0.95, spread: 0.014, maxSpeed: 235, fireSound: ['weapons/sg552-1.wav', 'weapons/sg552-2.wav'], muzzleBone: 38, muzzleOrg: [0, -11.25, -0.5],  ejectBone: 38, ejectOrg: [0, -1.0, 0] }),
   // ── SMGs (group 3, full-auto, 9mm/.45 shells). Stats verified vs ReGameDLL.
   ..._autoRifle('mp5',   'MP5 Navy',  { damage: 26, rangeMod: 0.84,  fireInterval: 0.08,   ammo: 30, reserve: 120, reload: 2.6, recoilP: 0.55, spread: 0.016, fireSound: ['weapons/mp5-1.wav', 'weapons/mp5-2.wav'], shellType: 'pistol', muzzleBone: 20, muzzleOrg: [3.4, -13.7, 2.5],  ejectBone: 38, ejectOrg: [0, -1.5, 0] }),
   ..._autoRifle('tmp',   'TMP',       { damage: 20, rangeMod: 0.85,  fireInterval: 0.07,   ammo: 30, reserve: 120, reload: 2.1, recoilP: 0.4,  spread: 0.016, fireSound: ['weapons/tmp-1.wav', 'weapons/tmp-2.wav'], shellType: 'pistol', fire: ['shoot'], muzzleBone: 20, muzzleOrg: [2.5, -15.8, 2.25],  ejectBone: 40, ejectOrg: [0, -1.0, 0.5] }),
   ..._autoRifle('mac10', 'MAC-10',    { damage: 29, rangeMod: 0.82,  fireInterval: 0.075,  ammo: 30, reserve: 100, reload: 3.1, recoilP: 0.6,  spread: 0.02,  fireSound: ['weapons/mac10-1.wav'], shellType: 'pistol', muzzleBone: 20, muzzleOrg: [2.0, -8.0, 0.5],   ejectBone: 40, ejectOrg: [0, -2.0, 0] }),
   ..._autoRifle('ump45', 'UMP45',     { damage: 30, rangeMod: 0.82,  fireInterval: 0.095,  ammo: 25, reserve: 100, reload: 3.5, recoilP: 0.55, spread: 0.016, fireSound: ['weapons/ump45-1.wav'], shellType: 'pistol', muzzleBone: 41, muzzleOrg: [0, -8.3, 0],       ejectBone: 41, ejectOrg: [0, -1.0, 0] }),
-  ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.3, recoilP: 0.5,  spread: 0.016, fireSound: ['weapons/p90-1.wav'], shellType: 'pistol', idle: 'idle', muzzleBone: 20, muzzleOrg: [1.9, -8.6, 1.5],   ejectBone: 39, ejectOrg: [1.0, -2.0, 0] }),
+  ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.3, recoilP: 0.5,  spread: 0.016, maxSpeed: 245, fireSound: ['weapons/p90-1.wav'], shellType: 'pistol', idle: 'idle', muzzleBone: 20, muzzleOrg: [1.9, -8.6, 1.5],   ejectBone: 39, ejectOrg: [1.0, -2.0, 0] }),
   // ── Machine gun (group 5, full-auto). Verified vs ReGameDLL.
-  ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.10,   ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.02, fireSound: ['weapons/m249-1.wav', 'weapons/m249-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [3.6, -18.4, 2.75],  ejectBone: 49, ejectOrg: [0, 0, 0] }),
+  ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.10,   ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.02, maxSpeed: 220, fireSound: ['weapons/m249-1.wav', 'weapons/m249-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [3.6, -18.4, 2.75],  ejectBone: 49, ejectOrg: [0, 0, 0] }),
+  // ── Sniper rifle (group 4). Bolt-action, semi-auto, scoped. Stats from ReGameDLL:
+  // 115 dmg, near-zero range falloff (longest range), 1.5s bolt cycle, RMB scope
+  // cycles FOV 90→40→10→90. Pinpoint when still, accuracy wrecked by movement.
+  {
+    id: 'awp', label: 'AWP',
+    jsonFile: 'models/v_awp.json',
+    idleSeq: 'idle1', drawSeq: 'draw', reloadSeq: 'reload',
+    fireSeq: 'shoot1', fireSeqsUnsil: ['shoot1', 'shoot2', 'shoot3'],
+    silencer: false, autofire: false,
+    fireInterval: 1.5,           // bolt-action cycle (ReGameDLL GetNextAttackDelay 1.5)
+    recoilKick: 0.22,            // big single-shot vertical screen punch
+    spread: 0.001,               // pinpoint when standing still
+    moveSpreadMult: 3.0,         // movement wrecks accuracy (sniper)
+    fireSound: ['weapons/awp1.wav'],          // code-driven gunfire
+    deploySound: 'weapons/awp_deploy.wav',    // draw has no MDL event → code-driven
+    zoomFovs: [40, 10],          // RMB cycles 90 → 40 → 10 → 90 (ReGameDLL AWP)
+    scopeResumeDelay: 1.3,       // unscoped through the bolt cycle (~1.2s anim), re-zooms near the end
+    // CS 1.6: 115/bullet, near-zero range falloff (longest range)
+    damage: 115, rangeMod: 0.99,
+    pos: new THREE.Vector3(-0.04, -0.20, -0.75),
+    rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
+    scale: 0.12, type: 'gun', shellType: 'rifle',
+    flashSX: 0.5, flashSY: 0.5, flashType: 'rifle',
+    muzzleBone: 38, muzzleOrg: [0, -22.0, 0],    // MDL attachment 0 (muzzle)
+    ejectionBone: 38, ejectionOrg: [0, -4.5, 0], // MDL attachment 1 (shell)
+    ammo: 10, maxAmmo: 10, reserve: 30, reloadTime: 2.93,
+    maxSpeed: 210, zoomSpeed: 150,   // CS 1.6: 210 run, drops to 150 while scoped
+    slot: 'primary',
+    root: null,
+  },
   {
     id: 'usp', label: 'USP',
     jsonFile: 'models/v_usp.json', jsonFileSil: 'models/v_usp_sil.json',
@@ -176,18 +227,55 @@ const WPNS = [
     slot: 'melee',
     root: null,
   },
+  // ── Grenades (slot 4). Throw cycle + projectile/detonation in grenades.js.
+  ..._grenade('hegrenade',    'HE Grenade'),
+  ..._grenade('flashbang',    'Flashbang'),
+  ..._grenade('smokegrenade', 'Smoke Grenade'),
 ];
 
 let curWpnIdx  = WPNS.findIndex(w => w.id === 'knife');   // start on the knife
 let nextWpnIdx = -1;
 
-const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5, SILENCER: 6 };
+const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5, SILENCER: 6, PULLPIN: 7, THROW: 8 };
 let ws = WS.DRAW, wsT = 0, wsIdleT = 0, wsHit = false;
-let _firePending = false;       // semi-auto: a click made during the cooldown, fired when it ends
 let meleeCooldown = 0;          // time (s) until the next knife attack is allowed
 let bobCycle = 0, bobAmt = 0;  // weapon bob state
 
 function curW() { return WPNS[curWpnIdx]; }
+
+// ── Sniper scope (AWP) ──────────────────────────────────────────────────────
+// scopeLevel 0 = unscoped; else 1-based index into curW().zoomFovs.
+// RMB cycles through the levels and back to 0 (AWP: 90 → 40 → 10 → 90).
+let scopeLevel = 0;
+// CS 1.6: a scoped shot unscopes momentarily, then re-zooms. These track the
+// pending auto re-zoom (level to restore + countdown until it fires).
+let _scopeResumeLevel = 0, _scopeResumeT = 0;
+function scopeFov() {
+  const w = curW();
+  return (scopeLevel > 0 && w.zoomFovs) ? w.zoomFovs[scopeLevel - 1] : null;
+}
+function isScoped() { return scopeFov() !== null; }
+function cycleScope() {
+  const w = curW();
+  if (!w.zoomFovs || !w.zoomFovs.length) return;
+  // Only zoom from a settled weapon (not mid-reload/draw), as in the original.
+  if (ws !== WS.IDLE && ws !== WS.FIRE) return;
+  scopeLevel = (scopeLevel + 1) % (w.zoomFovs.length + 1);
+  if (typeof playSound === 'function') playSound('weapons/zoom.wav');
+  if (typeof updateFOV === 'function') updateFOV();
+  _updateScopeOverlay();
+}
+function resetScope() {
+  _scopeResumeLevel = 0; _scopeResumeT = 0;   // cancel any pending auto re-zoom
+  if (scopeLevel === 0) return;
+  scopeLevel = 0;
+  if (typeof updateFOV === 'function') updateFOV();
+  _updateScopeOverlay();
+}
+function _updateScopeOverlay() {
+  const el = document.getElementById('scope');
+  if (el) el.style.display = isScoped() ? 'block' : 'none';
+}
 
 // ── Skeletal animation system (per-weapon state) ─────────────────────────
 // Each weapon stores its own animation data in wpn.anim
@@ -329,6 +417,7 @@ function switchWeapon(idx) {
 }
 
 function _beginDraw(idx) {
+  resetScope();   // switching weapons always drops the scope
   if (WPNS[curWpnIdx].root) WPNS[curWpnIdx].root.visible = false;
   curWpnIdx  = idx;
   nextWpnIdx = -1;
@@ -338,7 +427,6 @@ function _beginDraw(idx) {
   wpn._reloadInterrupted = false;  // Очистить флаг прерывания при переключении на новое оружие
   wpn._silencerInterrupted = false;  // Очистить флаг глушителя при переключении
   wpn._bursting = false; wpn._burstLeft = 0;   // cancel any in-progress burst on draw
-  _firePending = false;                        // drop any queued semi-auto click
   if (wpn.anim) { wpn.anim._drawAnimDone = false; wpn.anim.curFrame = 0; }
   if (wpn.root) wpn.root.visible = true;
   // Guns play their deploy sound via an MDL event; the knife has none, so emit
@@ -435,6 +523,21 @@ function _startMeleeAttack(wpn, isStab) {
 function updateWeapon(dt) {
   const wpn = curW();
   if (!wpn.root) return;
+  // Scope drops on reload/draw (the gun comes up off the eye), stays through fire.
+  if (scopeLevel > 0 && (ws === WS.RELOAD || ws === WS.DRAW)) resetScope();
+  // Pending auto re-zoom after a scoped shot: restore the scope once the beat
+  // passes — unless we've since started a reload/draw (those keep it unscoped).
+  if (_scopeResumeT > 0) {
+    _scopeResumeT -= dt;
+    if (_scopeResumeT <= 0) {
+      if (_scopeResumeLevel > 0 && wpn.zoomFovs && ws !== WS.RELOAD && ws !== WS.DRAW) {
+        scopeLevel = _scopeResumeLevel;
+        if (typeof updateFOV === 'function') updateFOV();
+        _updateScopeOverlay();
+      }
+      _scopeResumeLevel = 0;
+    }
+  }
   wsT += dt; wsIdleT += dt;
   if (meleeCooldown > 0) meleeCooldown -= dt;
   const p = wpn.root.position, r = wpn.root.rotation;
@@ -484,6 +587,29 @@ function updateWeapon(dt) {
     case WS.IDLE: {
       p.set(wpn.pos.x + bobX, wpn.pos.y + Math.sin(wsIdleT*1.6)*0.005, wpn.pos.z + bobZ);
       r.set(wpn.rot.x + Math.cos(wsIdleT*0.9)*0.007, wpn.rot.y + bobYaw, wpn.rot.z);
+      break;
+    }
+    case WS.PULLPIN: {
+      // Hold while LMB is down (pin pulled, pose held at the last pullpin frame).
+      // Release → WS.THROW (set in the mouseup handler). The pin sound fires from
+      // the MDL event in the 'pullpin' sequence.
+      p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
+      r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
+      break;
+    }
+    case WS.THROW: {
+      p.set(wpn.pos.x, wpn.pos.y, wpn.pos.z);
+      r.set(wpn.rot.x, wpn.rot.y, wpn.rot.z);
+      // Release the projectile partway through the throw animation.
+      if (!wsHit && wsT >= (wpn.throwReleaseT || 0.3)) {
+        wsHit = true;
+        if (typeof throwGrenade === 'function') throwGrenade(wpn);
+      }
+      if (wpn.anim?._grenAnimDone || wsT >= 1.0) {
+        // Out of this type → switch to the best remaining weapon; else redeploy.
+        if (typeof afterGrenadeThrow === 'function') afterGrenadeThrow(wpn);
+        else { ws = WS.IDLE; wsT = 0; }
+      }
       break;
     }
     case WS.SLASH: {
@@ -559,12 +685,13 @@ function updateWeapon(dt) {
         // Movement inaccuracy (CS 1.6): jumping is worst, running adds spread with
         // speed, ducking tightens, standing still is most accurate.
         const spd2d = vel ? Math.hypot(vel[0], vel[1]) : 0;
+        const moveMult = wpn.moveSpreadMult || 1;   // snipers blow up when moving
         if (!onGround) {
-          shotSpread += 0.05;                       // in air — large
+          shotSpread += 0.05 * moveMult;            // in air — large
         } else {
           let m = (Math.max(0, spd2d - 40) / 250) * 0.035;  // scales with speed past a deadzone
           if (phyDucked) m *= 0.4;                  // crouch-moving tightens
-          shotSpread += m;
+          shotSpread += m * moveMult;
         }
         xhairGap += wpn.xhairKick ?? 5;             // each shot kicks the crosshair open
         // Original gunfire sound (code-driven, like the engine's WeaponSound).
@@ -603,6 +730,15 @@ function updateWeapon(dt) {
         } else {
           recoilPitch = Math.min(0.35, recoilPitch + (wpn.recoilKick || 0));
         }
+        // CS 1.6 sniper: firing while scoped drops the scope (you see the weapon
+        // recoil + bolt), then it auto re-zooms to the same level after a beat.
+        if (scopeLevel > 0 && wpn.zoomFovs) {
+          _scopeResumeLevel = scopeLevel;
+          _scopeResumeT     = wpn.scopeResumeDelay || 0.4;
+          scopeLevel = 0;
+          if (typeof updateFOV === 'function') updateFOV();
+          _updateScopeOverlay();
+        }
       }
       if (t >= 1) {
         if (wpn._bursting && wpn._burstLeft > 0 && wpn.ammo > 0) {
@@ -611,13 +747,8 @@ function updateWeapon(dt) {
           wpn.ammo--; wpn._burstLeft--; wsT = 0; wsHit = false;
         } else if (lmbHeld && wpn.autofire && wpn.ammo > 0) {
           wpn.ammo--; wsT = 0; wsHit = false;
-        } else if (_firePending && wpn.ammo > 0 && !wpn.autofire) {
-          // A click made during this shot's cooldown → fire it now, so rapid
-          // semi-auto clicking lands at the cap rate instead of dropping clicks.
-          _firePending = false; _beginFire(wpn);
         } else {
           wsHit = false;
-          _firePending = false;
           wpn._bursting = false; wpn._burstLeft = 0;
           // Don't reset _shotCount here — the spray index is reset on the next
           // shot only if enough time passed (see lastShotAge check above), so
@@ -677,7 +808,7 @@ function updateWeapon(dt) {
 
   // Skeletal animation
   const _gunAnimActive = wpn.type === 'gun' && wpn.anim?._gunAnimPlaying;
-  if (wpn.anim && (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB || ws === WS.FIRE || ws === WS.RELOAD || ws === WS.DRAW || ws === WS.SILENCER || _gunAnimActive)) {
+  if (wpn.anim && (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB || ws === WS.FIRE || ws === WS.RELOAD || ws === WS.DRAW || ws === WS.SILENCER || ws === WS.PULLPIN || ws === WS.THROW || _gunAnimActive)) {
     applySkeletalAnimation(wpn, dt);
   }
 
@@ -808,6 +939,17 @@ function applySkeletalAnimation(wpn, dt) {
       }
       seqName = wpn.anim._lastFireSeq || wpn.fireSeq || 'shoot1_unsil';
     }
+  } else if (wpn.type === 'grenade') {
+    if (ws === WS.DRAW) {
+      seqName = wpn.drawSeq || 'deploy';
+      if (wsT < dt * 2) wpn.anim.curFrame = 0;
+    } else if (ws === WS.PULLPIN) {
+      seqName = wpn.pullpinSeq || 'pullpin';
+      if (wpn.anim._prevAnimWs !== WS.PULLPIN) wpn.anim.curFrame = 0;
+    } else if (ws === WS.THROW) {
+      seqName = wpn.throwSeq || 'throw';
+      if (wpn.anim._prevAnimWs !== WS.THROW) { wpn.anim.curFrame = 0; wpn.anim._grenAnimDone = false; }
+    }
   } else {
     if (ws === WS.DRAW) {
       seqName = wpn.drawSeq || 'draw';
@@ -849,6 +991,8 @@ function applySkeletalAnimation(wpn, dt) {
       wpn.anim._drawAnimDone = true;
     } else if (ws === WS.SLASH || ws === WS.STAB) {
       wpn.anim._attackAnimDone = true;
+    } else if (ws === WS.THROW) {
+      wpn.anim._grenAnimDone = true;   // PULLPIN just holds the last frame (handled above)
     } else if (wpn.type === 'gun') {
       if (ws !== WS.RELOAD) {
         wpn.anim._gunAnimPlaying = false;

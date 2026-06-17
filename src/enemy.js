@@ -290,6 +290,33 @@ function _enemyRespawn(inst) {
   inst.flinchT = 0; inst.lastHit = null;
 }
 
+// HE-grenade blast: linear falloff from the blast origin (GoldSrc), blocked by walls
+// (LOS trace). Armor soaks part of blast damage. Called from grenades.js.
+function enemyRadiusDamage(origin, baseDmg, radius) {
+  if (typeof traceMove !== 'function') return;
+  for (const inst of enemies) {
+    if (inst.state === 'dead' || !inst.gsPos) continue;
+    const cx = inst.gsPos[0], cy = inst.gsPos[1], cz = inst.gsPos[2] + 36;   // center mass
+    const dx = cx - origin[0], dy = cy - origin[1], dz = cz - origin[2];
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist > radius) continue;
+    const tr = traceMove([origin[0], origin[1], origin[2]], [cx, cy, cz]);
+    if (tr.fraction < 0.7) continue;                       // wall mostly blocks the blast
+    let dmg = baseDmg * (1 - dist / radius);               // linear falloff
+    if (inst.armor > 0) {                                  // kevlar soaks ~half the blast
+      const absorbed = Math.min(inst.armor, dmg * 0.5);
+      inst.armor -= absorbed; dmg -= absorbed;
+    }
+    dmg = Math.max(0, Math.round(dmg));
+    if (dmg <= 0) continue;
+    inst.health -= dmg;
+    inst.lastHit = { dmg, hg: 0, t: performance.now() };
+    enemyFocus = inst;
+    if (inst.health <= 0) { inst.health = 0; _enemyDie(inst, 0); }
+    else                  { _enemyFlinch(inst, 0); }
+  }
+}
+
 // Kevlar (no helmet): absorbs chest/stomach/arm hits only; head & legs go straight to HP.
 function _armorAbsorb(inst, dmg, hg) {
   if (inst.armor <= 0 || (hg !== 2 && hg !== 3 && hg !== 4 && hg !== 5)) return dmg;

@@ -11,10 +11,10 @@ python serve.py          # поднимает http://localhost:8080/viewer.html 
 ```
 
 Нужен HTTP-сервер (не `file://`) — иначе не загрузятся `.json`/ассеты и ES-модуль Three.js.
-В VS Code см. `docs/BROWSER_GUIDE.md` для встроенного браузера. Three.js тянется с CDN через
-`<script type="importmap">` в `viewer.html` — **нужен интернет**.
+Three.js тянется с CDN через `<script type="importmap">` в `viewer.html` — **нужен интернет**.
 
-Проверка изменений = перезагрузить страницу (Ctrl+Shift+R: декали/текстуры кэшируются).
+Проверка изменений = перезагрузить страницу в браузере (Ctrl+Shift+R: декали/текстуры
+кэшируются) и посмотреть глазами. Скриншот-тесты не используем.
 
 ## Где что лежит
 
@@ -36,7 +36,8 @@ Runtime разбит по файлам (порядок загрузки = пор
 | `src/player.js` | модель игрока от 3-го лица (CT `gign`, `PLAYER_MODEL`): двухслойная анимация (ноги=походка, верх=прицел/стрельба/перезарядка по оружию), оружие в руке, чейз-камера с орбитой | `updatePlayerModel`, `_skinRig`, `_updateWeaponAttachment`, `_resolveUpperPose`/`_aimPose`/`_clipPose`, `updateChaseCamera`, `updateOrbit`, `toggleThirdPerson`, `thirdPerson` |
 | `src/hud.js` | прицел и HUD | `drawCrosshair`, `updateHUD` |
 | `src/physics.js` | BSP-трасса + физика игрока; точки спауна/угол, зоны закупки, выбор команды | `pointContents`, `traceMove`, `playerMove`, `slideMove`, `categorize`, `accel`, `applyFriction`, `initPhysics`, `pickSpawn`, `respawn`, `setTeam`, `spawnPoints`, `buyZones` |
-| `src/game.js` | состояние матча: команда/класс-меню, деньги, владение оружием, закупка (после physics/weapons/player) | `BUY_CATALOG`, `CLASSES`, `buyItem`, `inBuyZone`, `openBuyMenu`/`buyMenuKey`, `openTeamMenu`/`teamMenuKey`, `ownedWeapons`, `playerMoney`, `updateBuyHUD` |
+| `src/game.js` | состояние матча: команда/класс-меню, деньги, владение оружием, закупка, гранаты-счётчики (после physics/weapons/player) | `BUY_CATALOG`, `CLASSES`, `buyItem`, `inBuyZone`, `openBuyMenu`/`buyMenuKey`, `openTeamMenu`/`teamMenuKey`, `ownedWeapons`, `grenadeCounts`, `afterGrenadeThrow`, `playerMoney`, `updateBuyHUD` |
+| `src/grenades.js` | гранаты (HE/флеш/дым): бросок, физика снаряда (`w_*` + отскок по BSP), запал, детонация (радиус-урон / слепота / дым), эффекты (после game) | `throwGrenade`, `updateGrenades`, `_moveGrenade`, `_detonateHE`/`_detonateFlash`/`_detonateSmoke`, `_updateBlind`, `_updateSmokes`, `clearGrenades`, `GRENADE_DEFS` |
 | `src/pickups.js` | дроп (G) и подбор оружия: мировая `p_*`-модель падает на пол, подбор по близости со звуками оригинала (после game.js) | `dropWeapon`, `updatePickups`, `_spawnPickup`, `_buildDropModel`, `DROP_SOUND`/`PICKUP_SOUND` |
 | `src/load.js` | загрузка карты/ассетов (после physics, чтобы `initPhysics` была определена) | `objPromise`, `hullPromise`, `Promise.all(...).then(...)` |
 | `src/input.js` | pointer lock, настройки, мышь/клавиатура/оружие, **главный цикл** | `animate(t)`, `updateFOV`, обработчики ввода, `animate(0)` в конце |
@@ -68,7 +69,7 @@ sprites/           кадры muzzleflash (PNG)
 sounds/            звуки из оригинала (.wav, раскладка GoldSrc: weapons/, items/, player/) + materials.txt (текстура→материал шага)
 decals/            PNG следов пуль (shot1..5); следы ножа — процедурные (не из PNG)
 tools/             Python-конвейер (см. ниже) + config.py
-docs/              PLAN.md, BROWSER_GUIDE.md
+docs/              PLAN.md, DIFFERENCES.md
 ```
 
 ## Ассеты (предсгенерированы из оригинальных файлов GoldSrc)
@@ -140,6 +141,5 @@ docs/              PLAN.md, BROWSER_GUIDE.md
 ## Документы
 
 - `docs/PLAN.md` — исходный план разработки (фазы, параметры физики из оригинала).
-- `docs/BROWSER_GUIDE.md` — запуск во встроенном браузере VS Code.
 - `docs/DIFFERENCES.md` — намеренные/вынужденные отличия от оригинала CS 1.6 (следы ножа, присед,
   третье лицо и т.д.). Обновлять при любом сознательном расхождении с оригиналом.

@@ -11,6 +11,9 @@ function drawCrosshair() {
   ctx.clearRect(0, 0, W, H);
 
   const wpn      = curW();
+  // Snipers (AWP): no hip-fire crosshair at all — only the scope reticle (the
+  // overlay's lines + red dot) when zoomed. Cleared above, so just bail.
+  if (wpn?.zoomFovs) return;
   const isPistol = wpn?.type === 'gun' && !wpn?.autofire;
   const baseGap  = isPistol ? 10 : 5;
 
@@ -44,6 +47,10 @@ function updateHUD() {
   const ammoEl = document.getElementById('ammo-display');
   if (wpn.type === 'gun') {
     ammoEl.textContent = `${wpn.ammo}  /  ${wpn.reserve}`;
+    ammoEl.style.display = '';
+  } else if (wpn.type === 'grenade') {
+    const cnt = (typeof grenadeCounts !== 'undefined') ? (grenadeCounts[wpn.id] || 0) : 1;
+    ammoEl.textContent = `× ${cnt}`;
     ammoEl.style.display = '';
   } else {
     ammoEl.style.display = 'none';

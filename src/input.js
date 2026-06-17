@@ -78,6 +78,7 @@ document.addEventListener('pointerlockchange', () => {
     if (typeof closeBuyMenu === 'function') closeBuyMenu();
     document.getElementById('teammenu').style.display = 'none';
   }
+  if (!isLocked && typeof resetScope === 'function') resetScope();   // drop the AWP scope on pause
   $overlay.style.display = isLocked ? 'none' : 'flex';
   document.getElementById('crosshair').style.display  = isLocked ? 'block' : 'none';
   document.getElementById('hud').style.display        = isLocked ? 'block' : 'none';
@@ -96,6 +97,13 @@ let enhancedGore     = CONFIG.enhancedGore ?? false;      // our procedural bloo
 let showHitboxes     = false;                             // debug: draw dummy hit-zone cylinders
 
 function updateFOV() {
+  // Scoped (AWP): the zoom FOV is the horizontal FOV — derive vertical for the aspect.
+  const zf = (typeof scopeFov === 'function') ? scopeFov() : null;
+  if (zf != null) {
+    camera.fov = 2 * Math.atan(Math.tan((zf * Math.PI / 180) / 2) / (innerWidth / innerHeight)) * (180 / Math.PI);
+    camera.updateProjectionMatrix();
+    return;
+  }
   if (widescreenFOV) {
     // CS 1.6 allow_widescreen: horizontal FOV = 90° at 4:3 → vertical ≈ 73.74°
     // extending horizontally to fill 16:9 (gives ~106° hFOV on 16:9)
@@ -140,8 +148,11 @@ document.addEventListener('mousemove', e => {
   if (mouseIgnore > 0) { mouseIgnore--; return; }
   // Discard spurious huge deltas (Edge pointer-lock bug can emit movementX in thousands)
   if (Math.abs(e.movementX) > 200 || Math.abs(e.movementY) > 200) return;
-  pendingYaw   -= e.movementX * SENS;
-  pendingPitch -= e.movementY * SENS * (invertY ? -1 : 1);
+  // Scoped: scale look speed by the zoom ratio so aiming stays controllable (CS-style).
+  const zf = (typeof scopeFov === 'function') ? scopeFov() : null;
+  const sm = zf != null ? zf / 90 : 1;
+  pendingYaw   -= e.movementX * SENS * sm;
+  pendingPitch -= e.movementY * SENS * sm * (invertY ? -1 : 1);
 });
 
 // ── Keyboard ──────────────────────────────────────────────────────────────
@@ -156,9 +167,21 @@ function _playSwitchSound() {
   _selSoundT = now;
   if (typeof playSound === 'function') playSound('common/wpn_hudon.wav');
 }
+// Game keys we own while playing — their browser defaults are suppressed so combos
+// like Ctrl+W (duck + forward → close tab) or Ctrl+S don't hijack the page. The
+// manual reload shortcut (Ctrl/⌘+R, incl. Ctrl+Shift+R) is deliberately let through.
+const GAME_KEYS = new Set([
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyR', 'KeyF', 'KeyG', 'KeyV', 'KeyQ', 'KeyB', 'KeyE',
+  'Space', 'ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight',
+]);
 document.addEventListener('keydown', e => {
   keys[e.code] = true;
+  // ESC on the pause menu = the "Продолжить" button (resume / re-lock the pointer).
+  if (e.code === 'Escape' && !isLocked && hasStarted) { _startGame(); return; }
   if (!isLocked) return;
+  // Stop browser hotkeys (Ctrl+W close, Ctrl+S save, …) while playing — but keep
+  // the page-reload shortcut working (the project relies on Ctrl+Shift+R).
+  if (GAME_KEYS.has(e.code) && !((e.ctrlKey || e.metaKey) && e.code === 'KeyR')) e.preventDefault();
   // Team/buy menus are numeric (CS-style): route number keys to them, block gameplay.
   if (teamStage || buyOpen) {
     const m = e.code.match(/^(?:Digit|Numpad)(\d)$/);
@@ -179,8 +202,18 @@ document.addEventListener('keydown', e => {
   const _digit = e.code.match(/^Digit([1-6])$/);
   if (_digit) {
     _playSwitchSound();
-    const slot = { 1: 'primary', 2: 'secondary', 3: 'melee' }[_digit[1]];
-    if (slot) { const i = _ownedSlot(slot); if (i >= 0) switchWeapon(i); }
+    const n = +_digit[1];
+    if (n === 4) {
+      // Slot 4 cycles through the owned grenade types (HE/flash/smoke).
+      const owned = WPNS.map((w, i) => ({ w, i })).filter(o => o.w.slot === 'grenade' && ownedWeapons.has(o.w.id));
+      if (owned.length) {
+        const ci = owned.findIndex(o => o.i === curWpnIdx);            // -1 if not on a grenade
+        switchWeapon(owned[(ci + 1) % owned.length].i);
+      }
+    } else {
+      const slot = { 1: 'primary', 2: 'secondary', 3: 'melee' }[n];
+      if (slot) { const i = _ownedSlot(slot); if (i >= 0) switchWeapon(i); }
+    }
   }
   if (e.code === 'KeyQ') {   // previous owned weapon
     for (let k = 1; k < WPNS.length; k++) {
@@ -217,22 +250,29 @@ document.addEventListener('mousedown', e => {
     }
     return;
   }
-  if (wpn.type !== 'gun') return;
-  // RMB: burst toggle (Glock) or silencer toggle (M4/USP). Works from idle only —
-  // toggleSilencer self-gates, burst toggle is harmless mid-fire.
-  if (e.button === 2) {
-    if (wpn.burstCapable) wpn._burstMode = !wpn._burstMode;
-    else                  toggleSilencer();
+  // Grenade: hold LMB to pull the pin (cook), release to throw (handled on mouseup).
+  if (wpn.type === 'grenade') {
+    if (e.button === 0 && ws === WS.IDLE) {
+      ws = WS.PULLPIN; wsT = 0; wsHit = false;
+      if (wpn.anim) { wpn.anim._prevAnimWs = undefined; wpn.anim.curFrame = 0; }
+    }
     return;
   }
-  // LMB: fire now if ready; otherwise QUEUE the shot so a click made during the
-  // cooldown fires the instant it ends (rapid clicking → steady cap-rate fire,
-  // instead of dropping clicks and stuttering). One click = one shot (holding
-  // never auto-fires a semi). Auto weapons don't queue — holding already repeats.
+  if (wpn.type !== 'gun') return;
+  // RMB: scope zoom (AWP), burst toggle (Glock), or silencer toggle (M4/USP).
+  // Works from idle only — cycleScope/toggleSilencer self-gate, burst is harmless.
+  if (e.button === 2) {
+    if      (wpn.zoomFovs)    cycleScope();
+    else if (wpn.burstCapable) wpn._burstMode = !wpn._burstMode;
+    else                       toggleSilencer();
+    return;
+  }
+  // LMB: fire only if the weapon is ready right now. A click made during the
+  // cooldown is dropped (not queued), exactly as in the original — one trigger
+  // pull = one shot, and clicking faster than the cap rate does nothing extra.
   if (e.button === 0) {
     if (wpn.ammo > 0) {
       if (ws === WS.IDLE) _beginFire(wpn);
-      else if (!wpn.autofire) _firePending = true;
     } else if (wpn.reserve > 0 && ws === WS.IDLE) {
       ws = WS.RELOAD; wsT = 0;
     }
@@ -241,6 +281,13 @@ document.addEventListener('mousedown', e => {
 document.addEventListener('mouseup',  e => {
   if (e.button === 0) lmbHeld = false;
   if (e.button === 2) rmbHeld = false;
+  if (!isLocked) return;
+  // Grenade: releasing LMB after pulling the pin throws it.
+  const wpn = curW();
+  if (e.button === 0 && wpn.type === 'grenade' && ws === WS.PULLPIN) {
+    ws = WS.THROW; wsT = 0; wsHit = false;
+    if (wpn.anim) { wpn.anim._prevAnimWs = undefined; wpn.anim.curFrame = 0; }
+  }
 });
 document.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -285,6 +332,7 @@ function animate(t) {
     }
     updatePlayerModel(dt);
     if (typeof updatePickups === 'function') updatePickups(dt);   // dropped-weapon physics + pickup
+    if (typeof updateGrenades === 'function') updateGrenades(dt); // thrown nades: physics + detonation
     updateEnemy(dt);
     updateHUD();
     if (typeof updateBuyHUD === 'function') updateBuyHUD();
@@ -328,8 +376,9 @@ function animate(t) {
     _updateShells(dt);
     _updateBlood(dt);              // blood spray/mist from dummy hits
     // In third-person the view-model/muzzle-flash overlay is hidden (we see the
-    // world-space player model instead).
-    if (!thirdPerson) {
+    // world-space player model instead). Scoped (AWP) also hides it — you're
+    // looking through the lens, not over the gun.
+    if (!thirdPerson && !isScoped()) {
       vmCamera.updateProjectionMatrix();
       const shouldFlip = curW().id === 'knife' ? !rightHand : rightHand;
       if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;

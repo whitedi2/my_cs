@@ -8,6 +8,11 @@ let playerMoney = START_MONEY;
 const ownedWeapons = new Set(['knife', 'usp']);   // default loadout: knife + pistol
 let hasJoined = false;                            // chosen a team/class yet?
 
+// Grenades (slot 4) — held by count, not a single-owned slot. CS caps: HE 1, flash 2,
+// smoke 1. A type with count>0 is added to ownedWeapons so slot/Q selection sees it.
+const grenadeCounts = { hegrenade: 0, flashbang: 0, smokegrenade: 0 };
+const GRENADE_MAX   = { hegrenade: 1, flashbang: 2, smokegrenade: 1 };
+
 WPNS.forEach(w => { w._reserve0 = w.reserve; });  // remember full reserve for buy refills
 
 // ── CS 1.6 buy catalog ──────────────────────────────────────────────────────
@@ -47,7 +52,7 @@ const BUY_CATALOG = [
     { name: 'Steyr Scout',      price: 2750, teams: B },
     { name: 'SG-550 Auto',      price: 4200, teams: ['ct'] },
     { name: 'G3/SG-1 Auto',     price: 5000, teams: ['t']  },
-    { name: 'AWP',              price: 4750, teams: B },
+    { name: 'AWP',              price: 4750, teams: B, wid: 'awp' },
   ] },
   { name: 'Пулемёты', items: [
     { name: 'M249 Para',        price: 5750, teams: B, wid: 'm249' },
@@ -57,9 +62,9 @@ const BUY_CATALOG = [
   { name: 'Снаряжение', items: [
     { name: 'Кевлар',                 price: 650,  teams: B },
     { name: 'Кевлар + Шлем',          price: 1000, teams: B },
-    { name: 'Флешка',                 price: 200,  teams: B },
-    { name: 'Граната HE',             price: 300,  teams: B },
-    { name: 'Дымовая граната',        price: 300,  teams: B },
+    { name: 'Флешка',                 price: 200,  teams: B, wid: 'flashbang' },
+    { name: 'Граната HE',             price: 300,  teams: B, wid: 'hegrenade' },
+    { name: 'Дымовая граната',        price: 300,  teams: B, wid: 'smokegrenade' },
     { name: 'Дефуз-кит',              price: 200,  teams: ['ct'] },
     { name: 'Прибор ночного видения', price: 1250, teams: B },
   ] },
@@ -98,9 +103,20 @@ function buyItem(item) {
   if (!item.wid)        return _flashBuy('Нет модели — недоступно');
   const idx = WPNS.findIndex(w => w.id === item.wid);
   if (idx < 0)          return _flashBuy('Оружие недоступно');
+  const w = WPNS[idx];
+  // Grenades: capped count, no slot-drop. Buying just adds one (up to the cap).
+  if (w.type === 'grenade') {
+    if ((grenadeCounts[w.id] || 0) >= (GRENADE_MAX[w.id] || 1))
+      return _flashBuy(`Максимум ${w.label}`);
+    if (playerMoney < item.price) return _flashBuy('Недостаточно денег');
+    playerMoney -= item.price;
+    grenadeCounts[w.id] = (grenadeCounts[w.id] || 0) + 1;
+    ownedWeapons.add(w.id);
+    switchWeapon(idx);
+    return _flashBuy(`Куплено: ${item.name}  −$${item.price}`);
+  }
   if (playerMoney < item.price) return _flashBuy('Недостаточно денег');
   playerMoney -= item.price;
-  const w = WPNS[idx];
   // One weapon per slot — buying a new primary/secondary drops the old one (like CS):
   // it lands on the ground (with its current ammo) so it can be picked back up.
   if (w.slot === 'primary' || w.slot === 'secondary')
@@ -131,6 +147,27 @@ function buyAmmo(slot) {
   playerMoney -= price;
   w.reserve = w._reserve0 ?? w.reserve;
   _flashBuy(`Патроны: ${w.label}  −$${price}`);
+}
+
+// Called by the weapon state machine when a throw animation finishes: consume one
+// grenade of that type, then redeploy if any remain, else fall back to the best
+// remaining weapon (primary > secondary > knife), as in CS.
+function afterGrenadeThrow(wpn) {
+  const id = wpn.grenadeType;
+  grenadeCounts[id] = Math.max(0, (grenadeCounts[id] || 0) - 1);
+  if (grenadeCounts[id] > 0) {
+    ws = WS.DRAW; wsT = 0;                                 // redeploy another of the same type
+    if (wpn.anim) { wpn.anim._drawAnimDone = false; wpn.anim.curFrame = 0; }
+    return;
+  }
+  ownedWeapons.delete(id);
+  let next = -1;
+  for (const slot of ['primary', 'secondary', 'melee']) {
+    const i = WPNS.findIndex(w => w.slot === slot && ownedWeapons.has(w.id));
+    if (i >= 0) { next = i; break; }
+  }
+  if (next >= 0) { nextWpnIdx = next; _beginDraw(next); }
+  else { ws = WS.IDLE; wsT = 0; }
 }
 
 // ── Buy menu (numeric, CS-style) ────────────────────────────────────────────

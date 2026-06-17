@@ -141,6 +141,9 @@ const _GUN_FILES = {
   p228: 'models/p_p228.json', fiveseven: 'models/p_fiveseven.json',
   mp5: 'models/p_mp5.json', tmp: 'models/p_tmp.json', mac10: 'models/p_mac10.json',
   ump45: 'models/p_ump45.json', p90: 'models/p_p90.json', m249: 'models/p_m249.json',
+  awp: 'models/p_awp.json',
+  hegrenade: 'models/p_hegrenade.json', flashbang: 'models/p_flashbang.json',
+  smokegrenade: 'models/p_smokegrenade.json',
 };
 
 function _loadGunRigs() {
@@ -626,6 +629,8 @@ function updateChaseCamera() {
 
 function toggleThirdPerson(on) {
   thirdPerson = (on === undefined) ? !thirdPerson : on;
+  if (thirdPerson && typeof resetScope === 'function') resetScope();   // no scope in 3rd person
+
   // Park the camera behind the player's current facing; it then stays fixed while
   // the mouse turns the player. Arrow keys re-orbit it.
   orbitYaw = (typeof yaw === 'number' && isFinite(yaw)) ? yaw : 0;

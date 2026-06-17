@@ -51,6 +51,29 @@
     transform: translate(-50%,-50%);
     pointer-events: none; display: none;
   }
+  /* AWP scope: black lens mask (circle touches top/bottom) + thin crosshair lines. */
+  #scope {
+    /* No z-index: it sits above the static WebGL canvas but below the HUD
+       elements (which come later in the DOM) so ammo/target stay readable. */
+    position: absolute; inset: 0; display: none; pointer-events: none;
+    background: radial-gradient(circle at 50% 50%,
+      rgba(0,0,0,0) 0,
+      rgba(0,0,0,0) calc(min(50vw, 50vh) - 1px),
+      #000 min(50vw, 50vh), #000 100%);
+  }
+  #scope .scope-line { position: absolute; background: rgba(0,0,0,.85); }
+  #scope .scope-h { left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-.5px); }
+  #scope .scope-v { top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-.5px); }
+  #scope .scope-dot {
+    position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
+    margin: -2px 0 0 -2px; border-radius: 50%;
+    background: #ff2020; box-shadow: 0 0 3px rgba(255,0,0,.85);
+  }
+  /* Flashbang blind — full-screen white, opacity driven by grenades.js. */
+  #flash-overlay {
+    position: absolute; inset: 0; background: #fff; opacity: 0;
+    pointer-events: none; z-index: 7;
+  }
   #hud {
     position: absolute; bottom: 16px; left: 16px;
     color: rgba(255,255,255,.7); font-size: 12px;
@@ -182,6 +205,8 @@
   <div id="gl-pct">0%</div>
 </div>
 <canvas id="crosshair" width="160" height="160"></canvas>
+<div id="scope"><div class="scope-line scope-h"></div><div class="scope-line scope-v"></div><div class="scope-dot"></div></div>
+<div id="flash-overlay"></div>
 <div id="hud"><div id="pos"></div><div id="spd"></div></div>
 <div id="keys">
   W / S — forward / back<br>
@@ -241,6 +266,7 @@
     'src/hud.js',
     'src/physics.js',
     'src/game.js',
+    'src/grenades.js',
     'src/pickups.js',
     'src/load.js',
     'src/input.js',

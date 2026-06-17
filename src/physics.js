@@ -289,10 +289,16 @@ function playerMove(dt) {
   prevVelZ = vel[2];
 
   // ── Speed / wish dir ──────────────────────────────────────────────────
+  // The active weapon caps run speed (CS 1.6 m_flMaxSpeed): heavier guns are
+  // slower, and scoping (AWP) drops it further. Walk/crouch scale proportionally
+  // with the weapon, as in the original (they're fractions of the run cap).
   const walk   = keys['ShiftLeft'] || keys['ShiftRight'];
-  const maxSpd = walk ? SV.walkspeed
-               : duckAmount > 0.1 ? SV.crouchspeed
-               : SV.maxspeed;
+  let wpnMax = (typeof curW === 'function' && curW().maxSpeed) || SV.maxspeed;
+  if (typeof isScoped === 'function' && isScoped()) wpnMax = curW().zoomSpeed || wpnMax;
+  const sScale = wpnMax / SV.maxspeed;
+  const maxSpd = walk ? SV.walkspeed * sScale
+               : duckAmount > 0.1 ? SV.crouchspeed * sScale
+               : wpnMax;
 
   const fwdX = -Math.sin(yaw), fwdY = Math.cos(yaw);
   const rgtX =  Math.cos(yaw), rgtY = Math.sin(yaw);
