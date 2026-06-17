@@ -10,7 +10,10 @@
 // 'gutshot', else death1/2/3); a non-lethal hit plays a brief flinch.
 
 const ENEMY_MODEL   = 'leet';     // T slot 2 "Elite Crew" (player_leet.json, with --deaths). 'terror' = slot 1.
-const ENEMY_COUNT   = 3;          // dummies in a receding row
+// Static practice dummies removed for the multiplayer move (Phase 5): real networked players
+// take their place. The instance machinery below (rig build, per-bone OBB hitboxes, hitscan,
+// damage, death anims) is KEPT and reused by net.js to render/score remote players.
+const ENEMY_COUNT   = 0;          // 0 = no standing dummies (was 3)
 const ENEMY_DIST    = 240;        // units in front of the CT spawn (nearest dummy)
 const ENEMY_SPACING = 52;         // forward gap between dummies (for penetration)
 const ENEMY_LATERAL = 16;         // sideways stagger so all are visible
@@ -58,6 +61,7 @@ let _enemyLoaded = false;
 function loadEnemy() {
   if (_enemyLoaded) return;
   _enemyLoaded = true;
+  if (ENEMY_COUNT <= 0) return;          // no static dummies — networked players are spawned by net.js
   _trackFetchStart();
   fetch(`models/player_${ENEMY_MODEL}.json`).then(r => r.json()).then(data => {
     // Model data shared across instances; each instance gets its own skinned rig.
@@ -397,7 +401,9 @@ function enemyTryShoot(maxDist, opts) {
   if (!gsPos) return false;
   opts = opts || {};
   const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
-  const P = pitch + punchPitch + recoilPitch, Y = yaw + recoilYaw;
+  // Same scattered trajectory as the wall decal (opts.dyaw/dpitch = this shot's spread cone),
+  // so bullet spread actually deflects hits — a sprayed burst misses, a first tap lands.
+  const P = pitch + punchPitch + recoilPitch + (opts.dpitch || 0), Y = yaw + recoilYaw + (opts.dyaw || 0);
   const cp = Math.cos(P), sp = Math.sin(P);
   _enemyFrom.set(gsPos[0], gsPos[2] + eyeH, -gsPos[1]);
   _enemyDir.set(-cp * Math.sin(Y), sp, -cp * Math.cos(Y)).normalize();

@@ -8,6 +8,82 @@ let playerMoney = START_MONEY;
 const ownedWeapons = new Set(['knife', 'usp']);   // default loadout: knife + pistol
 let hasJoined = false;                            // chosen a team/class yet?
 
+// ── Player health / armor ─────────────────────────────────────────────────────
+// HP refills to 100 each round; ARMOR persists across rounds at its current value
+// (CS: kevlar isn't topped up — you re-buy when it runs down). Damage sources so far:
+// own HE grenade blast and the C4 explosion (no opposing team yet). The dummies don't
+// shoot back. Death freezes control until the round resolves and the next one spawns you.
+const PLAYER_MAX_HP = 100;
+const PLAYER_MAX_AP = 100;
+let playerHealth = PLAYER_MAX_HP;
+let playerArmor  = 0;
+let playerHelmet = false;
+let playerDead   = false;
+let _hurtT = -Infinity;        // wall-clock of the last damage tick (drives the red flash)
+
+// CS armor model (ReGameDLL CBasePlayer::TakeDamage): kevlar soaks part of an armor-
+// covered hit — half to health, the remainder eats armor at the bonus ratio. mp_armorratio
+// 0.5 / armor bonus 0.5 are the defaults. Blasts cover the whole body (covered=true).
+function _playerArmorAbsorb(dmg, covered) {
+  if (playerArmor <= 0 || !covered) return dmg;
+  const RATIO = 0.5, BONUS = 0.5;
+  let toHealth = dmg * RATIO;
+  let toArmor  = (dmg - toHealth) * BONUS;
+  if (toArmor > playerArmor) { toArmor = playerArmor / BONUS; toHealth = dmg - toArmor; playerArmor = 0; }
+  else playerArmor -= toArmor;
+  return Math.max(0, toHealth);
+}
+
+// Apply damage to the player. opts.covered (default true) = armor can soak it.
+function playerTakeDamage(dmg, opts) {
+  if (playerDead || !hasJoined || dmg <= 0) return;
+  opts = opts || {};
+  dmg = _playerArmorAbsorb(dmg, opts.covered !== false);
+  dmg = Math.max(0, Math.round(dmg));
+  if (dmg <= 0) return;
+  playerHealth -= dmg;
+  _hurtT = performance.now();
+  if (playerHealth <= 0) { playerHealth = 0; _playerDie(); }
+  else if (typeof playRandom === 'function')               // original player pain grunt
+    playRandom(['player/pl_fallpain1.wav', 'player/pl_fallpain2.wav', 'player/pl_fallpain3.wav'], { volume: 0.7 });
+}
+
+// Radius blast vs the player (HE / C4): linear falloff + LOS trace + armor soak —
+// mirrors enemy.js enemyRadiusDamage so the player and dummies take blasts identically.
+function playerRadiusDamage(origin, baseDmg, radius) {
+  if (playerDead || !hasJoined || !gsPos) return;
+  const cx = gsPos[0], cy = gsPos[1], cz = gsPos[2] + 36;   // ≈ center mass
+  const dist = Math.hypot(cx - origin[0], cy - origin[1], cz - origin[2]);
+  if (dist > radius) return;
+  if (typeof traceMove === 'function') {
+    const tr = traceMove([origin[0], origin[1], origin[2]], [cx, cy, cz]);
+    if (tr.fraction < 0.7) return;                          // wall mostly blocks the blast
+  }
+  playerTakeDamage(baseDmg * (1 - dist / radius), { covered: true });
+}
+
+function _playerDie() {
+  if (playerDead) return;
+  playerDead = true;
+  if (typeof playRandom === 'function')
+    playRandom(['player/pl_fallpain1.wav', 'player/pl_fallpain2.wav', 'player/pl_fallpain3.wav'], { volume: 0.9 });
+  // Sole member of your team eliminated → award the round to the other side, UNLESS a
+  // live bomb is still ticking (CS keeps the round going until it blows or is defused).
+  const bombLive = (typeof bomb !== 'undefined') && bomb && bomb.live;
+  if (!bombLive && typeof endRound === 'function' && typeof roundPhase !== 'undefined' && roundPhase === 'live') {
+    const winner = playerTeam === 't' ? 'ct' : 't';
+    endRound(winner, playerTeam === 't' ? 'Вы погибли — победа Контр-террористов'
+                                        : 'Вы погибли — победа Террористов');
+  }
+}
+
+// HP refills, armor/helmet persist (CS). Called from rounds.js at each round start.
+function resetPlayerHealth() {
+  playerHealth = PLAYER_MAX_HP;
+  playerDead = false;
+  _hurtT = -Infinity;
+}
+
 // Grenades (slot 4) — held by count, not a single-owned slot. CS caps: HE 1, flash 2,
 // smoke 1. A type with count>0 is added to ownedWeapons so slot/Q selection sees it.
 const grenadeCounts = { hegrenade: 0, flashbang: 0, smokegrenade: 0 };
@@ -60,8 +136,8 @@ const BUY_CATALOG = [
   { name: 'Боезапас (основной)',  ammo: 'primary'   },
   { name: 'Боезапас (пистолет)',  ammo: 'secondary' },
   { name: 'Снаряжение', slots: [
-    { both: { name: 'Кевлар',                 price: 650 } },
-    { both: { name: 'Кевлар + Шлем',          price: 1000 } },
+    { both: { name: 'Кевлар',                 price: 650,  equip: 'kevlar' } },
+    { both: { name: 'Кевлар + Шлем',          price: 1000, equip: 'kevlarhelm' } },
     { both: { name: 'Флешка',                 price: 200,  wid: 'flashbang' } },
     { both: { name: 'Граната HE',             price: 300,  wid: 'hegrenade' } },
     { both: { name: 'Дымовая граната',        price: 300,  wid: 'smokegrenade' } },
@@ -102,6 +178,19 @@ function buyItem(item) {
   if (typeof buyTimeOpen === 'function' && !buyTimeOpen()) return _flashBuy('Время закупки вышло');
   if (item.teams && !item.teams.includes(playerTeam)) return _flashBuy('Недоступно вашей команде');
   if (!inBuyZone())     return _flashBuy('Вы не в зоне закупки');
+  // Kevlar / kevlar+helmet — set armor (and helmet). CS: re-buying full armor is blocked;
+  // the +helmet item still sells you just the helmet if you already have full vest.
+  if (item.equip === 'kevlar' || item.equip === 'kevlarhelm') {
+    const wantHelm = item.equip === 'kevlarhelm';
+    const haveFullArmor = playerArmor >= PLAYER_MAX_AP;
+    if (haveFullArmor && (!wantHelm || playerHelmet)) return _flashBuy('Броня уже есть');
+    if (playerMoney < item.price) return _flashBuy('Недостаточно денег');
+    playerMoney -= item.price;
+    playerArmor = PLAYER_MAX_AP;
+    if (wantHelm) playerHelmet = true;
+    if (typeof playSound === 'function') playSound('items/gunpickup2.wav', { volume: 0.8 });
+    return _flashBuy(`Куплено: ${item.name}  −$${item.price}`);
+  }
   // Defuse kit (CT) — sets the faster-defuse flag used by the bomb code.
   if (item.equip === 'defusekit') {
     if (typeof hasDefuseKit !== 'undefined' && hasDefuseKit) return _flashBuy('Дефуз-кит уже есть');
@@ -264,11 +353,13 @@ function _chooseClass(i) {
   setTeam(_pendTeam);                            // spawn at the team's point + angle
   ownedWeapons.clear(); ownedWeapons.add('knife'); ownedWeapons.add('usp');
   playerMoney = START_MONEY;
+  playerArmor = 0; playerHelmet = false; resetPlayerHealth();   // fresh body on join
   switchWeapon(WPNS.findIndex(w => w.id === 'usp'));   // spawn with the pistol out
   if (typeof loadPlayerModel === 'function') loadPlayerModel();   // deferred until class chosen
   teamStage = null;
   document.getElementById('teammenu').style.display = 'none';
   hasJoined = true;
+  if (typeof netConnect === 'function') netConnect();   // join multiplayer relay (silent if none running)
   if (typeof startMatch === 'function') startMatch();   // begin the round flow (buy time → live → …)
   if (inBuyZone()) _flashBuy('B — купить оружие');
 }

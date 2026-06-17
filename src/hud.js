@@ -56,6 +56,32 @@ function updateHUD() {
     ammoEl.style.display = 'none';
   }
   updateTargetHUD();
+  updatePlayerStatus();
+}
+
+// Player HP/armor readout + the hurt vignette / death tint / death banner.
+function updatePlayerStatus() {
+  const ps = document.getElementById('player-status');
+  if (ps) {
+    if (typeof hasJoined !== 'undefined' && hasJoined) {
+      ps.style.display = 'flex';
+      const hp = Math.max(0, Math.round(playerHealth));
+      const hpEl = document.getElementById('ps-hp');
+      hpEl.textContent = hp;
+      hpEl.style.color = hp <= 25 ? '#ff5252' : '#fff';
+      document.getElementById('ps-ap').textContent = Math.max(0, Math.round(playerArmor));
+      document.getElementById('ps-helm').style.display = playerHelmet ? 'inline' : 'none';
+    } else ps.style.display = 'none';
+  }
+  const hurt = document.getElementById('hurt-overlay');
+  if (hurt) {
+    let a = 0;
+    if (typeof _hurtT !== 'undefined') {
+      const age = (performance.now() - _hurtT) / 1000;
+      if (age >= 0 && age < 0.5) a = 0.8 * (1 - age / 0.5);     // canon red damage flash, fades over 0.5s
+    }
+    hurt.style.opacity = a.toFixed(3);
+  }
 }
 
 // Target dummy HP/armor + last-hit readout. Colors the hit text by zone and

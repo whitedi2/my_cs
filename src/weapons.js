@@ -137,7 +137,8 @@ const WPNS = [
   ..._autoRifle('ump45', 'UMP45',     { damage: 30, rangeMod: 0.82,  fireInterval: 0.095,  ammo: 25, reserve: 100, reload: 3.5, recoilP: 0.55, spread: 0.016, fireSound: ['weapons/ump45-1.wav'], shellType: 'pistol', muzzleBone: 41, muzzleOrg: [0, -8.3, 0],       ejectBone: 41, ejectOrg: [0, -1.0, 0] }),
   ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.3, recoilP: 0.5,  spread: 0.016, maxSpeed: 245, fireSound: ['weapons/p90-1.wav'], shellType: 'pistol', idle: 'idle', muzzleBone: 20, muzzleOrg: [1.9, -8.6, 1.5],   ejectBone: 39, ejectOrg: [1.0, -2.0, 0] }),
   // ── Machine gun (group 5, full-auto). Verified vs ReGameDLL.
-  ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.10,   ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.02, maxSpeed: 220, fireSound: ['weapons/m249-1.wav', 'weapons/m249-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [3.6, -18.4, 2.75],  ejectBone: 49, ejectOrg: [0, 0, 0] }),
+  ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.10,   ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.012,
+                  maxSpeed: 220, fireSound: ['weapons/m249-1.wav', 'weapons/m249-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [3.6, -18.4, 2.75],  ejectBone: 49, ejectOrg: [0, 0, 0] }),
   // ── Sniper rifle (group 4). Bolt-action, semi-auto, scoped. Stats from ReGameDLL:
   // 115 dmg, near-zero range falloff (longest range), 1.5s bolt cycle, RMB scope
   // cycles FOV 90→40→10→90. Pinpoint when still, accuracy wrecked by movement.
@@ -233,6 +234,121 @@ const WPNS = [
   ..._grenade('flashbang',    'Flashbang'),
   ..._grenade('smokegrenade', 'Smoke Grenade'),
 ];
+
+// ── Canon per-weapon accuracy (ReGameDLL wpn_*.cpp) ──────────────────────────
+// Each gun computes its bullet-cone spread from an accuracy scalar + the firing stance.
+// Two scalar models, straight from the source:
+//   'bloom' (rifles/SMGs/M249): m_flAccuracy = min(max, shots^exp / div + base) — grows with
+//            sustained fire; per-stance spread = add + mul·acc.
+//   'decay' (pistols): m_flAccuracy -= (cool − Δt_since_last)·step, clamped [lo,hi] — recovers
+//            between shots; per-stance spread = factor·(1 − acc).
+//   'fixed' (AWP): per-stance constant (no scalar) — pinpoint still, wrecked by movement.
+// Stances are tested air → run(>runThresh) → walk(>walkThresh) → duck → still, matching the
+// PrimaryAttack branch order. Rifles only run/still (runThresh 140); pistols treat ANY motion
+// as 'run' (runThresh ~0). `sil` overrides stances when the weapon is silenced.
+const WEAPON_ACCURACY = {
+  // Rifles
+  ak47:  { model: 'bloom', exp: 3, div: 200,   base: 0.35, max: 1.25, air: { add: 0.04,  mul: 0.4  }, run: { add: 0.04,  mul: 0.07  }, still: { add: 0, mul: 0.0275 } },
+  m4:    { model: 'bloom', exp: 3, div: 220,   base: 0.3,  max: 1.0,  air: { add: 0.035, mul: 0.4  }, run: { add: 0.035, mul: 0.07  }, still: { add: 0, mul: 0.025  }, sil: { still: { add: 0, mul: 0.02 } } },
+  galil: { model: 'bloom', exp: 3, div: 200,   base: 0.35, max: 1.25, air: { add: 0.04,  mul: 0.3  }, run: { add: 0.04,  mul: 0.07  }, still: { add: 0, mul: 0.0375 } },
+  famas: { model: 'bloom', exp: 3, div: 215,   base: 0.3,  max: 1.0,  air: { add: 0.03,  mul: 0.3  }, run: { add: 0.03,  mul: 0.07  }, still: { add: 0, mul: 0.02   } },
+  aug:   { model: 'bloom', exp: 3, div: 215,   base: 0.3,  max: 1.0,  air: { add: 0.035, mul: 0.4  }, run: { add: 0.035, mul: 0.07  }, still: { add: 0, mul: 0.02   } },
+  sg552: { model: 'bloom', exp: 3, div: 220,   base: 0.3,  max: 1.0,  air: { add: 0.035, mul: 0.45 }, run: { add: 0.035, mul: 0.075 }, still: { add: 0, mul: 0.02   } },
+  // SMGs — on-ground spread is the same moving or still (no run branch), only air differs.
+  mp5:   { model: 'bloom', exp: 2, div: 220.1, base: 0.45, max: 0.75, air: { add: 0, mul: 0.2   }, still: { add: 0, mul: 0.04  } },
+  tmp:   { model: 'bloom', exp: 3, div: 200,   base: 0.55, max: 1.4,  air: { add: 0, mul: 0.25  }, still: { add: 0, mul: 0.03  } },
+  mac10: { model: 'bloom', exp: 3, div: 200,   base: 0.6,  max: 1.65, air: { add: 0, mul: 0.375 }, still: { add: 0, mul: 0.03  } },
+  ump45: { model: 'bloom', exp: 2, div: 210,   base: 0.5,  max: 1.0,  air: { add: 0, mul: 0.24  }, still: { add: 0, mul: 0.04  } },
+  p90:   { model: 'bloom', exp: 2, div: 175,   base: 0.45, max: 1.0,  air: { add: 0, mul: 0.3   }, run: { add: 0, mul: 0.115 }, runThresh: 170, still: { add: 0, mul: 0.045 } },
+  // Machine gun
+  m249:  { model: 'bloom', exp: 3, div: 175,   base: 0.4,  max: 0.9,  air: { add: 0.045, mul: 0.5 }, run: { add: 0.045, mul: 0.095 }, still: { add: 0, mul: 0.03 } },
+  // Sniper — fixed per-stance cone
+  awp:   { model: 'fixed', air: 0.85, run: 0.25, walk: 0.1, walkThresh: 10, duck: 0.0, still: 0.001 },
+  // Pistols — time-decay; any movement (runThresh ~0) uses the 'run' branch.
+  usp:       { model: 'decay', cool: 0.3,   step: 0.275, lo: 0.6,   hi: 0.92, runThresh: 5, air: 1.2, run: 0.225, duck: 0.08,  still: 0.1,
+               sil: { air: 1.3, run: 0.25, duck: 0.125, still: 0.15 } },
+  glock18:   { model: 'decay', cool: 0.325, step: 0.275, lo: 0.6,   hi: 0.9,  runThresh: 5, air: 1.0, run: 0.165, duck: 0.075, still: 0.1  },
+  deagle:    { model: 'decay', cool: 0.4,   step: 0.35,  lo: 0.55,  hi: 0.9,  runThresh: 5, air: 1.5, run: 0.25,  duck: 0.115, still: 0.13 },
+  p228:      { model: 'decay', cool: 0.325, step: 0.3,   lo: 0.6,   hi: 0.9,  runThresh: 5, air: 1.5, run: 0.255, duck: 0.075, still: 0.15 },
+  fiveseven: { model: 'decay', cool: 0.275, step: 0.25,  lo: 0.725, hi: 0.92, runThresh: 5, air: 1.5, run: 0.255, duck: 0.075, still: 0.15 },
+};
+
+// Canon fire-cycle times (ReGameDLL flCycleTime, pistols after their −= adjustment).
+const CANON_CYCLE = {
+  ak47: 0.0955, m4: 0.0875, galil: 0.0875, famas: 0.0825, aug: 0.0825, sg552: 0.0825,
+  mp5: 0.075, tmp: 0.07, mac10: 0.07, ump45: 0.1, p90: 0.066, m249: 0.10,
+  usp: 0.15, glock18: 0.15, deagle: 0.225, p228: 0.15, fiveseven: 0.15,
+};
+WPNS.forEach(w => { if (CANON_CYCLE[w.id] != null) w.fireInterval = CANON_CYCLE[w.id]; });
+
+// Resolve a weapon's bullet-cone spread for this shot from its canon accuracy model.
+// sc = consecutive shots this burst; spd2d = horizontal speed; ducking = phyDucked.
+function _canonSpread(a, wpn, sc, spd2d, onGround, ducking) {
+  let acc = 1;
+  if (a.model === 'bloom') {
+    acc = Math.min(a.max, Math.pow(sc, a.exp) / a.div + a.base);
+  } else if (a.model === 'decay') {
+    if (wpn._acc == null) wpn._acc = a.hi;
+    // Δt since the last shot: small gap → accuracy drops (spray), long gap → recovers to hi.
+    const dt = Math.min(lastShotAge, a.cool * 4);
+    wpn._acc = Math.max(a.lo, Math.min(a.hi, wpn._acc - (a.cool - dt) * a.step));
+    acc = wpn._acc;
+  }
+  let name;
+  if (!onGround)                                              name = 'air';
+  else if (a.run  != null && spd2d > (a.runThresh  ?? 140))  name = 'run';
+  else if (a.walk != null && spd2d > (a.walkThresh ?? 10))   name = 'walk';
+  else if (a.duck != null && ducking)                        name = 'duck';
+  else                                                       name = 'still';
+  let st = (wpn.silencer && a.sil && a.sil[name] != null) ? a.sil[name] : a[name];
+  if (st == null) st = (wpn.silencer && a.sil && a.sil.still != null) ? a.sil.still : a.still;
+  if (a.model === 'bloom') return st.add + st.mul * acc;
+  if (a.model === 'decay') return st * (1 - acc);
+  return st;                                                  // fixed
+}
+
+// ── Canon view recoil (ReGameDLL CBasePlayerWeapon::KickBack), per firing stance ──
+// Each stance is [up_base, lat_base, up_mod, lat_mod, up_max, lat_max, dir_change] in DEGREES.
+// Per shot (n = m_iShotsFired, 1-based): vertical kick = up_base + (n>1 ? n·up_mod : 0), pushed
+// UP and clamped to up_max; lateral = lat_base + (n>1 ? n·lat_mod : 0), walked left/right (clamped
+// ±lat_max) with the side flipping at probability 1/(dir_change+1). up_max/lat_max = 0 → no clamp.
+// Branch order differs in the source: rifles test moving BEFORE air; SMGs/M249/P90 test air first.
+const KICKBACK = {
+  ak47:  { move: [1.5,0.45,0.225,0.05,6.5,2.5,7], air: [2.0,1.0,0.5,0.35,9.0,6.0,5], duck: [0.9,0.35,0.15,0.025,5.5,1.5,9], still: [1.0,0.375,0.175,0.0375,5.75,1.75,8] },
+  m4:    { move: [1.0,0.45,0.28,0.045,3.75,3.0,7], air: [1.2,0.5,0.23,0.15,5.5,3.5,6], duck: [0.6,0.3,0.2,0.0125,3.25,2.0,7], still: [0.65,0.35,0.25,0.015,3.5,2.25,7] },
+  galil: { move: [1.0,0.45,0.28,0.045,3.75,3.0,7], air: [1.2,0.5,0.23,0.15,5.5,3.5,6], duck: [0.6,0.3,0.2,0.0125,3.25,2.0,7], still: [0.65,0.35,0.25,0.015,3.5,2.25,7] },
+  famas: { move: [1.0,0.45,0.275,0.05,4.0,2.5,7], air: [1.25,0.45,0.22,0.18,5.5,4.0,5], duck: [0.575,0.325,0.2,0.011,3.25,2.0,8], still: [0.625,0.375,0.25,0.0125,3.5,2.25,8] },
+  aug:   { move: [1.0,0.45,0.275,0.05,4.0,2.5,7], air: [1.25,0.45,0.22,0.18,5.5,4.0,5], duck: [0.575,0.325,0.2,0.011,3.25,2.0,8], still: [0.625,0.375,0.25,0.0125,3.5,2.25,8] },
+  sg552: { move: [1.0,0.45,0.28,0.04,4.25,2.5,7], air: [1.25,0.45,0.22,0.18,6.0,4.0,5], duck: [0.6,0.35,0.2,0.0125,3.7,2.0,10], still: [0.625,0.375,0.25,0.0125,4.0,2.25,9] },
+  mp5:   { airFirst: true, air: [0.9,0.475,0.35,0.0425,5.0,3.0,6], move: [0.5,0.275,0.2,0.03,3.0,2.0,10], duck: [0.225,0.15,0.1,0.015,2.0,1.0,10], still: [0.25,0.175,0.125,0.02,2.25,1.25,10] },
+  tmp:   { airFirst: true, air: [1.1,0.5,0.35,0.045,4.5,3.5,6], move: [0.8,0.4,0.2,0.03,3.0,2.5,7], duck: [0.7,0.35,0.125,0.025,2.5,2.0,10], still: [0.725,0.375,0.15,0.025,2.75,2.25,9] },
+  mac10: { airFirst: true, air: [1.3,0.55,0.4,0.05,4.75,3.75,5], move: [0.9,0.45,0.25,0.035,3.5,2.75,7], duck: [0.75,0.4,0.175,0.03,2.75,2.5,10], still: [0.775,0.425,0.2,0.03,3.0,2.75,9] },
+  ump45: { airFirst: true, air: [0.125,0.65,0.55,0.0475,5.5,4.0,10], move: [0.55,0.3,0.225,0.03,3.5,2.5,10], duck: [0.25,0.175,0.125,0.02,2.25,1.25,10], still: [0.275,0.2,0.15,0.0225,2.5,1.5,10] },
+  p90:   { airFirst: true, air: [0.9,0.45,0.35,0.04,5.25,3.5,4], move: [0.45,0.3,0.2,0.0275,4.0,2.25,7], duck: [0.275,0.2,0.125,0.02,3.0,1.0,9], still: [0.3,0.225,0.125,0.02,3.25,1.25,8] },
+  m249:  { airFirst: true, air: [1.8,0.65,0.45,0.125,5.0,3.5,8], move: [1.1,0.5,0.3,0.06,4.0,3.0,8], duck: [0.75,0.325,0.25,0.025,3.5,2.5,9], still: [0.8,0.35,0.3,0.03,3.75,3.0,9] },
+  // Pistols + AWP: one flat call for every stance — pure 2° vertical, no lateral, no cap (each
+  // shot kicks up and the spring recenters between shots). Glock has NO view punch (KickBack(0…)).
+  usp:       { all: [2.0,0,0,0,0,0,0] },
+  deagle:    { all: [2.0,0,0,0,0,0,0] },
+  p228:      { all: [2.0,0,0,0,0,0,0] },
+  fiveseven: { all: [2.0,0,0,0,0,0,0] },
+  awp:       { all: [2.0,0,0,0,0,0,0] },
+  glock18:   { all: [0,0,0,0,0,0,0] },
+};
+// Pick the KickBack stance row matching the firing pose (source branch order per weapon class).
+function _kickbackRow(kb, spd2d, onGround, ducking) {
+  if (kb.all) return kb.all;
+  const moving = spd2d > 1;
+  if (kb.airFirst) {
+    if (!onGround) return kb.air;
+    if (moving)    return kb.move;
+  } else {
+    if (moving)    return kb.move;
+    if (!onGround) return kb.air;
+  }
+  if (ducking) return kb.duck;
+  return kb.still;
+}
 
 let curWpnIdx  = WPNS.findIndex(w => w.id === 'knife');   // start on the knife
 let nextWpnIdx = -1;
@@ -686,22 +802,32 @@ function updateWeapon(dt) {
         if (lastShotAge > 0.3) {
           wpn._shotCount  = 0;
           wpn._recoilDir  = Math.random() < 0.5 ? 1 : -1;  // bar may start either side
+          wpn._kickDir    = Math.random() < 0.5 ? 1 : 0;   // canon KickBack m_iDirection
         }
         const sc = wpn._shotCount || 0;
-        // Bullet scatter cone (decal only — does NOT move the screen). Widens with
-        // rapid fire (accuracy degradation), shrinks back once the burst resets.
-        let shotSpread = wpn.spread || 0;
-        if (wpn.spreadGrow) shotSpread = Math.min(shotSpread + sc * wpn.spreadGrow, wpn.spreadMax ?? shotSpread);
-        // Movement inaccuracy (CS 1.6): jumping is worst, running adds spread with
-        // speed, ducking tightens, standing still is most accurate.
+        // Bullet scatter cone (does NOT move the screen — that's recoil). Per-weapon canon
+        // accuracy; the rolled cone deflects BOTH the wall decal and the target hit ray.
         const spd2d = vel ? Math.hypot(vel[0], vel[1]) : 0;
-        const moveMult = wpn.moveSpreadMult || 1;   // snipers blow up when moving
-        if (!onGround) {
-          shotSpread += 0.05 * moveMult;            // in air — large
+        let shotSpread;
+        const acc = WEAPON_ACCURACY[wpn.id];
+        if (acc) {
+          // Canon ReGameDLL accuracy: scalar (bloom/decay/fixed) × firing stance. This
+          // already encodes the movement penalty, so the legacy move term is skipped.
+          shotSpread = _canonSpread(acc, wpn, sc, spd2d, onGround, phyDucked);
         } else {
-          let m = (Math.max(0, spd2d - 40) / 250) * 0.035;  // scales with speed past a deadzone
-          if (phyDucked) m *= 0.4;                  // crouch-moving tightens
-          shotSpread += m * moveMult;
+          // Legacy fallback (weapons not yet converted): static cone + ad-hoc move spread.
+          shotSpread = wpn.spread || 0;
+          if (wpn.spreadGrow) shotSpread = Math.min(shotSpread + sc * wpn.spreadGrow, wpn.spreadMax ?? shotSpread);
+          const moveMult = wpn.moveSpreadMult || 1;
+          if (!onGround) shotSpread += 0.05 * moveMult;
+          else { let m = (Math.max(0, spd2d - 40) / 250) * 0.035; if (phyDucked) m *= 0.4; shotSpread += m * moveMult; }
+        }
+        // Roll this shot's scatter once (uniform disc of radius shotSpread) and fire the
+        // same deflected trajectory at the wall and the dummy.
+        let dyaw = 0, dpitch = 0;
+        if (shotSpread) {
+          const ang = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * shotSpread;
+          dyaw = Math.cos(ang) * rad; dpitch = Math.sin(ang) * rad;
         }
         xhairGap += wpn.xhairKick ?? 5;             // each shot kicks the crosshair open
         // Original gunfire sound (code-driven, like the engine's WeaponSound).
@@ -710,12 +836,13 @@ function updateWeapon(dt) {
         // CHAN_WEAPON: each shot cuts the previous one so bursts/fast taps stay
         // crisp instead of overlapping into a drone (matches the engine).
         if (typeof playRandom === 'function') playRandom(_fireSnd, { volume: 1.0, channel: 'weapon' });
-        const _hit = _spawnDecal('bullet', SHOT_RANGE, shotSpread);
+        const _hit = _spawnDecal('bullet', SHOT_RANGE, shotSpread, undefined, [dyaw, dpitch]);
         let _hitBody = false;
         if (typeof enemyTryShoot === 'function')                        // hit the target dummy?
           _hitBody = enemyTryShoot(SHOT_RANGE, {
             damage:   (wpn.silencer && wpn.damageSil   != null) ? wpn.damageSil   : (wpn.damage ?? 30),
             rangeMod: (wpn.silencer && wpn.rangeModSil != null) ? wpn.rangeModSil : (wpn.rangeMod ?? 0.98),
+            dyaw, dpitch,
           });
         // Surface impact (ric sound + dust puff) — only when no body was hit (the body
         // plays its own flesh/kevlar/headshot sound, in enemy.js). The wall decal
@@ -729,23 +856,25 @@ function updateWeapon(dt) {
         lastShotAge = 0;           // keep recoil in slow-decay (accumulate) mode through the burst
         wpn._pendingFire = true;   // defer flash+eject until _muzzleLocal is current
         wpn._shotCount = sc + 1;
-        if (wpn.recoilProc) {
-          // CS 1.6 KickBack: vertical climbs; lateral grows after the stem and
-          // is applied in _recoilDir, which randomly flips → bar varies per burst.
-          const rp = wpn.recoilProc;
-          recoilPitch = Math.min(0.35, recoilPitch + rp.pitch * D);
-          if (sc >= rp.stemShots) {
-            const n   = sc - rp.stemShots;
-            const mag = Math.min(rp.latBase + n * rp.latGrow, rp.latMax) * D;
-            recoilYaw = Math.max(-0.25, Math.min(0.25, recoilYaw + mag * (wpn._recoilDir || 1)));
-            if (Math.floor(Math.random() * (rp.flipChance + 1)) === 0) wpn._recoilDir = -(wpn._recoilDir || 1);
-          }
-        } else if (wpn.recoilTable) {
-          const [ky, kp] = wpn.recoilTable[Math.min(sc, wpn.recoilTable.length - 1)];
-          recoilPitch = Math.min(0.35, recoilPitch + kp);
-          recoilYaw   = Math.max(-0.25, Math.min(0.25, recoilYaw + ky));
+        const kb = KICKBACK[wpn.id];
+        if (kb) {
+          // Canon KickBack: recoilPitch (+ = up) accumulates the vertical kick; recoilYaw
+          // walks left/right and randomly flips. The physics spring (physics.js) recenters
+          // it. punchangle is in degrees in the source → ×D into our radians.
+          const row = _kickbackRow(kb, spd2d, onGround, phyDucked);
+          const shots = sc + 1;                                  // = m_iShotsFired (1-based)
+          let upDeg = row[0], latDeg = row[1];
+          if (shots > 1) { upDeg += shots * row[2]; latDeg += shots * row[3]; }
+          const upMax = row[4] * D, latMax = row[5] * D, dirChg = row[6];
+          if (upMax === 0)               recoilPitch += upDeg * D;                         // boundaryless
+          else if (recoilPitch < upMax)  recoilPitch = Math.min(recoilPitch + upDeg * D, upMax);
+          const dir = wpn._kickDir ? 1 : -1;
+          if (latMax === 0)                       recoilYaw += latDeg * D * dir;
+          else if (Math.abs(recoilYaw) < latMax)  recoilYaw = dir > 0 ? Math.min(recoilYaw + latDeg * D, latMax)
+                                                                      : Math.max(recoilYaw - latDeg * D, -latMax);
+          if (dirChg > 0 && Math.floor(Math.random() * (dirChg + 1)) === 0) wpn._kickDir = wpn._kickDir ? 0 : 1;
         } else {
-          recoilPitch = Math.min(0.35, recoilPitch + (wpn.recoilKick || 0));
+          recoilPitch = Math.min(0.35, recoilPitch + (wpn.recoilKick || 0));   // legacy fallback
         }
         // CS 1.6 sniper: firing while scoped drops the scope (you see the weapon
         // recoil + bolt), then it auto re-zooms to the same level after a beat.

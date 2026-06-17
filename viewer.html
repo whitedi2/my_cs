@@ -74,8 +74,25 @@
     position: absolute; inset: 0; background: #fff; opacity: 0;
     pointer-events: none; z-index: 7;
   }
+  /* ── Damage feedback: red vignette flash on taking damage ── */
+  #hurt-overlay {
+    position: absolute; inset: 0; opacity: 0; pointer-events: none; z-index: 6;
+    background: radial-gradient(ellipse at center, rgba(150,0,0,0) 38%, rgba(130,0,0,.75));
+    transition: opacity .08s linear;
+  }
+  /* ── Player health / armor (bottom-left) ── */
+  #player-status {
+    position: absolute; bottom: 16px; left: 16px; display: none; align-items: center; gap: 24px;
+    font-family: 'Segoe UI', system-ui, sans-serif; text-shadow: 0 0 6px #000;
+  }
+  #player-status .ps-cell { display: flex; align-items: center; gap: 8px; }
+  #player-status .ps-ico { font-size: 22px; }
+  #player-status .ps-hp-ico { color: #8bc34a; }
+  #player-status .ps-ap-ico { color: #78a8f0; }
+  #player-status .ps-num { font-size: 30px; font-weight: 800; color: #fff; min-width: 46px; }
+  #player-status #ps-helm { font-size: 16px; color: #cfe3ff; }
   #hud {
-    position: absolute; bottom: 16px; left: 16px;
+    position: absolute; top: 14px; left: 16px;
     color: rgba(255,255,255,.7); font-size: 12px;
     line-height: 1.8; display: none;
     text-shadow: 0 0 4px #000;
@@ -231,6 +248,7 @@
 <canvas id="crosshair" width="160" height="160"></canvas>
 <div id="scope"><div class="scope-line scope-h"></div><div class="scope-line scope-v"></div><div class="scope-dot"></div></div>
 <div id="flash-overlay"></div>
+<div id="hurt-overlay"></div>
 <div id="hud"><div id="pos"></div><div id="spd"></div></div>
 <div id="keys">
   W / S — forward / back<br>
@@ -247,6 +265,10 @@
 <div id="weapon-hud">
   <div id="ammo-display"></div>
   <div id="weapon-name">KNIFE</div>
+</div>
+<div id="player-status">
+  <div class="ps-cell"><span class="ps-ico ps-hp-ico">♥</span><span id="ps-hp" class="ps-num">100</span></div>
+  <div class="ps-cell"><span class="ps-ico ps-ap-ico">⛊</span><span id="ps-ap" class="ps-num">0</span><span id="ps-helm">⛑</span></div>
 </div>
 <div id="money"></div>
 <div id="buymsg"></div>
@@ -298,6 +320,7 @@
     'src/grenades.js',
     'src/rounds.js',
     'src/pickups.js',
+    'src/net.js',
     'src/load.js',
     'src/input.js',
     'src/autotest.js',

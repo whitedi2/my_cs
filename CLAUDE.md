@@ -8,7 +8,14 @@
 
 ```bash
 python serve.py          # поднимает http://localhost:8080/viewer.html и открывает браузер
+node server.js           # (опц.) мультиплеер-relay на ws://localhost:8081 — отдельный процесс
 ```
+
+Мультиплеер (Фаза 5, шаг 1 — синхронизация движения): запусти `node server.js`, открой
+`viewer.html` в двух вкладках/машинах, в каждой выбери команду — увидишь, как другой игрок бегает
+(модель/анимация/направление). Это **relay** (клиенты шлют своё состояние, сервер раздаёт), без
+серверной физики и хитрега — стрельбы по другим игрокам пока нет. Без `node server.js` игра молча
+работает в одиночку. `server.js` — zero-deps (свой WebSocket на `http`+`crypto`).
 
 Нужен HTTP-сервер (не `file://`) — иначе не загрузятся `.json`/ассеты и ES-модуль Three.js.
 Three.js тянется с CDN через `<script type="importmap">` в `viewer.html` — **нужен интернет**.
@@ -47,6 +54,7 @@ Runtime разбит по файлам (порядок загрузки = пор
 | `src/grenades.js` | гранаты (HE/флеш/дым): бросок, физика снаряда (`w_*` + отскок по BSP), запал, детонация (радиус-урон / слепота / дым), эффекты (после game) | `throwGrenade`, `updateGrenades`, `_moveGrenade`, `_detonateHE`/`_detonateFlash`/`_detonateSmoke`, `_updateBlind`, `_updateSmokes`, `clearGrenades`, `GRENADE_DEFS` |
 | `src/rounds.js` | поток матча (закупка→лайв→конец→рестарт) + цель-бомба C4: плант/дефьюз/взрыв (бомбсайты из BSP), таймеры, деньги, HUD раунда (после grenades/enemy/game) | `startMatch`, `startRound`, `endRound`, `updateRound`, `buyTimeOpen`, `_plantBomb`/`_detonateBomb`, `roundPhase` |
 | `src/pickups.js` | дроп (G) и подбор оружия: мировая `p_*`-модель падает на пол, подбор по близости со звуками оригинала (после game.js) | `dropWeapon`, `updatePickups`, `_spawnPickup`, `_buildDropModel`, `DROP_SOUND`/`PICKUP_SOUND` |
+| `src/net.js` | мультиплеер (Фаза 5): WebSocket-клиент к `server.js`, шлёт свой снапшот ~20 Гц и рендерит удалённых игроков тем же ригом (`_buildRig`/`_skinRig`/`computeBoneWorlds`). Relay, без серверной физики/хитрега. Нет relay → тихо остаётся одиночка (после player/weapons) | `netConnect`, `netUpdate`, `remotePlayers`, `_onRemoteState`, `_buildRemote` |
 | `src/load.js` | загрузка карты/ассетов (после physics, чтобы `initPhysics` была определена) | `objPromise`, `hullPromise`, `Promise.all(...).then(...)` |
 | `src/input.js` | pointer lock, настройки, мышь/клавиатура/оружие, **главный цикл** | `animate(t)`, `updateFOV`, обработчики ввода, `animate(0)` в конце |
 
@@ -65,7 +73,8 @@ Runtime разбит по файлам (порядок загрузки = пор
 ```
 viewer.html        оболочка: разметка, importmap, загрузчик src/*.js
 config.js          глобальный CONFIG (физика, мышь, дефолты настроек)
-serve.py           локальный сервер (python serve.py)
+serve.py           локальный сервер статики (python serve.py)
+server.js          мультиплеер-relay на WebSocket (node server.js, :8081, zero-deps) — отдельный процесс
 CLAUDE.md          этот файл
 src/               рантайм JS (классические скрипты, общий global scope)
 maps/              карта de_dust2 — самодостаточна:

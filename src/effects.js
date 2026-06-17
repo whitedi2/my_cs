@@ -166,12 +166,17 @@ function _getDecalMat(tex) {
 // spread = per-shot random cone half-angle (radians), 0 for none.
 // roll  = if a number, orient the decal in the wall plane at this angle (cut
 //         direction); if undefined, spin it randomly (bullet holes).
-function _spawnDecal(type, maxDist, spread, roll) {
+// scatter = optional precomputed [dyaw, dpitch] (radians) so the caller can fire the
+//           SAME deflected trajectory at both the wall (decal) and the target (hit ray);
+//           when omitted, a fresh random cone of `spread` is rolled here.
+function _spawnDecal(type, maxDist, spread, roll, scatter) {
   if (!_shellRayTargets || !gsPos) return;
 
   // Random cone inaccuracy (uniform disc) added on top of the aim
   let dyaw = 0, dpitch = 0;
-  if (spread) {
+  if (scatter) {
+    dyaw = scatter[0]; dpitch = scatter[1];
+  } else if (spread) {
     const a = Math.random() * Math.PI * 2;
     const r = Math.sqrt(Math.random()) * spread;
     dyaw   = Math.cos(a) * r;

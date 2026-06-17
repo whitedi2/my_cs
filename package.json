@@ -1,0 +1,12 @@
+{
+  "name": "cs16-clone-mp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multiplayer relay/authoritative server for the CS 1.6 browser clone (Phase 5).",
+  "scripts": {
+    "server": "node server.js"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.32.3"
+  }
+}

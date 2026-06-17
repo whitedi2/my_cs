@@ -7,21 +7,23 @@
 // arcs under gravity and bounces off the BSP (player-hull trace — an approximation, see
 // docs/DIFFERENCES.md), counts down a fuse, then detonates per type.
 
-// ── Per-type tuning. Geometry/timings approximated (🔹) — exact ReGameDLL fuse/radius
-//    values weren't on hand; damage model is linear falloff with LOS + armor soak. ──
+// ── Per-type tuning, from ReGameDLL. All three throw with ThrowGrenade(…, 1.5) →
+//    1.5 s fuse. HE: pev->dmg = 100; the blast radius is dmg × 3.5 = 350 (CBaseMonster::
+//    RadiusDamage picks ×3.5 when dmg > 80), with linear falloff dmg·(1 − dist/radius). ──
 const GRENADE_DEFS = {
-  hegrenade:    { fuse: 1.6, damage: 100, radius: 340, w: 'models/w_hegrenade.json',
+  hegrenade:    { fuse: 1.5, damage: 100, radius: 350, w: 'models/w_hegrenade.json',
                   detonate: 'weapons/hegrenade-1.wav' },
-  flashbang:    { fuse: 1.6, w: 'models/w_flashbang.json',
+  flashbang:    { fuse: 1.5, w: 'models/w_flashbang.json',
                   detonate: 'weapons/flashbang-1.wav' },
-  smokegrenade: { fuse: 1.6, w: 'models/w_smokegrenade.json',
+  smokegrenade: { fuse: 1.5, w: 'models/w_smokegrenade.json',
                   detonate: 'weapons/sg_explode.wav' },
 };
 
-const GREN_ELAST   = 0.5;  // bounce energy kept across the surface normal
-const GREN_FRICT   = 0.8;  // tangential speed kept per bounce (CS pev->friction = 0.8)
-const GREN_GRAVITY = 0.5;  // CS sets the grenade entity pev->gravity = 0.5 → falls at HALF
-                           // sv_gravity, so it arcs much farther than a full-gravity drop.
+const GREN_ELAST   = 0.5;   // 🔹 bounce restitution across the normal (engine SV_Physics bounce
+                            //    coefficient isn't a single exposed constant — kept as approximation)
+const GREN_FRICT   = 0.7;   // tangential speed kept per bounce — CS grenade pev->friction = 0.7
+const GREN_GRAVITY = 0.55;  // CS sets the grenade entity pev->gravity = 0.55 → falls at ~half
+                            // sv_gravity, so it arcs much farther than a full-gravity drop.
 // Grenades are traced with the smallest available BSP hull (duck/hull3, ±18 vertical),
 // so a resting grenade's CENTER sits ~18u above the floor. Drop the visual mesh by this
 // much so the model actually touches the ground (see docs/DIFFERENCES.md 🔹).
@@ -48,6 +50,16 @@ function _getPuffTex() {
   g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
   _puffTex = new THREE.CanvasTexture(c);
   return _puffTex;
+}
+
+// The smoke-grenade cloud uses the ORIGINAL CS smoke puff sprite (sprites/gas_puff_01.spr,
+// extracted to PNG by tools/extract_spr.py): a soft, irregular, alpha-masked grey blob —
+// non-additive so overlapping puffs actually occlude. Falls back to the procedural puff.
+let _smokeTex = null;
+function _getSmokeTex() {
+  if (_smokeTex) return _smokeTex;
+  if (typeof _texLoader !== 'undefined' && _texLoader) _smokeTex = _texLoader.load('sprites/gas_puff_01_00.png');
+  return _smokeTex || _getPuffTex();
 }
 
 // ── Build the thrown grenade mesh from a w_<type>.json (static mesh, world scale) ──
@@ -247,7 +259,8 @@ function _detonateHE(g) {
     playRandom(['weapons/debris1.wav', 'weapons/debris2.wav', 'weapons/debris3.wav'], { volume: v * 0.55 });
   }
   _spawnHEExplosion(g.pos);
-  if (typeof enemyRadiusDamage === 'function') enemyRadiusDamage(g.pos, def.damage, def.radius);
+  if (typeof enemyRadiusDamage === 'function')  enemyRadiusDamage(g.pos, def.damage, def.radius);
+  if (typeof playerRadiusDamage === 'function') playerRadiusDamage(g.pos, def.damage, def.radius);
 }
 
 // HE blast = original CS fireball sprite (sprites/zerogxplode.spr, the model index
@@ -261,15 +274,25 @@ function _getHEFrames() {
     _heFrames.push(_loadAdditiveSprite(`sprites/zerogxplode_${String(i).padStart(2, '0')}.png`));
   return _heFrames;
 }
+// Canon (ggrenade.cpp Explode3 / ExplodeHeGrenade): the HE blast sends TWO additive
+// fireball sprites via TE_EXPLOSION — a primary at origin.z+20 (scale*10 = 25) and a
+// slightly LARGER secondary jittered by ±64 on x/y and +30..35 on z (scale*10 = 30).
+// The original uses three different fireball .spr indices (Fireball/2/3); we only ship
+// zerogxplode, so both reuse it (🔹 approximation, see docs/DIFFERENCES.md).
 function _spawnHEExplosion(posGs) {
+  _spawnHEFireball([posGs[0], posGs[1], posGs[2] + 20], 160);
+  const ox = Math.random() * 128 - 64, oy = Math.random() * 128 - 64, oz = 30 + Math.random() * 5;
+  _spawnHEFireball([posGs[0] + ox, posGs[1] + oy, posGs[2] + oz], 192);   // 192/160 ≈ 30/25
+}
+function _spawnHEFireball(posGs, base) {
   const frames = _getHEFrames();
   const mat = new THREE.SpriteMaterial({ map: frames[0] && frames[0].tex, color: 0xffffff, transparent: true,
     opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
   const s = new THREE.Sprite(mat);
-  s.position.set(posGs[0], posGs[2] + 4, -posGs[1]);     // ≈ grenade center (CS spawns at origin.z−10)
-  s.scale.setScalar(160);
+  s.position.set(posGs[0], posGs[2], -posGs[1]);
+  s.scale.setScalar(base);
   scene.add(s);
-  _heExplosions.push({ sprite: s, age: 0, life: 0.6, frames });
+  _heExplosions.push({ sprite: s, age: 0, life: 0.6, frames, base });
 }
 function _updateHEExplosions(dt) {
   for (let i = _heExplosions.length - 1; i >= 0; i--) {
@@ -279,7 +302,8 @@ function _updateHEExplosions(dt) {
     const fi = Math.min(e.frames.length - 1, Math.floor(t * e.frames.length));
     const ref = e.frames[fi];
     if (ref && ref.tex) { e.sprite.material.map = ref.tex; e.sprite.material.needsUpdate = true; }
-    e.sprite.scale.setScalar(160 + 70 * t);             // slight expansion over the playback
+    const base = e.base || 160;
+    e.sprite.scale.setScalar(base + base * 0.44 * t);   // slight expansion over the playback
   }
 }
 
@@ -320,12 +344,17 @@ function _detonateFlash(g) {
 function _detonateSmoke(g) {
   if (typeof playSound === 'function')
     playSound('weapons/sg_explode.wav', { volume: Math.max(0.25, _distVolume(g.pos, 1)) });
-  // A cluster of soft billboards forming an expanding, slowly-drifting cloud.
+  // A cluster of soft billboards forming an expanding, slowly-drifting cloud — built from
+  // the original CS smoke puff sprite. Each puff is randomly rotated and slightly tinted so
+  // the irregular blobs don't read as identical stamps.
   const puffs = [];
-  const N = 14, tex = _getPuffTex();
+  const N = 18, tex = _getSmokeTex();
   for (let i = 0; i < N; i++) {
-    const mat = new THREE.SpriteMaterial({ map: tex, color: 0xbfc3c7, transparent: true,
+    const g = 0.72 + Math.random() * 0.12;               // subtle grey variation per puff
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true,
                                            opacity: 0, depthWrite: false, fog: true });
+    mat.color.setRGB(g, g, g * 1.02);
+    mat.rotation = Math.random() * Math.PI * 2;
     const s = new THREE.Sprite(mat);
     const ox = (Math.random() - 0.5), oy = (Math.random() - 0.5), oz = Math.random() * 0.6;
     s.userData.off = [ox, oy, oz];

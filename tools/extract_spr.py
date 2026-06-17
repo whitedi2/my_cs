@@ -91,7 +91,9 @@ out_dir     = str(Path(__file__).parent.parent / "sprites") + "/"
 for name in ["muzzleflash1.spr", "muzzleflash2.spr", "muzzleflash3.spr", "muzzleflash4.spr",
              # Bullet wall-impact dust puffs (CS): fast_wallpuff1 = the quick hit puff,
              # wall_puff1 = the slightly larger smoke variant.
-             "fast_wallpuff1.spr", "wall_puff1.spr"]:
+             "fast_wallpuff1.spr", "wall_puff1.spr",
+             # Smoke-grenade cloud puffs (CS smoke is built from these soft puff sprites).
+             "gas_puff_01.spr", "smokepuff.spr"]:
     extract_spr(os.path.join(sprites_src, name), out_dir)
 
 # Blood sprites live in the Half-Life base game (valve/), not cstrike/.

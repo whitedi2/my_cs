@@ -51,6 +51,8 @@ function startRound(skipRespawn) {
     WPNS.forEach(w => { if (w.type === 'gun' && ownedWeapons.has(w.id)) { w.ammo = w.maxAmmo; w.reserve = w._reserve0 ?? w.reserve; } });
   // Reset the practice dummies for the new round.
   if (typeof enemies !== 'undefined') enemies.forEach(e => { if (typeof _enemyRespawn === 'function') _enemyRespawn(e); });
+  // Refill HP (armor/helmet persist) and clear the dead state.
+  if (typeof resetPlayerHealth === 'function') resetPlayerHealth();
   // The T player carries the C4.
   carryingC4 = (playerTeam === 't');
   _banner('');
@@ -121,7 +123,8 @@ function _detonateBomb() {
   const pos = bomb.pos;
   if (typeof playSound === 'function') playSound('weapons/c4_explode1.wav', { volume: 1.0 });
   if (typeof _spawnHEExplosion === 'function') { _spawnHEExplosion(pos); _spawnHEExplosion([pos[0], pos[1], pos[2] + 40]); }
-  if (typeof enemyRadiusDamage === 'function') enemyRadiusDamage(pos, C4_DAMAGE, C4_RADIUS);
+  if (typeof enemyRadiusDamage === 'function')  enemyRadiusDamage(pos, C4_DAMAGE, C4_RADIUS);
+  if (typeof playerRadiusDamage === 'function') playerRadiusDamage(pos, C4_DAMAGE, C4_RADIUS);
   _clearBomb();
   endRound('t', 'Бомба взорвана — победа Террористов');
 }

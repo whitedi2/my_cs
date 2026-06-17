@@ -115,6 +115,10 @@ document.addEventListener('pointerlockchange', () => {
   document.getElementById('weapon-hud').style.display = isLocked ? 'block' : 'none';
   document.getElementById('target-hud').style.display = isLocked ? 'flex'  : 'none';
   document.getElementById('money').style.display      = isLocked ? 'block' : 'none';
+  if (!isLocked) {                                     // pause: drop the HP HUD + damage overlay
+    document.getElementById('player-status').style.display = 'none';
+    document.getElementById('hurt-overlay').style.opacity  = '0';
+  }
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────
@@ -278,6 +282,7 @@ document.addEventListener('mousedown', e => {
   if (e.button === 0) lmbHeld = true;
   if (e.button === 2) rmbHeld = true;
   if (!isLocked) return;
+  if (typeof playerDead !== 'undefined' && playerDead) return;   // no acting while dead
   const wpn = curW();
   // Knife: gated by meleeCooldown (CS rate); held-repeat handled in updateWeapon.
   if (wpn.type === 'melee') {
@@ -360,17 +365,18 @@ function animate(t) {
   }
 
   if (isLocked && gsPos && !gameLoading) {
-    if (!teamStage) {              // frozen while choosing team/class
+    if (!teamStage && !playerDead) {   // frozen while choosing team/class or dead
       playerMove(dt);
       if (typeof updateMovementSounds === 'function') updateMovementSounds(dt);
       updateWeapon(dt);
     } else {
-      syncCameraToPlayer();        // keep the frozen view at the spawn, not at (0,0,0)
+      syncCameraToPlayer();        // keep the frozen view at the spawn / death spot
     }
     updatePlayerModel(dt);
     if (typeof updatePickups === 'function') updatePickups(dt);   // dropped-weapon physics + pickup
     if (typeof updateGrenades === 'function') updateGrenades(dt); // thrown nades: physics + detonation
     updateEnemy(dt);
+    if (typeof netUpdate === 'function') netUpdate(dt);       // multiplayer: send/recv + remote players
     if (typeof updateRound === 'function') updateRound(dt);   // match flow + C4 bomb
     updateHUD();
     if (typeof updateBuyHUD === 'function') updateBuyHUD();

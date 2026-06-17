@@ -107,6 +107,12 @@ let xhairMoveGap = 0;        // crosshair expansion from MOVEMENT (px): gated by
 let prevVelZ   = 0;          // z-velocity from previous frame (for landing detection)
 let gHullHeadStand, gHullHeadDuck;
 
+// Fall damage (CS player.h): no hurt below 500 u/s, fatal (100 dmg) at 1100 u/s,
+// linear between. DMG_FALL bypasses armor. dmg = (fallspeed − 500) · 100/(1100−500).
+const FALL_SAFE_SPEED       = 500.0;
+const FALL_FATAL_SPEED      = 1100.0;
+const FALL_DAMAGE_PER_SPEED = 100.0 / (FALL_FATAL_SPEED - FALL_SAFE_SPEED);
+
 const SV = CONFIG;
 
 function initPhysics(hull) {
@@ -152,6 +158,7 @@ function respawn() {
   vel = [0, 0, 0];
   onGround = false;
   wasJump  = false;
+  prevVelZ = 0;            // clear fall-velocity so respawning doesn't re-trigger fall damage
   duckAmount = 0;
   phyDucked  = false;
   duckViewOfs = 0;
@@ -292,6 +299,13 @@ function playerMove(dt) {
       punchRoll = rAngle * (Math.random() < 0.5 ? 1 : -1);
     }
   }
+  // Fall damage (CS: CHalfLifeMultiplay::FlPlayerFallDamage). Any landing — crouched or
+  // not — hurts when the touchdown speed clears the safe threshold; armor doesn't help.
+  if (!wasGround && onGround) {
+    const fallVel = -prevVelZ;                 // = m_flFallVelocity (-velocity.z at impact)
+    if (fallVel > FALL_SAFE_SPEED && typeof playerTakeDamage === 'function')
+      playerTakeDamage((fallVel - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED, { covered: false });
+  }
   prevVelZ = vel[2];
 
   // ── Speed / wish dir ──────────────────────────────────────────────────
@@ -424,14 +438,19 @@ function playerMove(dt) {
   punchRoll *= Math.exp(-dt * 4);
   if (Math.abs(punchRoll) < 0.0006) punchRoll = 0;
 
-  // ── Gun recoil — CS-style decay ──────────────────────────────────────────
-  // While actively firing, decay slowly so per-shot kicks ACCUMULATE into the
-  // spray pattern (vertical climb + horizontal sweep). Once fire stops, recover
-  // quickly back to centre.
+  // ── Gun recoil decay — engine V_DropPunchAngle (HLSDK cl_dll/view.cpp) ─────
+  // Shrinks the punch-angle VECTOR's magnitude every frame: len -= (10 + len·0.5)·dt,
+  // direction preserved. The 10°/s term is degrees in the engine → 10·D in our radians.
+  // Per-shot KickBack adds faster than this drains during a burst (so the spray climbs and
+  // saturates at the weapon's cap); once firing stops it recenters in ~0.4 s, just like CS.
   lastShotAge += dt;
-  const _recoilDecay = Math.exp(-dt * (lastShotAge < 0.13 ? 1.6 : 12));
-  recoilPitch *= _recoilDecay;
-  recoilYaw   *= _recoilDecay;
+  const _punchLen = Math.hypot(recoilPitch, recoilYaw);
+  if (_punchLen > 1e-6) {
+    const _newLen = Math.max(0, _punchLen - (10 * Math.PI / 180 + _punchLen * 0.5) * dt);
+    const _s = _newLen / _punchLen;
+    recoilPitch *= _s;
+    recoilYaw   *= _s;
+  }
   if (Math.abs(recoilPitch) < 0.0005) recoilPitch = 0;
   if (Math.abs(recoilYaw)   < 0.0005) recoilYaw   = 0;
 
