@@ -30,3 +30,8 @@ const CONFIG = {
   dynamicCrosshair: false, // cl_dynamiccrosshair: расширение от ДВИЖЕНИЯ (от стрельбы — всегда)
 
 };
+
+// Dual-mode: in the browser this loads as a classic script (CONFIG is a global);
+// in Node (server / headless sim tests) sim-core.js requires it as the source of
+// truth for the physics constants. Guarded so the browser never sees `module`.
+if (typeof module !== 'undefined' && module.exports) module.exports = CONFIG;

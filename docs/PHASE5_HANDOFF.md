@@ -18,7 +18,11 @@
 
 ## Порядок работ (WebRTC — последним: это транспорт, не логика)
 
-- **A.** Вынести ядро `physics.js` в общий инстансируемый `sim-core.js` (`playerMove(state, cmd, dt)`).
+- **A.** ✅ ГОТОВО. Ядро вынесено в `src/sim-core.js` (детерминированное, состояние/халл передаются явно).
+  Headless-тест `tools/sim_test.js` (зелёный: падение→приземление, ходьба, прыжок). Подключён в `viewer.html`.
+- **B.** ✅ ГОТОВО. Авторитетный сервер (`server.js`) крутит `simPlayerMove` из usercmd, рассылает
+  снапшоты 20 Гц + `ack`. Клиент (`physics.js`+`net.js`): prediction локально + reconciliation (ресет
+  к авторитетному + переигрывание неподтверждённых cmd). Тесты: `tools/net_test.js`, `tools/net_smoke.js`.
 - **B.** Авторитетный тик на сервере из usercmd + prediction/reconciliation на клиенте — **поверх текущего
   WebSocket** (проверяемо в двух вкладках).
 - **C.** Интерполяция чужих игроков (рендер на ~100 мс в прошлом, буфер снапшотов).
@@ -39,30 +43,53 @@
     `netConnect()` в `game.js _chooseClass`.
 - **npm для сервера:** `package.json` + установлен `node-datachannel` (проверен на Node 23.11).
 
-## Следующий шаг = A: `sim-core.js`
+## A — что сделано (готово)
 
-Цель: клиент и сервер крутят **один и тот же** код движения. Сначала серверную часть + **headless-тест**
-(без риска для рабочей одиночки).
+`src/sim-core.js` — общий детерминированный движок движения (dual-mode: классический браузерный
+скрипт + `module.exports` для Node). Чистая математика, **состояние и халл передаются явно**:
+- `simMakeHull(json)` → объект халла (stand/duck heads + entity solid heads).
+- `simMakeState(pos)` → `{pos,vel,onGround,wasJump,duckAmount,phyDucked,prevVelZ}`.
+- `simTraceMove(hull, ducked, from, to)`, `simPointContents`, `simCategorize`.
+- `simPlayerMove(hull, st, cmd, dt, params)` — один тик. `cmd = {forwardMove,sideMove,jump,duck,
+  walk,yaw}` (usercmd), `params.wpnMax` — кап скорости оружия. Возвращает события
+  `{jumped, landed, fallVel}` — **side-effects (урон от падения, HP) делает вызывающий (сервер)**,
+  сам движок HP не трогает. Исключён клиентский хвост: камера/recoil/punch остались в `physics.js`.
+- `config.js` теперь dual-mode (`module.exports = CONFIG`) — единый источник констант для Node.
+- Подключён в `viewer.html` (между `physics.js` и `game.js`; имена с префиксом `sim*`/`SIM_` — без
+  коллизий с `physics.js`).
+- Тест: `node tools/sim_test.js` (падение→приземление без провала, ходьба двигает, прыжок взлетает/садится).
 
-Портировать из `src/physics.js` (чистая математика по массивам):
-- `pointContents` (~стр. 16), `_check` (~27), `traceMove` (~65);
-- `playerMove` + `accel`/`applyFriction`/`categorize`/`slideMove` + логика приседа.
-- **ИСКЛЮЧИТЬ** хвост камеры (`yawObj.position.set`, `smoothCamY`) — это клиентское.
-- Константы: `CONTENTS_SOLID=-2`, `DIST_EPS=0.03125`, `SV`/`CONFIG` (`config.js`: gravity 800, maxspeed,
-  accelerate, friction, stopspeed, jumpvel, eyestand/eyeduck, ducktime, stairSmoothing).
+## B — что сделано (готово)
 
-Рефактор: функции принимают **явный объект состояния** вместо модульных `let` (`gsPos,vel,onGround,
-duckAmount,phyDucked,…`), а халл **передаётся** (не глобали `gPlanes/gClipnodes/gHullHead*`).
+Авторитетный сервер + prediction/reconciliation поверх текущего WebSocket:
+- **`server.js` — авторитетный** (был relay). Держит `simMakeState` на игрока, принимает usercmd, крутит
+  `simPlayerMove`, рассылает `snap` 20 Гц + `ack` (последний обработанный seq). Мир-логика вынесена
+  в чистые экспорты (`createWorld/worldAddPlayer/worldRespawn/worldApplyCmd/worldSnapshot`); сеть
+  стартует только при `node server.js` (`require.main`). Грузит халл + `config.js` через require.
+- **`physics.js` переписан поверх sim-core**: `playerMove` строит usercmd из ввода, зовёт `simPlayerMove`
+  (одинаковый код с сервером), затем клиентский хвост (punch/recoil/камера). Одиночка идёт тем
+  же ядром (нет сервера → хуки net* — no-op). `simHull` строится в `initPhysics`.
+- **`net.js`:** шлёт usercmd (`netRecordCmd`), хранит кольцо `_pending`, на `snap` делает reconciliation
+  (`netReconcile`: ресет к `_authState` + переигрывание cmd с `seq>ack`), удалённых интерполирует.
+  `netHello` шлёт spawn-позу при join/респауне (из `respawn()`), чтобы сервер не тянул назад.
+- **Протокол:** клиент→сервер `{t:'hello',m,tm,p,y}` и `{t:'cmd',seq,dt,fm,sm,jp,dk,wk,y,ws}`;
+  сервер→клиент `{t:'welcome',id}`, `{t:'snap',ack,players:[{id,p,v,y,og,dk,da,wj,pz,m,tm}]}`, `{t:'leave',id}`.
+- **Тесты:** `node tools/net_test.js` (авторитет == standalone sim-core, stale/dup seq, формат
+  снапшота), `node tools/net_smoke.js` (реальный WS: хендшейк→welcome→hello→cmd→snap, ack растёт,
+  движение идёт). `npm test` гоняет все три.
 
-Халл: `maps/de_dust2_hull.json` — `clipnodes` = `[planeIdx, child1, child2]`, `planes` = `[a,b,c,d]`
-(плоскость `a*x+b*y+c*z - d`); есть stand hull1 + duck hull3, спауны, `buyZones`, `bombsites`. Разбор и
-выбор hull-head см. в `initPhysics` (`physics.js`).
+**Осталось/упрощено (см. DIFFERENCES):** HP/урон от падения пока клиентские; `wpnMax` (кап скорости)
+клиент шлёт в cmd (сервер доверяет); cmd шлётся каждый кадр (не батчится). Стрельба по игрокам — шаг D.
 
-**Dual-mode `sim-core.js`:** классический браузерный скрипт (объявляет глобали) + в конце
-`if (typeof module !== 'undefined') module.exports = { … }` для `require` на сервере.
+## Следующий шаг = C: интерполяция чужих (рендер на ~100 мс в прошлом)
 
-**Headless-тест:** загрузить халл JSON, прогнать игрока несколько тиков (шаг вперёд, падение на пол),
-проверить коллизию/приземление.
+Сейчас удалённые игроки лерпятся к последнему снапшоту (`_updateRemote`, `k=dt*14`) — работает, но при
+потерях/джиттере дёргает. Надо: буфер снапшотов с таймштампами, рендер остальных игроков
+на ~100 мс в прошлом (интерполяция между двумя окружающими снапшотами), extrapolation на короткие
+пробелы. Потом шаг D (серверный хитрег + lag compensation) и E (WebRTC).
+
+Халл/спауны: `maps/de_dust2_hull.json` (`clipnodes=[planeIdx,c1,c2]`, `planes=[a,b,c,d]`; stand hull1 +
+duck hull3, спауны, `buyzones`, `bombsites`).
 
 ## На другом компьютере (важно)
 
@@ -73,7 +100,7 @@ duckAmount,phyDucked,…`), а халл **передаётся** (не глоб�
 - `node-datachannel` проверялся на **Node 23.11** (готовый бинарник). Если на новой машине другая версия
   Node — заново прогнать loopback-тест DataChannel; если пребилда нет, может потребоваться сборка
   (cmake/VS Build Tools) либо переход на чистый JS-вариант (`werift`).
-- Запуск: `python serve.py` (статика :8080) + `node server.js` (relay :8081), `viewer.html` в двух вкладках.
+- Запуск: `python serve.py` (статика :8080) + `node server.js` (авторитетный :8081), `viewer.html` в двух вкладках.
 
 ## Подводный камень №1 — координаты
 

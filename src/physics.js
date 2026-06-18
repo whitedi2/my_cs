@@ -106,6 +106,8 @@ let xhairGap     = 0;        // crosshair expansion from FIRING (px): always sho
 let xhairMoveGap = 0;        // crosshair expansion from MOVEMENT (px): gated by cl_dynamiccrosshair
 let prevVelZ   = 0;          // z-velocity from previous frame (for landing detection)
 let gHullHeadStand, gHullHeadDuck;
+let simHull = null;          // sim-core hull wrapper (shared movement core) — built in initPhysics
+let localSt = null;          // reusable sim-core state object for the local player
 
 // Fall damage (CS player.h): no hurt below 500 u/s, fatal (100 dmg) at 1100 u/s,
 // linear between. DMG_FALL bypasses armor. dmg = (fallspeed − 500) · 100/(1100−500).
@@ -123,6 +125,9 @@ function initPhysics(hull) {
   gHullHead          = gHullHeadStand;
   gEntitySolidHeads     = hull.solid_heads      || [];
   gEntitySolidHeadsDuck = hull.solid_heads_duck || gEntitySolidHeads;
+  // Shared deterministic core (sim-core.js) drives local prediction; same wrapper the
+  // server builds. Built once here from the loaded hull JSON.
+  if (typeof simMakeHull === 'function') simHull = simMakeHull(hull);
 
   // All spawn points from the BSP (origin + real yaw from "angles").
   spawnPoints.ct = (hull.spawns && hull.spawns.ct) || [];
@@ -170,6 +175,9 @@ function respawn() {
   // At map-load init this is silent (audio context isn't up yet, so playSound no-ops);
   // it fires on the real spawns: team select (setTeam) and the restart button.
   if (typeof playSound === 'function') playSound('items/gunpickup2.wav', { volume: 0.8 });
+  // Multiplayer: a (re)spawn teleports us — resync the authoritative server to the new
+  // pose so it doesn't reconcile us back to the old spot. No-op solo / before connect.
+  if (typeof netHello === 'function') netHello();
 }
 
 // Switch team and respawn at that team's points (called by the team-select menu).
@@ -246,180 +254,63 @@ function slideMove(dt) {
 }
 
 function playerMove(dt) {
-  // ── Duck transition ────────────────────────────────────────────────────
-  const wantDuck = keys['ControlLeft'] || keys['ControlRight'];
-  if (wantDuck) duckAmount = Math.min(1, duckAmount + dt / SV.ducktime);
-  else          duckAmount = Math.max(0, duckAmount - dt / SV.uncrouchtime);
+  // ── Build this frame's usercmd from input ──────────────────────────────
+  // Same input mapping as before, expressed as a usercmd so the shared
+  // deterministic core (sim-core.js) drives both this local prediction AND the
+  // authoritative server. The client-only tail (view punch, recoil, camera) is below.
+  const wantDuck  = keys['ControlLeft'] || keys['ControlRight'];
+  const walk      = keys['ShiftLeft'] || keys['ShiftRight'];
+  const arrowMove = !thirdPerson;   // 3rd-person arrows orbit the camera, not move
+  let fm = 0, sm = 0;
+  if (keys['KeyW'] || (arrowMove && keys['ArrowUp']))    fm += 1;
+  if (keys['KeyS'] || (arrowMove && keys['ArrowDown']))  fm -= 1;
+  if (keys['KeyD'] || (arrowMove && keys['ArrowRight'])) sm += 1;
+  if (keys['KeyA'] || (arrowMove && keys['ArrowLeft']))  sm -= 1;
+  let wpnMax = (typeof curW === 'function' && curW().maxSpeed) || SV.maxspeed;
+  if (typeof isScoped === 'function' && isScoped()) wpnMax = curW().zoomSpeed || wpnMax;
+  const cmd = { forwardMove: fm, sideMove: sm, jump: !!keys['Space'],
+                duck: !!wantDuck, walk: !!walk, yaw };
 
-  // ── Duck hull state ────────────────────────────────────────────────────
-  // phyDucked: duck hull (hull3) active for all collision.
-  // Duck hull bottom = gsPos-18 (vs stand hull gsPos-36): contacts floor 18 units sooner,
-  // so the player can fly over / land on boxes that stand hull would collide with.
-  // hull1 and hull3 share the same ±16 horizontal planes, so wall detection is identical.
-  if (!onGround && wantDuck) phyDucked = true;
-  if (!onGround && !wantDuck) phyDucked = false;   // release duck in air → stand hull
+  // Multiplayer: fold in any pending server correction (reset to the authoritative
+  // state + replay still-unacked cmds) BEFORE predicting this frame. No-op solo.
+  if (typeof netReconcile === 'function') netReconcile();
 
-  // Hull for categorize: duck when phyDucked, else stand
-  gHullHead = phyDucked ? gHullHeadDuck : gHullHeadStand;
+  // ── Run the shared movement core on our local state ────────────────────
+  // Pack the module globals into the explicit state object, tick, unpack back.
+  if (!localSt) localSt = simMakeState(gsPos);
+  localSt.pos = gsPos;             localSt.vel = vel;
+  localSt.onGround = onGround;     localSt.wasJump = wasJump;
+  localSt.duckAmount = duckAmount; localSt.phyDucked = phyDucked;
+  localSt.prevVelZ = prevVelZ;
 
-  // ── Categorize ground ─────────────────────────────────────────────────
-  const wasGround = onGround;
-  categorize();
+  const ev = simPlayerMove(simHull, localSt, cmd, dt, { wpnMax });
 
-  // ── Stand up when ctrl released on ground ─────────────────────────────
-  // When phyDucked on ground: gsPos is at duck-hull landing position (floor+18).
-  // Stand hull top would be at gsPos+55 (new origin +19, hull +36).  Duck hull top
-  // is at gsPos+18 — so we need 37 units of upward clearance checked with duck hull.
-  // Shift by 19 (18 + 1 epsilon) so stand hull bottom lands at floor+1, not floor,
-  // avoiding startsolid on BSP polygon boundaries.
-  if (phyDucked && onGround && !wantDuck) {
-    const trUp = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2] + 37]);
-    if (trUp.fraction >= 1.0) {
-      gsPos[2] += 19;
-      phyDucked = false;
-      gHullHead = gHullHeadStand;
-      duckViewOfs = 0;   // snap: the +19 teleport already accounts for the offset
-    }
-    // else: ceiling too low, stay phyDucked
-  }
+  gsPos = localSt.pos;             vel = localSt.vel;
+  onGround = localSt.onGround;     wasJump = localSt.wasJump;
+  duckAmount = localSt.duckAmount; phyDucked = localSt.phyDucked;
+  prevVelZ = localSt.prevVelZ;
+  // The +19 stand-up teleport already accounts for the crouch view offset — snap it
+  // so the camera doesn't dip (sim-core reports the teleport via ev.stoodUp).
+  if (ev.stoodUp) duckViewOfs = 0;
 
-  // Landing view punch: only kicks when the impact is harder than a normal jump
-  // (dropping off a box, down a slope, a big fall). A normal jump lands too soft
-  // to register; the kick scales with how much the fall exceeds jump speed.
-  // Crouch absorbs part of it but a visible shift remains.
-  // Crouch-landing settle: only when you held crouch through the jump and land
-  // ducked. A normal jump produces nothing. Pure ROLL (tilt to one side) — the
-  // view never dips vertically, as in the original. Spring peak ≈ punchVel × 0.05.
-  if (!wasGround && onGround && duckAmount > 0.5) {
-    const impact = -prevVelZ;                  // downward speed at touchdown
+  // Multiplayer: buffer this cmd for reconciliation + send it to the server. Solo no-op.
+  if (typeof netRecordCmd === 'function') netRecordCmd(cmd, dt, wpnMax);
+
+  // ── Client-only landing side effects (from the core's reported event) ──
+  // Crouch-landing settle: pure ROLL (tilt to one side) when you held crouch through
+  // the jump and land ducked. A normal jump is too soft to register.
+  if (ev.landed && duckAmount > 0.5) {
+    const impact = ev.fallVel;                 // downward speed at touchdown
     const soft   = SV.jumpvel - 95;            // ~150
     if (impact > soft) {
-      // Snap the roll angle on instantly (the jolt); it then levels out smoothly.
-      const rAngle = Math.min((impact - soft) * 0.0006, 0.12);     // radians (~3–7°)
+      const rAngle = Math.min((impact - soft) * 0.0006, 0.12);   // radians (~3–7°)
       punchRoll = rAngle * (Math.random() < 0.5 ? 1 : -1);
     }
   }
-  // Fall damage (CS: CHalfLifeMultiplay::FlPlayerFallDamage). Any landing — crouched or
-  // not — hurts when the touchdown speed clears the safe threshold; armor doesn't help.
-  if (!wasGround && onGround) {
-    const fallVel = -prevVelZ;                 // = m_flFallVelocity (-velocity.z at impact)
-    if (fallVel > FALL_SAFE_SPEED && typeof playerTakeDamage === 'function')
-      playerTakeDamage((fallVel - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED, { covered: false });
-  }
-  prevVelZ = vel[2];
-
-  // ── Speed / wish dir ──────────────────────────────────────────────────
-  // The active weapon caps run speed (CS 1.6 m_flMaxSpeed): heavier guns are
-  // slower, and scoping (AWP) drops it further. Walk/crouch scale proportionally
-  // with the weapon, as in the original (they're fractions of the run cap).
-  const walk   = keys['ShiftLeft'] || keys['ShiftRight'];
-  let wpnMax = (typeof curW === 'function' && curW().maxSpeed) || SV.maxspeed;
-  if (typeof isScoped === 'function' && isScoped()) wpnMax = curW().zoomSpeed || wpnMax;
-  const sScale = wpnMax / SV.maxspeed;
-  const maxSpd = walk ? SV.walkspeed * sScale
-               : duckAmount > 0.1 ? SV.crouchspeed * sScale
-               : wpnMax;
-
-  const fwdX = -Math.sin(yaw), fwdY = Math.cos(yaw);
-  const rgtX =  Math.cos(yaw), rgtY = Math.sin(yaw);
-  let wx = 0, wy = 0;
-  // In third-person the arrow keys orbit the camera, so they must not also move.
-  const arrowMove = !thirdPerson;
-  if (keys['KeyW'] || (arrowMove && keys['ArrowUp']))    { wx += fwdX; wy += fwdY; }
-  if (keys['KeyS'] || (arrowMove && keys['ArrowDown']))  { wx -= fwdX; wy -= fwdY; }
-  if (keys['KeyA'] || (arrowMove && keys['ArrowLeft']))  { wx -= rgtX; wy -= rgtY; }
-  if (keys['KeyD'] || (arrowMove && keys['ArrowRight'])) { wx += rgtX; wy += rgtY; }
-  const wlen = Math.hypot(wx, wy);
-  const wSpd = Math.min(wlen, 1) * maxSpd;
-  const wDir = wlen > 0 ? [wx/wlen, wy/wlen, 0] : [0, 0, 0];
-
-  // ── Ground / air logic ────────────────────────────────────────────────
-  if (onGround) {
-    vel[2] = 0;
-    applyFriction(dt);
-    accel(wDir, wSpd, SV.accelerate, dt);
-
-    const jumpKey = keys['Space'];
-    if (jumpKey && !wasJump) {
-      // Crouch-jump (as in CS 1.6): you can jump from any duck state. If physically
-      // in the duck hull (landed crouched), stand up first when there's headroom;
-      // a standing-but-crouched player jumps directly, then ducks in air for height.
-      if (phyDucked) {
-        const trUp = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2] + 37]);
-        if (trUp.fraction >= 1.0) {
-          gsPos[2] += 19;
-          phyDucked = false;
-          gHullHead = gHullHeadStand;
-          duckViewOfs = 0;   // snap: the +19 teleport already accounts for the offset
-        }
-        // else: ceiling too low, jump blocked
-      }
-      if (!phyDucked) {
-        // Bunnyhop protection (two tiers):
-        //  1) per-jump speed tax — any jump above ~70% of run speed scrubs a bit
-        //     of horizontal speed, so you can't keep full speed by jumping (the
-        //     HUD speed drops right after each jump). Discourages bhop.
-        //  2) hard mega-cap — speed past 1.4×maxspeed is scaled way down
-        //     (GoldSrc PM_PreventMegaBunnyJumping; original value is 1.7×).
-        const maxScaled = 1.4 * SV.maxspeed;
-        const spd = Math.hypot(vel[0], vel[1]);
-        if (spd > maxScaled) {
-          const f = (maxScaled / spd) * 0.65;
-          vel[0] *= f; vel[1] *= f;
-        } else if (spd > SV.maxspeed * 0.7) {
-          vel[0] *= 0.8; vel[1] *= 0.8;          // ~20% tax per jump from a run
-        }
-        vel[2]   = SV.jumpvel;
-        onGround = false;
-      }
-    }
-    wasJump = jumpKey;
-
-  } else {
-    vel[2] -= SV.gravity * 0.5 * dt;        // first half-gravity (GoldSrc)
-    accel(wDir, Math.min(wSpd, 30), SV.airaccel, dt);
-    wasJump = true;
-  }
-
-  // ── Move ─────────────────────────────────────────────────────────────
-  // phyDucked: duck hull for all movement.
-  //   - In air: duck hull bottom = gsPos-18 (vs gsPos-36), so player can fly over
-  //     boxes that stand hull would collide with.
-  //   - On ground: duck hull required because gsPos is at floor+18; stand hull bottom
-  //     (gsPos-36) would be inside the floor → startsolid → no movement.
-  // No phyDucked: stand hull everywhere (committed baseline, no fall-through).
-  gHullHead = phyDucked ? gHullHeadDuck : gHullHeadStand;
-  const savedPos = [...gsPos], savedVel = [...vel];
-  slideMove(dt);
-  if (!onGround) vel[2] -= SV.gravity * 0.5 * dt;   // second half-gravity
-
-  // Step-up: blocked horizontally on ground → climb stair
-  const movedH = Math.hypot(gsPos[0]-savedPos[0], gsPos[1]-savedPos[1]);
-  const wantH  = Math.hypot(savedVel[0]*dt, savedVel[1]*dt);
-  if (onGround && wantH > 0.1) {
-    const noStepPos = [...gsPos], noStepVel = [...vel];
-    gsPos = [...savedPos]; vel = [...savedVel];
-    const up = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2]+SV.stepsize]);
-    gsPos = [...up.end];
-    slideMove(dt);
-    const dn = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2]-SV.stepsize*2]);
-    if (dn.fraction < 1 && dn.plane && dn.plane[2] > 0.7) {
-      const stepMovedH = Math.hypot(dn.end[0]-savedPos[0], dn.end[1]-savedPos[1]);
-      if (stepMovedH > movedH) {
-        gsPos = [...dn.end];              // step moved farther — use it
-      } else {
-        gsPos = noStepPos; vel = noStepVel;   // step didn't help (e.g. wall) — revert
-      }
-    } else {
-      gsPos = noStepPos; vel = noStepVel;
-    }
-  }
-
-  // Step-down: stick to terrain going downhill
-  if (onGround && vel[2] <= 0) {
-    const dn = traceMove(gsPos, [gsPos[0], gsPos[1], gsPos[2]-SV.stepsize]);
-    if (dn.fraction < 1 && dn.plane && dn.plane[2] > 0.7) gsPos = [...dn.end];
-  }
+  // Fall damage (CS FlPlayerFallDamage): any landing over the safe threshold hurts;
+  // armor doesn't help. (HP stays client-side until server-side hit-reg, step D.)
+  if (ev.landed && ev.fallVel > FALL_SAFE_SPEED && typeof playerTakeDamage === 'function')
+    playerTakeDamage((ev.fallVel - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED, { covered: false });
 
   // ── View punch spring (landing kick) ──────────────────────────────────
   // Implicit Euler — unconditionally stable at any dt (explicit blows up at dt≥0.05)

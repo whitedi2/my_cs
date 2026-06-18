@@ -126,8 +126,17 @@ function _placeEnemy(inst, i) {
   // space (bmin/bmax); we compose its world matrix from the live bone transform so it
   // follows the animated pose. Standard body hitgroups 1–7 only (see header note).
   inst.root.updateMatrixWorld(true);
+  _buildInstanceHitboxes(inst);
+  _updateHitboxes(inst, inst.bindWorld);   // initial boxes (idle bind pose)
+  inst.health = ENEMY_HEALTH; inst.armor = ENEMY_ARMOR;
+}
+
+// Build the per-bone OBB hitbox list (inst.hboxes) from inst.hitboxData, plus the
+// debug wireframes. Shared by the static dummies (_placeEnemy) and the networked
+// remote players (net.js _buildRemote) so the hit model stays identical.
+function _buildInstanceHitboxes(inst) {
   inst.hboxes = [];
-  for (const h of inst.hitboxData) {
+  for (const h of (inst.hitboxData || [])) {
     if (h.group < 1 || h.group > 7) continue;     // skip non-standard oversized boxes
     const cx = (h.bmin[0] + h.bmax[0]) / 2, cy = (h.bmin[1] + h.bmax[1]) / 2, cz = (h.bmin[2] + h.bmax[2]) / 2;
     inst.hboxes.push({
@@ -137,9 +146,7 @@ function _placeEnemy(inst, i) {
       M: new THREE.Matrix4(),
     });
   }
-  _updateHitboxes(inst, inst.bindWorld);   // initial boxes (idle bind pose)
   _buildHitboxDebug(inst);
-  inst.health = ENEMY_HEALTH; inst.armor = ENEMY_ARMOR;
 }
 
 // GoldSrc (x,y,z Z-up) → three (x, z, −y) axis swap as a matrix, and the bone→world
@@ -198,6 +205,9 @@ function _buildHitboxDebug(inst) {
 function setHitboxDebug(on) {
   for (const inst of enemies)
     if (inst.debugMeshes) for (const m of inst.debugMeshes) m.visible = on;
+  if (typeof remotePlayers !== 'undefined')
+    for (const inst of remotePlayers.values())
+      if (inst.debugMeshes) for (const m of inst.debugMeshes) m.visible = on;
 }
 
 // Ray vs oriented box: transform the ray into the box's local space (M⁻¹), then a
@@ -424,21 +434,62 @@ function enemyTryShoot(maxDist, opts) {
     }
     if (hg >= 0 && best <= maxDist && best <= wallDist + 1) {
       const pt = _enemyFrom.clone().addScaledVector(_enemyDir, best);
-      hits.push({ inst, hg, dist: best, point: pt });
+      hits.push({ inst, kind: 'enemy', hg, dist: best, point: pt });
+    }
+  }
+  // Networked remote players use the SAME per-bone OBB hitboxes (built by net.js).
+  if (typeof remotePlayers !== 'undefined') {
+    for (const inst of remotePlayers.values()) {
+      if (!inst.ready || !inst.root || !inst.hboxes) continue;
+      let best = Infinity, hg = -1;
+      for (const h of inst.hboxes) {
+        const t = _rayOBB(_enemyFrom, _enemyDir, h);
+        if (t < best) { best = t; hg = h.hg; }
+      }
+      if (hg >= 0 && best <= maxDist && best <= wallDist + 1) {
+        const pt = _enemyFrom.clone().addScaledVector(_enemyDir, best);
+        hits.push({ inst, kind: 'remote', hg, dist: best, point: pt });
+      }
     }
   }
   if (!hits.length) return false;
   hits.sort((a, b) => a.dist - b.dist);
 
+  const apply = (h, penMult) => (h.kind === 'remote')
+    ? _remoteDamage(h.inst, opts, h.hg, h.dist, h.point, penMult)
+    : _enemyDamage(h.inst, opts, h.hg, h.dist, h.point, penMult);
+
   if (opts.melee) {                                     // knife: nearest only
-    const h = hits[0];
-    _enemyDamage(h.inst, opts, h.hg, h.dist, h.point, 1);
+    apply(hits[0], 1);
     return true;
   }
   let penMult = 1;                                      // bullet: pierce in order
   for (const h of hits) {
-    _enemyDamage(h.inst, opts, h.hg, h.dist, h.point, penMult);
+    apply(h, penMult);
     penMult *= PEN_MULT;
   }
   return true;
+}
+
+// Damage on a networked remote player. HP/armor live on the VICTIM's client, so we
+// only compute the pre-armor damage (weapon × falloff × penetration × hitgroup) and
+// route it to the server (which forwards it to the victim, who applies kevlar). Local
+// feedback — blood + the victim-hit sound — fires here so the shooter sees the hit.
+function _remoteDamage(inst, opts, hg, dist, point, penMult) {
+  let dmg = opts.damage ?? 0;
+  if (opts.melee) {
+    if (inst.yaw != null) {                            // backstab: aim aligned with target's facing
+      const pfx = -Math.sin(yaw), pfy = Math.cos(yaw);
+      const tfx = -Math.sin(inst.yaw), tfy = Math.cos(inst.yaw);
+      if (pfx * tfx + pfy * tfy > 0.8) dmg *= (opts.backstabMult ?? 3);
+    }
+  } else {
+    dmg *= Math.pow(opts.rangeMod ?? 0.98, dist / 500); // distance falloff
+    dmg *= penMult;                                     // power lost piercing earlier bodies
+  }
+  dmg *= (_HG_MULT[hg] ?? 1);
+  dmg = Math.max(0, Math.round(dmg));
+  if (!opts.melee && typeof playVictimHit === 'function') playVictimHit(hg, false, false, dist);
+  if (typeof _spawnBlood === 'function') _spawnBlood(point, _enemyDir, dmg, hg);
+  if (dmg > 0 && typeof netSendHit === 'function') netSendHit(inst.id, hg, dmg);
 }

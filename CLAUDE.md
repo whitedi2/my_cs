@@ -11,11 +11,14 @@ python serve.py          # поднимает http://localhost:8080/viewer.html 
 node server.js           # (опц.) мультиплеер-relay на ws://localhost:8081 — отдельный процесс
 ```
 
-Мультиплеер (Фаза 5, шаг 1 — синхронизация движения): запусти `node server.js`, открой
+Мультиплеер (Фаза 5, шаг B — **авторитетный сервер**): запусти `node server.js`, открой
 `viewer.html` в двух вкладках/машинах, в каждой выбери команду — увидишь, как другой игрок бегает
-(модель/анимация/направление). Это **relay** (клиенты шлют своё состояние, сервер раздаёт), без
-серверной физики и хитрега — стрельбы по другим игрокам пока нет. Без `node server.js` игра молча
-работает в одиночку. `server.js` — zero-deps (свой WebSocket на `http`+`crypto`).
+(модель/анимация/направление). Сервер крутит физику (`simPlayerMove`) из usercmd клиентов и рассылает
+авторитетные снапшоты; клиент делает prediction локально + reconciliation своего состояния по `ack`,
+удалённых интерполирует. Удалённые игроки рендерятся как наша третьеличная модель (оружие в руке,
+затемнение по свету карты, хитбоксы); попадания по ним считает стрелок и шлёт серверу, тот пересылает
+жертве (HP/броня пока на стороне жертвы — серверный хитрег это шаг D). Без `node server.js` игра молча
+работает в одиночку (хуки `net*` — no-op). `server.js` — zero-deps рантайм (свой WebSocket на `http`+`crypto`).
 
 Нужен HTTP-сервер (не `file://`) — иначе не загрузятся `.json`/ассеты и ES-модуль Three.js.
 Three.js тянется с CDN через `<script type="importmap">` в `viewer.html` — **нужен интернет**.
@@ -50,11 +53,12 @@ Runtime разбит по файлам (порядок загрузки = пор
 | `src/player.js` | модель игрока от 3-го лица (CT `gign`, `PLAYER_MODEL`): двухслойная анимация (ноги=походка, верх=прицел/стрельба/перезарядка по оружию), оружие в руке, чейз-камера с орбитой | `updatePlayerModel`, `_skinRig`, `_updateWeaponAttachment`, `_resolveUpperPose`/`_aimPose`/`_clipPose`, `updateChaseCamera`, `updateOrbit`, `toggleThirdPerson`, `thirdPerson` |
 | `src/hud.js` | прицел и HUD | `drawCrosshair`, `updateHUD` |
 | `src/physics.js` | BSP-трасса + физика игрока; точки спауна/угол, зоны закупки, выбор команды | `pointContents`, `traceMove`, `playerMove`, `slideMove`, `categorize`, `accel`, `applyFriction`, `initPhysics`, `pickSpawn`, `respawn`, `setTeam`, `spawnPoints`, `buyZones` |
+| `src/sim-core.js` | **детерминированное ядро движения** (Фаза 5, shared клиент↔сервер): чистая математика, состояние и BSP-халл передаются явно — без модульных глобалей. Dual-mode: классический браузерный скрипт + `module.exports` для `require` в Node. Камера/recoil/punch остались в `physics.js` | `simMakeHull`, `simMakeState`, `simPlayerMove(hull,st,cmd,dt,params)`, `simTraceMove`, `simCategorize`, `simPointContents` |
 | `src/game.js` | состояние матча: команда/класс-меню, деньги, владение оружием, закупка, гранаты-счётчики (после physics/weapons/player) | `BUY_CATALOG`, `CLASSES`, `buyItem`, `inBuyZone`, `openBuyMenu`/`buyMenuKey`, `openTeamMenu`/`teamMenuKey`, `ownedWeapons`, `grenadeCounts`, `afterGrenadeThrow`, `playerMoney`, `updateBuyHUD` |
 | `src/grenades.js` | гранаты (HE/флеш/дым): бросок, физика снаряда (`w_*` + отскок по BSP), запал, детонация (радиус-урон / слепота / дым), эффекты (после game) | `throwGrenade`, `updateGrenades`, `_moveGrenade`, `_detonateHE`/`_detonateFlash`/`_detonateSmoke`, `_updateBlind`, `_updateSmokes`, `clearGrenades`, `GRENADE_DEFS` |
 | `src/rounds.js` | поток матча (закупка→лайв→конец→рестарт) + цель-бомба C4: плант/дефьюз/взрыв (бомбсайты из BSP), таймеры, деньги, HUD раунда (после grenades/enemy/game) | `startMatch`, `startRound`, `endRound`, `updateRound`, `buyTimeOpen`, `_plantBomb`/`_detonateBomb`, `roundPhase` |
 | `src/pickups.js` | дроп (G) и подбор оружия: мировая `p_*`-модель падает на пол, подбор по близости со звуками оригинала (после game.js) | `dropWeapon`, `updatePickups`, `_spawnPickup`, `_buildDropModel`, `DROP_SOUND`/`PICKUP_SOUND` |
-| `src/net.js` | мультиплеер (Фаза 5): WebSocket-клиент к `server.js`, шлёт свой снапшот ~20 Гц и рендерит удалённых игроков тем же ригом (`_buildRig`/`_skinRig`/`computeBoneWorlds`). Relay, без серверной физики/хитрега. Нет relay → тихо остаётся одиночка (после player/weapons) | `netConnect`, `netUpdate`, `remotePlayers`, `_onRemoteState`, `_buildRemote` |
+| `src/net.js` | мультиплеер (Фаза 5, шаг B): WebSocket-клиент к авторитетному `server.js`. Шлёт usercmd (`netRecordCmd`, + id оружия), хранит кольцо неподтверждённых cmd, на снапшоте делает reconciliation (`netReconcile`: ресет к серверному состоянию + переигрывание cmd с `seq>ack`), удалённых игроков рендерит тем же третьеличным конвейером, что свою модель: риг (`_buildRig`/`_skinRig`/`computeBoneWorlds`) + оружие в руке (`_updateRemoteWeapon`/`_gunWorldFromHost`, `p_<weapon>` по `e.w`) + затемнение по лайтмапе (`_updateRemoteLight`) + OBB-хитбоксы (из enemy.js). Попадания по чужим: рейкаст из `enemyTryShoot` → `netSendHit` → сервер пересылает жертве → `_onIncomingHit`→`playerTakeDamage`. Нет сервера → тихо одиночка (после player/weapons/enemy/sim-core) | `netConnect`, `netHello`, `netReconcile`, `netRecordCmd`, `netSendHit`, `remotePlayers`, `_onSnapshot`, `_updateRemote`, `_updateRemoteWeapon`, `_buildRemote` |
 | `src/load.js` | загрузка карты/ассетов (после physics, чтобы `initPhysics` была определена) | `objPromise`, `hullPromise`, `Promise.all(...).then(...)` |
 | `src/input.js` | pointer lock, настройки, мышь/клавиатура/оружие, **главный цикл** | `animate(t)`, `updateFOV`, обработчики ввода, `animate(0)` в конце |
 
@@ -74,7 +78,7 @@ Runtime разбит по файлам (порядок загрузки = пор
 viewer.html        оболочка: разметка, importmap, загрузчик src/*.js
 config.js          глобальный CONFIG (физика, мышь, дефолты настроек)
 serve.py           локальный сервер статики (python serve.py)
-server.js          мультиплеер-relay на WebSocket (node server.js, :8081, zero-deps) — отдельный процесс
+server.js          мультиплеер: **авторитетный** WebSocket-сервер (node server.js, :8081, zero-deps) — отдельный процесс. Крутит sim-core из usercmd, раздаёт снапшоты
 CLAUDE.md          этот файл
 src/               рантайм JS (классические скрипты, общий global scope)
 maps/              карта de_dust2 — самодостаточна:

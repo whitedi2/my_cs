@@ -4,7 +4,8 @@
   "private": true,
   "description": "Multiplayer relay/authoritative server for the CS 1.6 browser clone (Phase 5).",
   "scripts": {
-    "server": "node server.js"
+    "server": "node server.js",
+    "test": "node tools/sim_test.js && node tools/net_test.js && node tools/net_smoke.js"
   },
   "dependencies": {
     "node-datachannel": "^0.32.3"
