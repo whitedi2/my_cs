@@ -6,14 +6,16 @@
 const D = Math.PI / 180;
 const SHOT_RANGE = 8192;   // hitscan trace length (GoldSrc engine max) — far targets still register
 
-// Builds a standard auto-rifle entry (shared rig offsets + idle1/shoot1-3/reload/draw
+// Builds a standard auto-rifle entry (shared rig offsets + idle/shoot1-3/reload/draw
 // sequences). Stats (damage/rangeMod/fireInterval/clip/reload) come from CS/ReGameDLL.
+// These models (galil/famas/aug/sg552) name their idle sequence 'idle'; pass s.idle
+// to override for a model that uses a different name (e.g. ak47's 'idle1').
 function _autoRifle(id, label, s) {
   const fire = s.fire || ['shoot1', 'shoot2', 'shoot3'];
   return [{
     id, label,
     jsonFile: `models/v_${id}.json`,
-    idleSeq: s.idle || 'idle1', drawSeq: 'draw', reloadSeq: 'reload',
+    idleSeq: s.idle || 'idle', drawSeq: 'draw', reloadSeq: 'reload',
     fireSeq: fire[0], fireSeqsUnsil: fire,
     silencer: false, autofire: true,
     fireInterval: s.fireInterval, spread: s.spread,
@@ -544,6 +546,7 @@ function _beginDraw(idx) {
   wpn._reloadInterrupted = false;  // Очистить флаг прерывания при переключении на новое оружие
   wpn._silencerInterrupted = false;  // Очистить флаг глушителя при переключении
   wpn._bursting = false; wpn._burstLeft = 0;   // cancel any in-progress burst on draw
+  wpn._fireQueued = false;                     // drop any buffered semi-auto click
   if (wpn.anim) { wpn.anim._drawAnimDone = false; wpn.anim.curFrame = 0; }
   if (wpn.root) wpn.root.visible = true;
   // Guns play their deploy sound via an MDL event; the knife has none, so emit
@@ -893,8 +896,13 @@ function updateWeapon(dt) {
           wpn.ammo--; wpn._burstLeft--; wsT = 0; wsHit = false;
         } else if (lmbHeld && wpn.autofire && wpn.ammo > 0) {
           wpn.ammo--; wsT = 0; wsHit = false;
+        } else if (wpn._fireQueued && !wpn.autofire && wpn.ammo > 0) {
+          // A click arrived during the cooldown (semi-auto buffer) — fire it now.
+          wpn._fireQueued = false;
+          _beginFire(wpn);
         } else {
           wsHit = false;
+          wpn._fireQueued = false;
           wpn._bursting = false; wpn._burstLeft = 0;
           // Don't reset _shotCount here — the spray index is reset on the next
           // shot only if enough time passed (see lastShotAge check above), so
@@ -1051,8 +1059,14 @@ function applySkeletalAnimation(wpn, dt) {
   if (!wpn.boneIndices?.length) return;
 
   // Determine sequence and handle frame reset per weapon type
+  // A gun whose shoot animation outlasts its cycletime keeps animating through
+  // the full sequence after the FIRE state already returned to IDLE: the deagle's
+  // slide-recovery is 0.6s but its cycletime is 0.225s, so cutting to idle at
+  // 0.225s chopped the animation and snapped to the idle pose (looked torn). Let
+  // it finish here; the next shot restarts it from frame 0 as before.
   let seqName;
-  if (ws === WS.IDLE) {
+  const _gunFinishing = wpn.type === 'gun' && wpn.anim._gunAnimPlaying;
+  if (ws === WS.IDLE && !_gunFinishing) {
     seqName = wpn.idleSeq || 'idle';
     if (wpn.anim._prevAnimWs !== WS.IDLE) {
       wpn.anim.curFrame = 0;
@@ -1142,6 +1156,7 @@ function applySkeletalAnimation(wpn, dt) {
     } else if (wpn.type === 'gun') {
       if (ws !== WS.RELOAD) {
         wpn.anim._gunAnimPlaying = false;
+        wpn.anim.curFrame = 0;   // so the following idle loop starts at frame 0
         return;  // signal done; restoreWeaponVertices runs next frame
       }
       // RELOAD: hold at last frame until state machine transitions

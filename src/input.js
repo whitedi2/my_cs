@@ -309,12 +309,15 @@ document.addEventListener('mousedown', e => {
     else                       toggleSilencer();
     return;
   }
-  // LMB: fire only if the weapon is ready right now. A click made during the
-  // cooldown is dropped (not queued), exactly as in the original — one trigger
-  // pull = one shot, and clicking faster than the cap rate does nothing extra.
+  // LMB: one trigger pull = one shot, capped at the weapon's cycletime. If the
+  // click lands mid-cooldown (FIRE state), buffer it (latch one pending shot) so
+  // it fires the instant the cooldown ends — instead of being dropped. Dropping
+  // made evenly-spaced clicks beat against the 0.15s cycle and feel like random
+  // pauses; buffering makes the cadence track the player's clicking.
   if (e.button === 0) {
     if (wpn.ammo > 0) {
       if (ws === WS.IDLE) _beginFire(wpn);
+      else if (ws === WS.FIRE && !wpn.autofire) wpn._fireQueued = true;
     } else if (wpn.reserve > 0 && ws === WS.IDLE) {
       ws = WS.RELOAD; wsT = 0;
     }
