@@ -20,7 +20,11 @@ const fs     = require('fs');
 const path   = require('path');
 
 const sim    = require('./src/sim-core.js');
+const combat = require('./src/combat-core.js');
+const match  = require('./src/match-core.js');
 const CONFIG = require('./config.js');
+
+const LAG_HISTORY_MS = 1000;   // how far back we keep position history for lag compensation
 
 // ── World (authoritative simulation) — pure, testable without the network ────
 const _hullPath = path.join(__dirname, 'maps', 'de_dust2_hull.json');
@@ -45,7 +49,7 @@ function _pickSpawn(team) {
   return { pos: [0, 0, 200], yaw: 0 };
 }
 
-function createWorld() { return { players: new Map() }; }
+function createWorld() { return { players: new Map(), match: match.matchCreate() }; }
 
 function worldAddPlayer(world, id, opts = {}) {
   const sp = _pickSpawn(opts.tm === 't' ? 't' : 'ct');
@@ -57,6 +61,17 @@ function worldAddPlayer(world, id, opts = {}) {
     model:   opts.m || 'gign',
     weapon:  opts.w || 'usp',
     lastSeq: 0,
+    hp:      100, armor: 0, helmet: false,   // authoritative health (Phase 6B)
+    alive:   true,
+    money:   match.MATCH_START_MONEY,        // authoritative economy (Phase 6C)
+    weapons: new Set(['knife', 'usp']),
+    nades:   { hegrenade: 0, flashbang: 0, smokegrenade: 0 },
+    dk:      false,
+    hist:    [],            // lag-comp ring: [{ svt, pos:[x,y,z], dk }]
+    // Not broadcast until the client sends its real identity (hello). A bare connection
+    // (no team/model/pos yet) sits in the team menu — don't render it as the default
+    // gign/ct, which would flash the wrong (CT) model on other screens.
+    joined:  !!(opts.m || opts.tm || opts.p),
   };
   world.players.set(id, pl);
   return pl;
@@ -64,6 +79,13 @@ function worldAddPlayer(world, id, opts = {}) {
 
 // Re-place a player (team change / respawn). Resets velocity & spawn pose.
 function worldRespawn(pl, opts = {}) {
+  pl.joined = true;                 // a hello (join / team change / respawn) means they're in
+  pl.hp = 100; pl.armor = 0; pl.helmet = false; pl.alive = true;   // fresh body on (re)join
+  // Fresh economy on join / team change (CS resets money on team switch).
+  pl.money = match.MATCH_START_MONEY;
+  pl.weapons = new Set(['knife', 'usp']);
+  pl.nades = { hegrenade: 0, flashbang: 0, smokegrenade: 0 };
+  pl.dk = false;
   if (opts.tm) pl.team = opts.tm === 't' ? 't' : 'ct';
   if (opts.m)  pl.model = opts.m;
   if (opts.w)  pl.weapon = opts.w;
@@ -73,18 +95,32 @@ function worldRespawn(pl, opts = {}) {
 }
 
 // Advance one player by a single usercmd. Ignores stale/duplicate seq. dt clamped
-// so a client can't fast-forward the sim with a huge dt.
+// so a client can't fast-forward the sim with a huge dt. Dead players don't move.
+// Returns a fall-damage event { dealt, died } when landing hurts, else null.
 function worldApplyCmd(pl, c) {
-  if (!_hull || !c || (c.seq | 0) <= pl.lastSeq) return;
-  const dt = Math.max(0, Math.min(c.dt || 0, 0.1));
+  if (!_hull || !c || (c.seq | 0) <= pl.lastSeq) return null;
+  pl.lastSeq = c.seq | 0;
   pl.yaw = c.y || 0;
   if (c.w) pl.weapon = c.w;
+  // Presentation-only state we relay so other clients can render this player's
+  // third-person avatar (look pitch + weapon state machine). Not used by the sim.
+  pl.pitch = c.pi || 0;
+  if (c.wsv !== undefined) { pl.ws = c.wsv; pl.wsT = c.wsp || 0; }
+  if (!pl.alive) return null;                       // a corpse doesn't move
+  const dt = Math.max(0, Math.min(c.dt || 0, 0.1));
   const cmd = {
     forwardMove: c.fm || 0, sideMove: c.sm || 0,
     jump: !!c.jp, duck: !!c.dk, walk: !!c.wk, yaw: pl.yaw,
   };
-  sim.simPlayerMove(_hull, pl.state, cmd, dt, { wpnMax: c.ws || CONFIG.maxspeed });
-  pl.lastSeq = c.seq | 0;
+  const ev = sim.simPlayerMove(_hull, pl.state, cmd, dt, { wpnMax: c.ws || CONFIG.maxspeed });
+  if (ev.landed) {                                  // authoritative fall damage
+    const fd = match.matchFallDamage(ev.fallVel);
+    if (fd > 0) {
+      const r = match.matchApplyDamage(pl, fd, 0);
+      if (r.dealt > 0) return { dealt: r.dealt, died: r.died };
+    }
+  }
+  return null;
 }
 
 // Compact authoritative entry for one player (keys kept short).
@@ -97,14 +133,175 @@ function snapshotEntry(pl) {
     y: pl.yaw,
     og: s.onGround ? 1 : 0, dk: s.phyDucked ? 1 : 0,
     da: s.duckAmount, wj: s.wasJump ? 1 : 0, pz: s.prevVelZ,
-    m: pl.model, tm: pl.team, w: pl.weapon,
+    m: pl.model, tm: pl.team, w: pl.weapon, al: pl.alive ? 1 : 0,
+    pi: pl.pitch || 0, wsv: pl.ws || 0, wsp: pl.wsT || 0,   // presentation: look pitch + weapon state
   };
 }
 
 function worldSnapshot(world) {
   const players = [];
-  for (const pl of world.players.values()) players.push(snapshotEntry(pl));
+  for (const pl of world.players.values()) if (pl.joined) players.push(snapshotEntry(pl));
   return players;
+}
+
+// ── Match flow (authoritative, Phase 6A) ─────────────────────────────────────
+// Tick the round state machine against the live roster and apply its events. On a new
+// round every player is marked alive again (clients respawn when they see the round
+// number bump). Returns the events for the caller (e.g. to log).
+function worldTickMatch(world, dt) {
+  const roster = [];
+  for (const pl of world.players.values()) roster.push({ team: pl.team, alive: pl.alive, joined: pl.joined });
+  const ev = match.matchTick(world.match, roster, dt);
+  if (ev.roundStart) for (const pl of world.players.values()) match.matchRevive(pl);   // full HP + alive
+  if (ev.roundEnd) {                                              // round reward (win/loss bonus)
+    const win = ev.roundEnd.winner;
+    for (const pl of world.players.values()) if (pl.joined)
+      pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + (pl.team === win ? match.MATCH_WIN_REWARD : match.MATCH_LOSS_REWARD));
+  }
+  return ev;
+}
+
+// Is a player inside their team's buy zone? (Server-side validation of buy intents.)
+function _inBuyZone(pl) {
+  const zones = _hullData && _hullData.buyzones;
+  if (!zones) return true;                       // no zone data → don't block
+  const p = pl.state.pos;
+  for (const z of zones) {
+    if (z.team !== pl.team) continue;
+    if (p[0] >= z.min[0] && p[0] <= z.max[0] && p[1] >= z.min[1] && p[1] <= z.max[1] &&
+        p[2] >= z.min[2] - 64 && p[2] <= z.max[2] + 64) return true;
+  }
+  return false;
+}
+
+// Authoritative match state for a given recipient: shared bits (map/phase/timer/score/
+// online) + that player's own HP/armor/alive (`me`).
+function gameState(world, pl) {
+  const ms = world.match;
+  let online = 0;
+  for (const p of world.players.values()) if (p.joined) online++;
+  const gs = {
+    t: 'gstate', map: ms.map, phase: ms.phase, round: ms.round,
+    timer: Math.max(0, ms.timer), scoreT: ms.scoreT, scoreCT: ms.scoreCT,
+    winner: ms.winner, reason: ms.reason, online,
+  };
+  if (pl) gs.me = {
+    hp: pl.hp, armor: pl.armor, helmet: !!pl.helmet, alive: !!pl.alive, team: pl.team,
+    money: pl.money, weapons: [...pl.weapons], nades: pl.nades, dk: !!pl.dk,
+  };
+  return gs;
+}
+
+// ── Player-vs-player collision (solid bodies) ────────────────────────────────
+// GoldSrc clips a player's move against other players' bboxes inside PM_Move. We
+// approximate that with an authoritative separation pass: any two overlapping player
+// AABBs get pushed apart along the axis of least penetration (half each). Players
+// don't tunnel — a body is 32u wide and the per-tick step (≤~11u at run speed) is
+// smaller — so this reads as solid. 🔹 Approximation vs. the original: soft (both
+// shoved) rather than the mover stopping dead, and client-side it rubber-bands a touch
+// until step D adds client player-solids. See docs/DIFFERENCES.md.
+const _P_HW = 32;                                   // combined horizontal half-width (16+16)
+function _pHullZ(ducked) { return ducked ? [-18, 18] : [-36, 36]; }
+
+// Slide a player along one horizontal axis by delta, BSP-clamped so the push can't
+// shove them through a wall, and kill any velocity heading into the contact.
+function _pushPlayer(pl, axis, delta) {
+  const st = pl.state;
+  const to = [st.pos[0], st.pos[1], st.pos[2]];
+  to[axis] += delta;
+  const tr = sim.simTraceMove(_hull, st.phyDucked, st.pos, to);
+  st.pos = tr.end;
+  if (st.vel[axis] * delta < 0) st.vel[axis] = 0;
+}
+
+function resolveCollisions(world) {
+  if (!_hull) return;
+  const list = [...world.players.values()];
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i].state, b = list[j].state;
+      const dx = a.pos[0] - b.pos[0], dy = a.pos[1] - b.pos[1];
+      const ax = Math.abs(dx), ay = Math.abs(dy);
+      if (ax >= _P_HW || ay >= _P_HW) continue;            // no horizontal overlap
+      const [az0, az1] = _pHullZ(a.phyDucked);
+      const [bz0, bz1] = _pHullZ(b.phyDucked);
+      if (a.pos[2] + az0 >= b.pos[2] + bz1 ||               // a stands on b's head
+          a.pos[2] + az1 <= b.pos[2] + bz0) continue;       // a is under b
+      const penX = _P_HW - ax, penY = _P_HW - ay;
+      if (penX <= penY) {
+        const s = dx >= 0 ? 1 : -1, push = penX / 2;
+        _pushPlayer(list[i], 0,  s * push);
+        _pushPlayer(list[j], 0, -s * push);
+      } else {
+        const s = dy >= 0 ? 1 : -1, push = penY / 2;
+        _pushPlayer(list[i], 1,  s * push);
+        _pushPlayer(list[j], 1, -s * push);
+      }
+    }
+  }
+}
+
+// ── Lag compensation (server-side hitreg, step D) ────────────────────────────
+// Each snapshot tick we record every player's authoritative origin + stance, tagged
+// with the server time `svt`. A shot carries the `svt` the shooter was rendering its
+// targets at (newestSnapshotSvt − interpolation delay), so we rewind targets to that
+// exact moment before testing the ray — the shooter hits what they actually saw.
+function worldRecordHistory(world, svt) {
+  for (const pl of world.players.values()) {
+    const s = pl.state;
+    pl.hist.push({ svt, pos: [s.pos[0], s.pos[1], s.pos[2]], dk: s.phyDucked ? 1 : 0 });
+    while (pl.hist.length && svt - pl.hist[0].svt > LAG_HISTORY_MS) pl.hist.shift();
+  }
+}
+
+// Interpolate a player's recorded origin/stance back to server time `svt`.
+function _rewindPlayer(pl, svt) {
+  const h = pl.hist;
+  if (!h.length) return { pos: pl.state.pos.slice(), dk: pl.state.phyDucked ? 1 : 0 };
+  if (svt >= h[h.length - 1].svt) { const e = h[h.length - 1]; return { pos: e.pos.slice(), dk: e.dk }; }
+  if (svt <= h[0].svt) return { pos: h[0].pos.slice(), dk: h[0].dk };
+  for (let i = h.length - 1; i > 0; i--) {
+    const b = h[i], a = h[i - 1];
+    if (svt >= a.svt && svt <= b.svt) {
+      const span = b.svt - a.svt;
+      const f = span > 0 ? (svt - a.svt) / span : 0;
+      return {
+        pos: [a.pos[0] + (b.pos[0] - a.pos[0]) * f,
+              a.pos[1] + (b.pos[1] - a.pos[1]) * f,
+              a.pos[2] + (b.pos[2] - a.pos[2]) * f],
+        dk: f < 0.5 ? a.dk : b.dk,
+      };
+    }
+  }
+  const e = h[h.length - 1];
+  return { pos: e.pos.slice(), dk: e.dk };
+}
+
+// Authoritative bullet hitreg for one shot. `msg` = { o:[x,y,z] gs origin, d:[x,y,z] gs
+// dir, w:weaponId, s:silenced, svt:render time }. Rewinds every live target to `svt`,
+// ray-tests the lag-comp box stack, orders hits by distance, applies penetration falloff
+// AND the damage to each victim's authoritative HP. Returns [{ tid, hg, dealt, hp, died }].
+function worldProcessShot(world, shooterId, msg) {
+  const out = [];
+  const o = msg && msg.o, d = msg && msg.d;
+  if (!Array.isArray(o) || o.length !== 3 || !Array.isArray(d) || d.length !== 3) return out;
+  const svt = (typeof msg.svt === 'number') ? msg.svt : Infinity;   // Infinity → latest (no rewind)
+  const hits = [];
+  for (const [tid, tp] of world.players) {
+    if (tid === shooterId || !tp.alive) continue;
+    const rp = _rewindPlayer(tp, svt);
+    const r = combat.combatRayHitPlayer(o, d, rp.pos, !!rp.dk);
+    if (r) hits.push({ tid, tp, hg: r.hg, dist: r.dist });
+  }
+  hits.sort((a, b) => a.dist - b.dist);
+  let pen = 1;
+  for (const h of hits) {
+    const dmg = combat.combatDamage(msg.w, h.dist, h.hg, !!msg.s) * pen;
+    const r = match.matchApplyDamage(h.tp, dmg, h.hg);
+    if (r.dealt > 0) out.push({ tid: h.tid, hg: h.hg, dealt: r.dealt, hp: h.tp.hp, died: r.died });
+    pen *= combat.COMBAT_PEN_MULT;
+  }
+  return out;
 }
 
 // ── WebSocket transport (only when run directly) ─────────────────────────────
@@ -116,6 +313,10 @@ function startServer(port) {
   let _nextId = 1;
 
   const broadcast = (str) => { for (const s of sockets.values()) _send(s, str); };
+  // Broadcast a damage/death event so the victim updates HP + others flinch/animate death.
+  const dmgEvent = (vId, hg, by, dealt, hp, died, w) =>
+    broadcast(JSON.stringify({ t: 'dmg', id: vId, hg, by, dealt, hp, died, w }));
+  const _award = (pl, amount) => { pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + amount); };
 
   const server = http.createServer((req, res) => { res.writeHead(426); res.end('WebSocket only'); });
 
@@ -173,26 +374,63 @@ function startServer(port) {
       case 'hello':                                       // join / team change / respawn
         worldRespawn(pl, { tm: msg.tm, m: msg.m, w: msg.w, p: msg.p, y: msg.y });
         break;
-      case 'cmd':
-        if (Array.isArray(msg.cmds)) for (const c of msg.cmds) worldApplyCmd(pl, c);
-        else worldApplyCmd(pl, msg);
+      case 'cmd': {
+        const apply = (c) => { const fe = worldApplyCmd(pl, c); if (fe) dmgEvent(id, 0, id, fe.dealt, pl.hp, fe.died, 'fall'); };
+        if (Array.isArray(msg.cmds)) for (const c of msg.cmds) apply(c);
+        else apply(msg);
         break;
-      case 'hit': {                                        // shooter-reported hit → forward to victim
-        const tgt = sockets.get(msg.target | 0);
-        if (tgt && (msg.target | 0) !== id)
-          _send(tgt, JSON.stringify({ t: 'hit', dmg: msg.dmg | 0, hg: msg.hg | 0, from: id }));
+      }
+      case 'hit': {                                        // KNIFE: shooter-reported dmg, applied to server HP
+        const tp = world.players.get(msg.target | 0);
+        if (tp && (msg.target | 0) !== id && tp.alive) {
+          const r = match.matchApplyDamage(tp, msg.dmg | 0, msg.hg | 0);
+          if (r.dealt > 0) dmgEvent(tp.id, msg.hg | 0, id, r.dealt, tp.hp, r.died, 'knife');
+          if (r.died) _award(pl, match.matchKillReward('knife'));
+        }
+        break;
+      }
+      case 'shot': {                                       // BULLETS: authoritative, lag-compensated hitreg
+        const hits = worldProcessShot(world, id, msg);
+        for (const h of hits) {
+          dmgEvent(h.tid, h.hg, id, h.dealt, h.hp, h.died, msg.w);
+          if (h.died) _award(pl, match.matchKillReward(msg.w));
+        }
+        break;
+      }
+      case 'buy': {                                        // server-validated purchase (Phase 6C)
+        if (world.match.phase !== 'buy') { _send(socket, JSON.stringify({ t: 'bought', ok: false, reason: 'Время закупки вышло' })); break; }
+        if (!_inBuyZone(pl))             { _send(socket, JSON.stringify({ t: 'bought', ok: false, reason: 'Вы не в зоне закупки' })); break; }
+        const r = match.matchBuy(pl, String(msg.id || ''));
+        _send(socket, JSON.stringify({ t: 'bought', ok: r.ok, reason: r.reason || '', id: r.id, kind: r.kind, money: pl.money }));
         break;
       }
     }
   }
 
-  // Broadcast authoritative snapshots; each client gets its own `ack`.
+  // Broadcast authoritative snapshots; each client gets its own `ack`. Each tick stamps
+  // a monotonic server time `svt` (for client interpolation + lag-comp rewind), records
+  // lag-comp history, advances the match clock and broadcasts the game state.
+  let _svt = 0, _lastMs = Date.now(), _gstateAcc = 0;
   const timer = setInterval(() => {
-    if (sockets.size === 0) return;
+    if (sockets.size === 0) { _lastMs = Date.now(); return; }
+    const now = Date.now();
+    const dt = Math.min(0.25, Math.max(0, (now - _lastMs) / 1000));   // real elapsed (round clock accuracy)
+    _lastMs = now;
+    _svt += SNAP_MS;
+    resolveCollisions(world);                 // solid bodies: separate overlapping players
+    worldRecordHistory(world, _svt);          // lag-comp position history
+    const ev = worldTickMatch(world, dt);     // round phases / timers / score
     const players = worldSnapshot(world);
     for (const [cid, socket] of sockets) {
       const pl = world.players.get(cid);
-      _send(socket, JSON.stringify({ t: 'snap', ack: pl ? pl.lastSeq : 0, players }));
+      _send(socket, JSON.stringify({ t: 'snap', ack: pl ? pl.lastSeq : 0, svt: _svt, players }));
+    }
+    // Game state ~5×/s, plus immediately on any round transition. Per-recipient (carries
+    // that player's own HP/armor/alive in `me`).
+    _gstateAcc += dt;
+    if (ev.roundStart || ev.roundEnd || _gstateAcc >= 0.2) {
+      _gstateAcc = 0;
+      for (const [cid, socket] of sockets) _send(socket, JSON.stringify(gameState(world, world.players.get(cid))));
     }
   }, SNAP_MS);
   if (timer.unref) timer.unref();
@@ -248,5 +486,6 @@ if (require.main === module) {
 
 module.exports = {
   createWorld, worldAddPlayer, worldRespawn, worldApplyCmd, worldSnapshot,
-  snapshotEntry, startServer,
+  snapshotEntry, resolveCollisions, worldRecordHistory, worldProcessShot,
+  worldTickMatch, gameState, startServer,
 };

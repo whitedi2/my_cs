@@ -11,14 +11,17 @@ python serve.py          # поднимает http://localhost:8080/viewer.html 
 node server.js           # (опц.) мультиплеер-relay на ws://localhost:8081 — отдельный процесс
 ```
 
-Мультиплеер (Фаза 5, шаг B — **авторитетный сервер**): запусти `node server.js`, открой
+Мультиплеер (Фаза 5, шаги B–D — **авторитетный сервер**): запусти `node server.js`, открой
 `viewer.html` в двух вкладках/машинах, в каждой выбери команду — увидишь, как другой игрок бегает
 (модель/анимация/направление). Сервер крутит физику (`simPlayerMove`) из usercmd клиентов и рассылает
-авторитетные снапшоты; клиент делает prediction локально + reconciliation своего состояния по `ack`,
-удалённых интерполирует. Удалённые игроки рендерятся как наша третьеличная модель (оружие в руке,
-затемнение по свету карты, хитбоксы); попадания по ним считает стрелок и шлёт серверу, тот пересылает
-жертве (HP/броня пока на стороне жертвы — серверный хитрег это шаг D). Без `node server.js` игра молча
-работает в одиночку (хуки `net*` — no-op). `server.js` — zero-deps рантайм (свой WebSocket на `http`+`crypto`).
+авторитетные снапшоты (с временем `svt`); клиент делает prediction локально + reconciliation своего
+состояния по `ack`, **удалённых интерполирует на ~100 мс назад** (буфер снапшотов по `svt` — шаг C).
+Удалённые игроки рендерятся как наша третьеличная модель (оружие в руке, прицел по pitch, стрельба/
+перезарядка/флинч/смерть, свет, хитбоксы). **Хитрег пуль — серверный с lag compensation** (шаг D):
+стрелок шлёт луч выстрела + `svt`, сервер откатывает игроков к этому времени, тестирует луч по
+stance-aware box-стеку (`src/combat-core.js`) и форвардит авторитетный урон жертве; HP/броню применяет
+жертва (нож — пока по докладу стрелка). Без `node server.js` игра молча работает в одиночку (хуки
+`net*` — no-op). `server.js` — zero-deps рантайм (свой WebSocket на `http`+`crypto`).
 
 Нужен HTTP-сервер (не `file://`) — иначе не загрузятся `.json`/ассеты и ES-модуль Three.js.
 Three.js тянется с CDN через `<script type="importmap">` в `viewer.html` — **нужен интернет**.
@@ -50,15 +53,17 @@ Runtime разбит по файлам (порядок загрузки = пор
 | `src/audio.js` | звук из оригинала (WebAudio): выстрел/нож из кода, перезарядка/деплой/глушитель по MDL-событиям, шаги/приземление (материал по `materials.txt` + трасса пола, каденс по скорости — `pm_shared.c`), попадания пуль (рикошет по материалу `ric_conc`/`ric_metal` + по жертве: flesh/kevlar/helmet/headshot) | `initAudio`, `playSound`, `playRandom`, `warmWeaponSounds`, `_tickAnimEvents`, `updateMovementSounds`, `playBulletImpact`, `playVictimHit`, `setMasterVolume` |
 | `src/effects.js` | гильзы + декали пуль/ножа | `_ejectShell`, `_updateShells`, `_spawnDecal`, `_getDecalMat`, `_makeSlashTexture`, `_drawTaperedCut` |
 | `src/weapons.js` | конфиги оружия, переключение, скелетка, стрельба/отдача, ближний бой | `WPNS`, `switchWeapon`, `_beginDraw`, `toggleSilencer`, `updateWeapon` (стейт-машина `ws`), `applySkeletalAnimation`, `computeBoneWorlds`, `boneEulerMat`, `_startMeleeAttack` |
-| `src/player.js` | модель игрока от 3-го лица (CT `gign`, `PLAYER_MODEL`): двухслойная анимация (ноги=походка, верх=прицел/стрельба/перезарядка по оружию), оружие в руке, чейз-камера с орбитой | `updatePlayerModel`, `_skinRig`, `_updateWeaponAttachment`, `_resolveUpperPose`/`_aimPose`/`_clipPose`, `updateChaseCamera`, `updateOrbit`, `toggleThirdPerson`, `thirdPerson` |
+| `src/player.js` | модель игрока от 3-го лица (CT `gign`, `PLAYER_MODEL`): двухслойная анимация (ноги=походка, верх=прицел/стрельба/перезарядка по оружию), оружие в руке, чейз-камера с орбитой. **Ядро анимации `animateThirdPerson(rig, st, dt)` — общее для своей модели И сетевых игроков** (net.js гонит удалённых через него); `_initModelRig`/`_ensureGunRig` — инициализация рига/гановых моделей по требованию | `updatePlayerModel`, `animateThirdPerson`, `_initModelRig`, `_skinRig`, `_updateWeaponAttachment`, `_ensureGunRig`, `_weaponTypeOf`, `_resolveUpperPose`/`_aimPose`/`_clipPose`, `updateChaseCamera`, `updateOrbit`, `toggleThirdPerson`, `thirdPerson` |
 | `src/hud.js` | прицел и HUD | `drawCrosshair`, `updateHUD` |
 | `src/physics.js` | BSP-трасса + физика игрока; точки спауна/угол, зоны закупки, выбор команды | `pointContents`, `traceMove`, `playerMove`, `slideMove`, `categorize`, `accel`, `applyFriction`, `initPhysics`, `pickSpawn`, `respawn`, `setTeam`, `spawnPoints`, `buyZones` |
 | `src/sim-core.js` | **детерминированное ядро движения** (Фаза 5, shared клиент↔сервер): чистая математика, состояние и BSP-халл передаются явно — без модульных глобалей. Dual-mode: классический браузерный скрипт + `module.exports` для `require` в Node. Камера/recoil/punch остались в `physics.js` | `simMakeHull`, `simMakeState`, `simPlayerMove(hull,st,cmd,dt,params)`, `simTraceMove`, `simCategorize`, `simPointContents` |
+| `src/combat-core.js` | **математика хитрега пуль** (Фаза 5D): таблица урона/спада оружия, множители зон, stance-aware box-стек (голова/грудь/живот/ноги), ray-vs-box. Dual-mode — грузится И на сервере (авторитет), И в браузере (`enemyTryShoot` предсказывает попадания по сетевым тем же box-стеком → предсказание совпадает с сервером). Значения дублируют `WPNS`/`_HG_MULT` — держать в синхроне | `combatRayHitPlayer(o,d,pos,ducked)`, `combatDamage(wid,dist,hg,sil)`, `COMBAT_WEAPON_DMG`, `COMBAT_HG_MULT`, `COMBAT_PEN_MULT` |
+| `src/match-core.js` | **серверная логика матча** (Фаза 6): стейт-машина раунда (`warmup→buy→live→over`, таймеры, счёт, победа время/элиминация — 6A); **HP/броня/смерть/падение** (`matchApplyDamage`/`matchFallDamage`/`matchRevive` — 6B); **экономика** (`MATCH_BUY` каталог, `matchBuy` с валидацией, `matchKillReward`, награды раунда — 6C). Чистый dual-mode (только Node; клиент «ведомый» по `gstate`). Числа дублируют `rounds.js`/`game.js`/`WPNS` | `matchTick`, `matchApplyDamage`, `matchRevive`, `matchBuy`, `matchKillReward`, `MATCH_*` |
 | `src/game.js` | состояние матча: команда/класс-меню, деньги, владение оружием, закупка, гранаты-счётчики (после physics/weapons/player) | `BUY_CATALOG`, `CLASSES`, `buyItem`, `inBuyZone`, `openBuyMenu`/`buyMenuKey`, `openTeamMenu`/`teamMenuKey`, `ownedWeapons`, `grenadeCounts`, `afterGrenadeThrow`, `playerMoney`, `updateBuyHUD` |
 | `src/grenades.js` | гранаты (HE/флеш/дым): бросок, физика снаряда (`w_*` + отскок по BSP), запал, детонация (радиус-урон / слепота / дым), эффекты (после game) | `throwGrenade`, `updateGrenades`, `_moveGrenade`, `_detonateHE`/`_detonateFlash`/`_detonateSmoke`, `_updateBlind`, `_updateSmokes`, `clearGrenades`, `GRENADE_DEFS` |
 | `src/rounds.js` | поток матча (закупка→лайв→конец→рестарт) + цель-бомба C4: плант/дефьюз/взрыв (бомбсайты из BSP), таймеры, деньги, HUD раунда (после grenades/enemy/game) | `startMatch`, `startRound`, `endRound`, `updateRound`, `buyTimeOpen`, `_plantBomb`/`_detonateBomb`, `roundPhase` |
 | `src/pickups.js` | дроп (G) и подбор оружия: мировая `p_*`-модель падает на пол, подбор по близости со звуками оригинала (после game.js) | `dropWeapon`, `updatePickups`, `_spawnPickup`, `_buildDropModel`, `DROP_SOUND`/`PICKUP_SOUND` |
-| `src/net.js` | мультиплеер (Фаза 5, шаг B): WebSocket-клиент к авторитетному `server.js`. Шлёт usercmd (`netRecordCmd`, + id оружия), хранит кольцо неподтверждённых cmd, на снапшоте делает reconciliation (`netReconcile`: ресет к серверному состоянию + переигрывание cmd с `seq>ack`), удалённых игроков рендерит тем же третьеличным конвейером, что свою модель: риг (`_buildRig`/`_skinRig`/`computeBoneWorlds`) + оружие в руке (`_updateRemoteWeapon`/`_gunWorldFromHost`, `p_<weapon>` по `e.w`) + затемнение по лайтмапе (`_updateRemoteLight`) + OBB-хитбоксы (из enemy.js). Попадания по чужим: рейкаст из `enemyTryShoot` → `netSendHit` → сервер пересылает жертве → `_onIncomingHit`→`playerTakeDamage`. Нет сервера → тихо одиночка (после player/weapons/enemy/sim-core) | `netConnect`, `netHello`, `netReconcile`, `netRecordCmd`, `netSendHit`, `remotePlayers`, `_onSnapshot`, `_updateRemote`, `_updateRemoteWeapon`, `_buildRemote` |
+| `src/net.js` | мультиплеер (Фаза 5, шаги B–D): WebSocket-клиент к авторитетному `server.js`. Шлёт usercmd (`netRecordCmd`, + id оружия + `pi`/`wsv`/`wsp` = pitch/состояние оружия), кольцо неподтверждённых cmd, reconciliation своего игрока (`netReconcile`). **Удалённых: интерполяция на ~100 мс назад** — буфер снапшотов по `svt`, `_sampleRemote`/`_lerpSample` → `_renderSvt = newestSvt−100мс`; рендер тем же `animateThirdPerson` (из player.js): походка/твист, присед-бленд, прицел по pitch, стрельба/перезарядка/флинч/смерть, оружие, свет, хитбоксы. **Хитрег пуль — серверный**: `netSendShot(o,d,wid,sil)` шлёт луч + `_renderSvt`, сервер откатывает+считает урон, форвардит `{t:'hit'}`→`_onIncomingHit`→`playerTakeDamage` (кевлар по зоне). Нож — `netSendHit` (по докладу). Реакции жертвы: `netSendReact('flinch'/'die'/'spawn')`. Нет сервера → тихо одиночка (после player/weapons/enemy/sim-core/combat-core) | `netConnect`, `netReconcile`, `netRecordCmd`, `netSendShot`, `netSendHit`, `netSendReact`, `remotePlayers`, `_onSnapshot`, `_sampleRemote`, `_updateRemote`, `_buildRemote`, `_onRemoteReact` |
 | `src/load.js` | загрузка карты/ассетов (после physics, чтобы `initPhysics` была определена) | `objPromise`, `hullPromise`, `Promise.all(...).then(...)` |
 | `src/input.js` | pointer lock, настройки, мышь/клавиатура/оружие, **главный цикл** | `animate(t)`, `updateFOV`, обработчики ввода, `animate(0)` в конце |
 
@@ -119,8 +124,8 @@ docs/              PLAN.md, DIFFERENCES.md
 - `player_to_json.py` — модель игрока (`models/player/<name>/<name>.mdl`) → `models/player_<name>.json`
   (меш тела + кости + хитбоксы `mstudiobbox_t` (OBB по костям, поле `hitboxes`) + только движенческие
   секвенции idle/walk/run/crouch/jump) + текстуры в `textures/player_*`.
-  Сейчас сконвертирован CT `gign` (`python tools/player_to_json.py gign`); модель в рантайме
-  выбирается константой `PLAYER_MODEL` в `src/player.js`.
+  Сейчас сконвертированы CT `gign` и `sas` (`python tools/player_to_json.py gign`); CT-модель в
+  рантайме выбирается в меню класса (`CLASSES.ct` в `src/game.js`) — по умолчанию `playerModelName='gign'`.
 - `pweapon_to_json.py` — мировая модель оружия `p_<weapon>.mdl` → `models/p_<weapon>.json`
   (меш ствола + кости `Bip01…` + bind-поза). Рантайм гонит этот скелет позой игрока (по имени кости),
   оружие крепится к кисти. Готовы `p_m4a1`, `p_usp`, `p_knife`.

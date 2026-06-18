@@ -69,7 +69,7 @@
     const show = (id, d) => { const el = document.getElementById(id); if (el) el.style.display = d; };
     show('overlay', 'none'); show('gameload', 'none');
     show('crosshair', 'block'); show('hud', 'block'); show('weapon-hud', 'block');
-    show('target-hud', 'flex'); show('money', 'block');
+    show('money', 'block');
 
     window.__autotestReady = true;   // marker the screenshot script can poll
   }

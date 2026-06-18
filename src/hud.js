@@ -2,6 +2,11 @@
 // Classic script — shares one global scope with the other src/*.js (THREE,
 // OBJLoader, MTLLoader are globals set in viewer.html). No imports/exports.
 
+// Predicted hitmarker (set by enemyTryShoot when a shot is predicted to hit a body).
+// Instant local feedback that agrees with the server's box-stack hitreg (combat-core).
+let _hitMarkerT = -Infinity, _hitMarkerHs = false;
+function _setHitMarker(headshot) { _hitMarkerT = performance.now(); _hitMarkerHs = !!headshot; }
+
 function drawCrosshair() {
   const canvas = document.getElementById('crosshair');
   if (canvas.style.display === 'none') return;
@@ -9,6 +14,20 @@ function drawCrosshair() {
   const W = canvas.width, H = canvas.height;
   const cx = W / 2, cy = H / 2;
   ctx.clearRect(0, 0, W, H);
+
+  // Hitmarker: four short 45° ticks that fade over ~160 ms (red on a headshot).
+  const hmAge = (performance.now() - _hitMarkerT) / 1000;
+  if (hmAge >= 0 && hmAge < 0.16) {
+    const a = 1 - hmAge / 0.16, in0 = 5, in1 = 11;
+    ctx.strokeStyle = _hitMarkerHs ? `rgba(255,80,80,${a})` : `rgba(255,255,255,${a})`;
+    ctx.lineWidth = 2; ctx.lineCap = 'round';
+    for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      ctx.beginPath();
+      ctx.moveTo(cx + sx * in0, cy + sy * in0);
+      ctx.lineTo(cx + sx * in1, cy + sy * in1);
+      ctx.stroke();
+    }
+  }
 
   const wpn      = curW();
   // Snipers (AWP): no hip-fire crosshair at all — only the scope reticle (the
@@ -55,7 +74,6 @@ function updateHUD() {
   } else {
     ammoEl.style.display = 'none';
   }
-  updateTargetHUD();
   updatePlayerStatus();
 }
 
@@ -82,31 +100,5 @@ function updatePlayerStatus() {
     }
     hurt.style.opacity = a.toFixed(3);
   }
-}
-
-// Target dummy HP/armor + last-hit readout. Colors the hit text by zone and
-// fades it out; bars empty as the dummy takes damage.
-const _ZONE_COLOR = { 1: '#ff5252', 2: '#ffd24a', 3: '#ffb04a', 6: '#bcd' };
-function updateTargetHUD() {
-  const e = (typeof enemyFocus !== 'undefined') ? enemyFocus : null;
-  if (!e || !e.root) return;
-  const nameEl = document.getElementById('th-name');
-  if (nameEl) nameEl.textContent = e.helmet ? 'Манекен (T) — кевлар + шлем' : 'Манекен (T) — кевлар';
-  const hp = Math.max(0, e.health), ap = Math.max(0, e.armor);
-  document.getElementById('th-hp').style.width   = (hp / ENEMY_HEALTH * 100) + '%';
-  document.getElementById('th-ap').style.width   = (ap / ENEMY_ARMOR  * 100) + '%';
-  document.getElementById('th-hp-n').textContent = Math.round(hp);
-  document.getElementById('th-ap-n').textContent = Math.round(ap);
-
-  const last = document.getElementById('th-last');
-  if (e.lastHit) {
-    const age = (performance.now() - e.lastHit.t) / 1000;
-    if (age < 1.4) {
-      const lbl = (typeof _HG_LABEL !== 'undefined' && _HG_LABEL[e.lastHit.hg]) || '';
-      last.textContent = `−${e.lastHit.dmg}  ${lbl}`;
-      last.style.color = _ZONE_COLOR[e.lastHit.hg] || '#fff';
-      last.style.opacity = Math.max(0, 1 - age / 1.4);
-    } else { last.textContent = ''; }
-  } else { last.textContent = ''; }
 }
 

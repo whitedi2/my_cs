@@ -845,6 +845,7 @@ function updateWeapon(dt) {
           _hitBody = enemyTryShoot(SHOT_RANGE, {
             damage:   (wpn.silencer && wpn.damageSil   != null) ? wpn.damageSil   : (wpn.damage ?? 30),
             rangeMod: (wpn.silencer && wpn.rangeModSil != null) ? wpn.rangeModSil : (wpn.rangeMod ?? 0.98),
+            wid: wpn.id, sil: wpn.silencer,    // for server-side bullet hitreg (netSendShot)
             dyaw, dpitch,
           });
         // Surface impact (ric sound + dust puff) — only when no body was hit (the body

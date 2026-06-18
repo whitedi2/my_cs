@@ -111,9 +111,7 @@ document.addEventListener('pointerlockchange', () => {
   $overlay.style.display = isLocked ? 'none' : 'flex';
   document.getElementById('crosshair').style.display  = isLocked ? 'block' : 'none';
   document.getElementById('hud').style.display        = isLocked ? 'block' : 'none';
-  document.getElementById('keys').style.display       = isLocked ? 'block' : 'none';
   document.getElementById('weapon-hud').style.display = isLocked ? 'block' : 'none';
-  document.getElementById('target-hud').style.display = isLocked ? 'flex'  : 'none';
   document.getElementById('money').style.display      = isLocked ? 'block' : 'none';
   if (!isLocked) {                                     // pause: drop the HP HUD + damage overlay
     document.getElementById('player-status').style.display = 'none';
@@ -437,6 +435,10 @@ function animate(t) {
   }
 }
 animate(0);
+
+// Probe the multiplayer server on load so the start menu shows its status (read-only;
+// no team is sent until you pick one). Silently stays solo if no server is running.
+if (typeof netConnect === 'function') netConnect(false);
 
 window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;

@@ -21,21 +21,56 @@ let _ackSeq = 0;                          // last seq the server confirmed proce
 const _pending = [];                      // [{seq, cmd, dt, wpnMax}] — unacked predicted cmds
 let _authState = null;                    // latest authoritative LOCAL state from a snapshot
 let _authDirty = false;                   // a new snapshot arrived → reconcile next frame
-const remotePlayers = new Map();          // id → instance (rig + anim state + interp targets)
+const remotePlayers = new Map();          // id → instance (rig + anim state + snapshot buffer)
 const _netModelCache = {};                // model name → loaded JSON (shared across instances)
+
+// Snapshot interpolation (Phase 5, step C). Snapshots carry a monotonic server time
+// `svt`; we render remote players at `_renderSvt = newestSvt − NET_INTERP_MS`, blending
+// the two buffered snapshots that bracket it. This trades a fixed ~100 ms delay for
+// smooth motion under jitter/loss, and `_renderSvt` is exactly the time we tell the
+// server we were aiming at, so its lag-comp rewind matches what we saw.
+const NET_INTERP_MS = 100;
+let _newestSvt = 0;                        // newest server time we've received
+let _renderSvt = 0;                        // server time we're currently rendering remotes at
 
 function _connected() { return _ws && _ws.readyState === 1 && _myId != null; }
 
-function netConnect() {
-  if (_ws && (_ws.readyState === 0 || _ws.readyState === 1)) return;   // already (re)connecting
-  try { _ws = new WebSocket(NET_URL); } catch (e) { return; }
-  _ws.onopen    = () => { console.log('[mp] connected to', NET_URL); netHello(); };
+// Connect to the server. `join=false` connects just to read status / lobby (no hello, so
+// the server keeps us out of the match until we pick a team); `join=true` also sends our
+// identity (hello) once open — or immediately if we're already connected.
+let _wantHello = false;
+function netConnect(join) {
+  if (_ws && (_ws.readyState === 0 || _ws.readyState === 1)) {
+    if (join) { _wantHello = true; if (_ws.readyState === 1) netHello(); }
+    return;
+  }
+  _wantHello = !!join;
+  _setMpStatus('connecting');
+  try { _ws = new WebSocket(NET_URL); } catch (e) { _setMpStatus('offline'); return; }
+  _ws.onopen    = () => { console.log('[mp] connected to', NET_URL); _setMpStatus('connected'); if (_wantHello) netHello(); };
   _ws.onclose   = () => {
     _myId = null; _ackSeq = 0; _pending.length = 0;
     _authState = null; _authDirty = false; _clearRemotes();
+    _setMpStatus('offline');
+    if (typeof onNetRoundReset === 'function') onNetRoundReset();   // resume local rounds
   };
-  _ws.onerror   = () => {};             // silent: no server running → stay single-player
+  _ws.onerror   = () => { _setMpStatus('offline'); };   // no server → stay single-player
   _ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } _onNetMsg(m); };
+}
+
+// Reflect the connection / match state in the start menu (Phase 6A lobby).
+function _setMpStatus(state, gs) {
+  const el = (typeof document !== 'undefined') && document.getElementById('mp-status');
+  if (!el) return;
+  let txt, col;
+  if (state === 'connected') {
+    const online = gs ? gs.online : null;
+    txt = online != null ? `● Сервер: онлайн (${online})` : '● Сервер: подключён';
+    col = '#6bd16b';
+  } else if (state === 'connecting') { txt = '○ Подключение к серверу…'; col = '#e8c34a'; }
+  else                               { txt = '○ Сервер недоступен — соло'; col = '#c98a8a'; }
+  if (gs && gs.map) txt += ` · карта: ${gs.map}`;
+  el.textContent = txt; el.style.color = col;
 }
 
 // Tell the server our identity + spawn pose (join, team change, respawn). A teleport
@@ -58,32 +93,93 @@ function _onNetMsg(m) {
     case 'welcome': _myId = m.id; break;
     case 'leave':   _removeRemote(m.id); break;
     case 'snap':    _onSnapshot(m); break;
-    case 'hit':     _onIncomingHit(m); break;
+    case 'dmg':     _onDamage(m); break;
+    case 'gstate':  _onGState(m); break;
+    case 'bought':  _onBought(m); break;
   }
 }
 
-// Another player's client reported hitting us. HP/armor are owned by the victim
-// (this client), so apply the damage here: the shooter already rolled the weapon
-// damage × falloff × hitgroup; we apply our own kevlar coverage by hitgroup.
-function _onIncomingHit(m) {
-  if (typeof playerTakeDamage !== 'function') return;
-  const hg = m.hg | 0, dmg = m.dmg | 0;
-  const helmet = (typeof playerHelmet !== 'undefined') && playerHelmet;
-  const covered = (hg === 2 || hg === 3 || hg === 4 || hg === 5) || (hg === 1 && helmet);
-  playerTakeDamage(dmg, { covered });
+// Server reply to a buy intent (Phase 6C): flash the result; on a successful weapon buy
+// equip it locally (full ammo). Money/inventory state syncs via gstate.me.
+function _onBought(m) {
+  if (typeof _flashBuy === 'function') _flashBuy(m.ok ? 'Куплено' : (m.reason || 'Не куплено'));
+  if (m.ok && m.kind === 'weapon' && m.id && typeof WPNS !== 'undefined') {
+    if (typeof ownedWeapons !== 'undefined') ownedWeapons.add(m.id);   // optimistic; gstate.me confirms
+    const idx = WPNS.findIndex(w => w.id === m.id);
+    if (idx >= 0) {
+      const w = WPNS[idx];
+      if (w.maxAmmo) { w.ammo = w.maxAmmo; w.reserve = w._reserve0 != null ? w._reserve0 : w.reserve; }
+      if (typeof switchWeapon === 'function') switchWeapon(idx);
+    }
+  }
 }
 
-// Shooter → server: report a bullet/knife hit on a remote player (the server
-// forwards it to that player's client, which owns its HP). No-op solo.
+// Client → server: a buy intent (the server validates money/phase/zone/team and grants).
+function netSendBuy(id) {
+  if (!_connected() || !id) return;
+  _ws.send(JSON.stringify({ t: 'buy', id }));
+}
+
+// Authoritative match state from the server (Phase 6A/6B): round HUD + lobby + our own HP.
+function _onGState(m) {
+  _setMpStatus('connected', m);
+  if (typeof applyServerRound === 'function') applyServerRound(m);
+  if (m.me && typeof applyServerSelf === 'function') applyServerSelf(m.me);
+}
+
+// An authoritative damage/death event from the server (Phase 6B). For us → HUD/HP +
+// hurt/death feedback (game.js). For a remote → flinch, or play the death animation and
+// freeze the corpse. Revival (round respawn) comes from the snapshot `al` flag.
+function _onDamage(m) {
+  if (m.id === _myId) {
+    if (typeof onServerDamage === 'function') onServerDamage(m.hg | 0, m.hp | 0, !!m.died, m.by | 0);
+    return;
+  }
+  const inst = remotePlayers.get(m.id);
+  if (!inst) return;
+  if (m.died) {
+    inst.dead = true; inst.frame = 0;
+    inst.deathSeq = _pickDeathSeq(inst, m.hg | 0);
+    inst.flinchT = 0;
+  } else if (inst.flinch) {
+    const hg = m.hg | 0;
+    const seq = (hg === 1 && inst.flinch['head_flinch']) ? 'head_flinch' : 'gut_flinch';
+    if (inst.flinch[seq]) { inst.flinchSeq = seq; inst.flinchFrame = 0; inst.flinchT = inst.flinchDur || 0.22; }
+  }
+}
+
+// Death sequence by hitgroup (head/gutshot specials, else a random death1..3). Null if
+// the model carries none (no --deaths export) — the corpse then just freezes upright.
+function _pickDeathSeq(inst, hg) {
+  if (!inst.seqMap) return null;
+  if (hg === 1 && inst.seqMap['head'])    return 'head';
+  if (hg === 3 && inst.seqMap['gutshot']) return 'gutshot';
+  const deaths = ['death1', 'death2', 'death3'].filter(n => inst.seqMap[n]);
+  return deaths.length ? deaths[Math.floor(Math.random() * deaths.length)] : null;
+}
+
+// Shooter → server: report a MELEE (knife) hit on a remote player. Bullet hitreg is
+// server-side now (see netSendShot); the knife stays shooter-reported. No-op solo.
 function netSendHit(targetId, hg, dmg) {
   if (!_connected()) return;
   _ws.send(JSON.stringify({ t: 'hit', target: targetId, hg, dmg }));
 }
 
-// Apply an authoritative snapshot: stash our own state for reconciliation, upsert
-// every other player's interpolation target.
+// Shooter → server: a bullet's ray (GoldSrc origin + dir) for authoritative,
+// lag-compensated hitreg. We send `svt` = the exact server time we're rendering our
+// targets at, so the server rewinds them to that instant before testing the ray. The
+// server computes the damage (weapon × falloff × hitgroup) and forwards it to victims.
+function netSendShot(o, d, weaponId, silenced) {
+  if (!_connected()) return;
+  _ws.send(JSON.stringify({ t: 'shot', o, d, w: weaponId, s: silenced ? 1 : 0, svt: _renderSvt }));
+}
+
+// Apply an authoritative snapshot: track the server time, stash our own state for
+// reconciliation, and buffer every other player's state for interpolation.
 function _onSnapshot(m) {
   if (m.ack != null && m.ack > _ackSeq) _ackSeq = m.ack;
+  const svt = (typeof m.svt === 'number') ? m.svt : (_newestSvt + 50);   // fallback: assume 20 Hz
+  if (svt > _newestSvt) _newestSvt = svt;
   for (const e of (m.players || [])) {
     if (e.id === _myId) {
       _authState = {
@@ -93,7 +189,7 @@ function _onSnapshot(m) {
       };
       _authDirty = true;
     } else {
-      _onRemoteState(e);
+      _onRemoteState(e, svt);
     }
   }
 }
@@ -131,33 +227,87 @@ function netRecordCmd(cmd, dt, wpnMax) {
     t: 'cmd', seq, dt,
     fm: c.forwardMove, sm: c.sideMove,
     jp: c.jump ? 1 : 0, dk: c.duck ? 1 : 0, wk: c.walk ? 1 : 0,
-    y: c.yaw, ws: wpnMax,
+    y: c.yaw, ws: wpnMax,                 // ws = weapon run-speed cap (NOT the state machine)
     w: (typeof curW === 'function' && curW()) ? curW().id : undefined,
+    // Third-person presentation for our remote avatar on other clients: look pitch +
+    // the weapon state machine (so they see us aim up/down, fire, reload). Authoritative
+    // movement ignores these; the server just relays them in the snapshot.
+    pi: (typeof pitch !== 'undefined') ? pitch : 0,
+    wsv: (typeof ws !== 'undefined') ? ws : 0,
+    wsp: (typeof wsT !== 'undefined') ? wsT : 0,
   }));
 }
 
-// Upsert a remote player's interpolation target from a snapshot entry.
-// Entry keys: p=[x,y,z] gs, v=[x,y,z] vel, y=yaw, og=onGround, dk=duck, m=model, tm=team.
-function _onRemoteState(e) {
-  const sp = e.v ? Math.hypot(e.v[0], e.v[1]) : (e.sp || 0);
+// Buffer a remote player's snapshot sample (tagged with server time `svt`) for
+// interpolation. Entry keys: p=[x,y,z] gs, v=[x,y,z] vel, y=yaw, pi=pitch, og=onGround,
+// dk=duck, da=duckAmount, wsv=weapon-state, wsp=weapon-state time, m=model, tm=team, w=weapon.
+function _onRemoteState(e, svt) {
   let inst = remotePlayers.get(e.id);
   if (!inst) {
     inst = { id: e.id, model: e.m, weapon: e.w || 'usp', root: null, ready: false,
-             pos: e.p.slice(), tpos: e.p.slice(), yaw: e.y || 0, tyaw: e.y || 0,
-             sp: 0, og: 1, dk: 0, curSeq: 'idle1', frame: 0,
-             gunRigs: {}, curGun: null, lightCol: new THREE.Color(1, 1, 1) };
+             buf: [], pos: e.p.slice(), yaw: e.y || 0, phase: 0,
+             dead: false, deathSeq: null, frame: 0, flinchSeq: 'gut_flinch', flinchFrame: 0,
+             gunRigs: {}, lightCol: new THREE.Color(1, 1, 1),
+             handWorld: new THREE.Vector3(), muzzleWorld: new THREE.Vector3() };
     remotePlayers.set(e.id, inst);
     _buildRemote(inst);
+  } else if (e.m && e.m !== inst.model) {
+    // Team/model switch → rebuild the rig with the new model (keeps the snapshot buffer).
+    if (inst.root) scene.remove(inst.root);
+    inst.model = e.m; inst.root = null; inst.ready = false;
+    inst.gunRigs = {};
+    _buildRemote(inst);
   }
-  inst.tpos = e.p.slice();
-  inst.tyaw = e.y || 0;
-  inst.sp = sp;
-  inst.og = e.og ? 1 : 0;
-  inst.dk = e.dk ? 1 : 0;
   if (e.w) inst.weapon = e.w;
+  if (e.al && inst.dead) inst.dead = false;   // server revived them (round respawn) → clear corpse
+  inst.buf.push({
+    svt,
+    pos: e.p.slice(), yaw: e.y || 0, pitch: e.pi || 0,
+    vel: (e.v || [0, 0, 0]).slice(),
+    og: e.og ? 1 : 0, dk: e.dk ? 1 : 0, da: e.da || 0,
+    ws: (e.wsv !== undefined) ? e.wsv : 0, wsT: (e.wsv !== undefined) ? (e.wsp || 0) : 0,
+  });
+  while (inst.buf.length > 40) inst.buf.shift();   // ~2 s of history at 20 Hz
 }
 
-// Build the skinned rig for a remote player (mirrors enemy.js / player.js loaders).
+// Interpolate a remote's buffered samples at server time `rsvt`. Holds the nearest end
+// when rsvt falls outside the buffer (start-up / stall → no extrapolation, just freeze).
+function _sampleRemote(inst, rsvt) {
+  const buf = inst.buf;
+  if (!buf || !buf.length) return null;
+  if (buf.length === 1 || rsvt <= buf[0].svt) return _bufCopy(buf[0]);
+  if (rsvt >= buf[buf.length - 1].svt) return _bufCopy(buf[buf.length - 1]);
+  for (let i = buf.length - 1; i > 0; i--) {
+    const b = buf[i], a = buf[i - 1];
+    if (rsvt >= a.svt && rsvt <= b.svt) {
+      const span = b.svt - a.svt;
+      return _lerpSample(a, b, span > 0 ? (rsvt - a.svt) / span : 0);
+    }
+  }
+  return _bufCopy(buf[buf.length - 1]);
+}
+function _bufCopy(s) {
+  return { pos: s.pos.slice(), yaw: s.yaw, pitch: s.pitch, vel: s.vel.slice(),
+           da: s.da, og: s.og, dk: s.dk, ws: s.ws, wsT: s.wsT };
+}
+function _lerpSample(a, b, f) {
+  const lp = (x, y) => x + (y - x) * f;
+  let dy = (b.yaw - a.yaw) % (Math.PI * 2);
+  if (dy >  Math.PI) dy -= Math.PI * 2;
+  if (dy < -Math.PI) dy += Math.PI * 2;
+  const sameWs = a.ws === b.ws;
+  return {
+    pos: [lp(a.pos[0], b.pos[0]), lp(a.pos[1], b.pos[1]), lp(a.pos[2], b.pos[2])],
+    yaw: a.yaw + dy * f, pitch: lp(a.pitch, b.pitch),
+    vel: b.vel,                                   // velocity: latest (drives gait direction)
+    da: lp(a.da, b.da), og: (f < 0.5 ? a.og : b.og), dk: (f < 0.5 ? a.dk : b.dk),
+    ws: b.ws, wsT: sameWs ? lp(a.wsT, b.wsT) : b.wsT,
+  };
+}
+
+// Build the skinned rig for a remote player. Uses the shared _initModelRig (player.js)
+// so the remote carries the SAME animation data (aim sets, upper/lower split, twist
+// map, sequences) the local third-person model does — they animate through one core.
 function _buildRemote(inst) {
   const name = inst.model || 'leet';
   const make = (data) => {
@@ -166,11 +316,7 @@ function _buildRemote(inst) {
     scene.add(rig.root);
     inst.root = rig.root; inst.meshes = rig.meshes;
     inst.originalPositions = rig.originalPositions; inst.boneIndices = rig.boneIndices;
-    inst.bones = data.bones;
-    inst.seqMap = {}; data.sequences.forEach(s => { inst.seqMap[s.name] = s; });
-    const bind = data.sequences.find(s => s.name === (data.bindSeq || 'idle1')) || data.sequences[0];
-    inst.bindWorld = computeBoneWorlds(data.bones, bind.frames[0], null, 0);
-    inst.nameToIdx = {}; data.bones.forEach((b, i) => { inst.nameToIdx[b.name] = i; });
+    _initModelRig(inst, data);                              // bones, seqs, aim sets, split, twist map, bind pose
     inst.hitboxData = data.hitboxes || [];
     if (typeof _buildInstanceHitboxes === 'function') {     // per-bone OBB hitboxes (enemy.js)
       inst.root.updateMatrixWorld(true);
@@ -185,143 +331,58 @@ function _buildRemote(inst) {
     .catch(err => console.warn('[mp] remote model not loaded:', name, err));
 }
 
-// Same gait choice as the local model (_gaitNames), but from the remote's reported state.
-function _remoteSeq(inst) {
-  if (!inst.og) return inst.seqMap.jump ? 'jump' : 'idle1';
-  if (inst.dk)  return (inst.sp > 12 && inst.seqMap.crouchrun) ? 'crouchrun' : 'crouch_idle';
-  return inst.sp > 140 ? 'run' : inst.sp > 12 ? 'walk' : 'idle1';
-}
-
-// Per-frame: advance/interpolate every remote player. Our own state is sent as
-// usercmds from physics.js (netRecordCmd), not here.
+// Per-frame: advance the interpolation clock, then render every remote player at it.
+// Our own avatar is sent as usercmds from physics.js (netRecordCmd), not here.
 function netUpdate(dt) {
+  // Render ~NET_INTERP_MS behind the newest snapshot. Advance in real time; resync hard
+  // after a stall / before the first snapshot (when the gap to the target is large).
+  const target = _newestSvt - NET_INTERP_MS;
+  if (_renderSvt === 0 || Math.abs(target - _renderSvt) > 250) _renderSvt = target;
+  else { _renderSvt += dt * 1000; if (_renderSvt > target) _renderSvt = target; }
+
   for (const inst of remotePlayers.values()) _updateRemote(inst, dt);
 }
 
+const _ZERO3 = [0, 0, 0];
+
+// Sample the remote's buffered snapshots at the interpolation time, then drive it
+// through the SAME third-person animation core as our local model (player.js
+// animateThirdPerson): gait + leg twist, stand↔crouch blend, upper-body aim by pitch,
+// shoot/reload gestures, weapon-in-hand, map lighting and OBB hitboxes.
 function _updateRemote(inst, dt) {
   if (!inst.ready || !inst.root) return;
-  // Smooth toward the last received position/yaw (snapshots arrive at 20 Hz).
-  const k = Math.min(1, dt * 14);
-  for (let i = 0; i < 3; i++) inst.pos[i] += (inst.tpos[i] - inst.pos[i]) * k;
-  let dy = (inst.tyaw - inst.yaw) % (Math.PI * 2);
-  if (dy >  Math.PI) dy -= Math.PI * 2;
-  if (dy < -Math.PI) dy += Math.PI * 2;
-  inst.yaw += dy * k;
-  inst.root.position.set(inst.pos[0], inst.pos[2], -inst.pos[1]);   // gs → three; feet at origin z
-  inst.root.rotation.y = inst.yaw + Math.PI / 2;                    // matches local model body yaw
+  const s = _sampleRemote(inst, _renderSvt);
+  if (!s) return;
+  inst.pos = s.pos; inst.yaw = s.yaw; inst.dk = s.dk;   // latest interp pose (corpse/light/backstab/hit-predict)
 
-  // Advance the locomotion sequence (looping), then skin the mesh to the live pose.
-  const want = _remoteSeq(inst);
-  if (want !== inst.curSeq) { inst.curSeq = want; inst.frame = 0; }
-  const seq = inst.seqMap[inst.curSeq] || inst.seqMap.idle1;
+  // Dead → play the death animation and freeze the corpse (no gait/aim/gun).
+  if (inst.dead) { _updateRemoteDead(inst, dt); return; }
+
+  if (typeof animateThirdPerson === 'function')
+    animateThirdPerson(inst, {
+      pos: s.pos, vel: s.vel || _ZERO3, yaw: s.yaw, pitch: s.pitch || 0,
+      onGround: !!s.og, duckAmount: s.da || 0, phyDucked: !!s.dk,
+      weaponId: inst.weapon, weaponType: _weaponTypeOf(inst.weapon),
+      ws: s.ws || 0, wsT: s.wsT || 0,
+    }, dt);
+}
+
+// Play a remote's death sequence (once, hold the last frame) and freeze the corpse on
+// the floor. Reuses the same skin + hitbox path as a live model; the gun is hidden.
+function _updateRemoteDead(inst, dt) {
+  const seq = (inst.deathSeq && inst.seqMap[inst.deathSeq]) || inst.seqMap.idle1;
   if (!seq || !seq.frames.length) return;
   const fps = seq.fps > 0 ? seq.fps : 30, N = seq.frames.length;
-  inst.frame = (inst.frame + dt * fps) % N;
-  const i = Math.floor(inst.frame) % N, frac = inst.frame - Math.floor(inst.frame), next = (i + 1) % N;
-  const cur = computeBoneWorlds(inst.bones, seq.frames[i], frac > 0.001 ? seq.frames[next] : null, frac);
-  _skinRig(inst.meshes, inst.originalPositions, inst.boneIndices, inst.bones, cur, inst.bindWorld);
+  inst.frame = Math.min((inst.frame || 0) + dt * fps, N - 1);
+  const i = Math.floor(inst.frame), frac = inst.frame - i, next = Math.min(i + 1, N - 1);
+  const cur = computeBoneWorlds(inst.bones, seq.frames[i], (frac > 0.001 && next > i) ? seq.frames[next] : null, frac);
 
+  inst.root.rotation.y = inst.yaw + Math.PI / 2;
+  inst.root.position.set(inst.pos[0], inst.pos[2], -inst.pos[1]);   // origin at pos.z (stand offset)
   inst.root.updateMatrixWorld(true);
-  if (inst.hboxes && typeof _updateHitboxes === 'function') _updateHitboxes(inst, cur);  // hitboxes track the live pose
-  _updateRemoteWeapon(inst, cur);     // gun rides the hand (same skeleton, by bone name)
-  _updateRemoteLight(inst, dt);       // tint by the map's baked floor light (darken in shadow)
-}
-
-// ── Weapon held by a remote player ──────────────────────────────────────────
-// Lazily load+build the world model (p_<weapon>.json) for the remote's current
-// weapon and drive its skeleton with the player's live bone transforms (matched by
-// name), exactly like player.js does for the local third-person gun. Gun-only bones
-// (flash/muzzle) keep their own bind pose.
-const _pModelCache = {};   // weapon id → loaded p_*.json (shared across remotes)
-
-function _updateRemoteWeapon(inst, hostCur) {
-  const id = inst.weapon;
-  const file = (typeof _GUN_FILES !== 'undefined') ? _GUN_FILES[id] : null;
-  // Hide any previously shown gun if the weapon changed.
-  if (inst.curGun && inst.curGun !== id && inst.gunRigs[inst.curGun])
-    inst.gunRigs[inst.curGun].root.visible = false;
-  inst.curGun = id;
-  if (!file) return;                                   // unknown/none → no world model
-
-  let rig = inst.gunRigs[id];
-  if (rig === undefined) {                             // kick off the (one-time) load
-    inst.gunRigs[id] = null;                           // pending sentinel (don't refetch)
-    const build = (data) => {
-      if (!remotePlayers.has(inst.id) || !inst.root) return;
-      const r = _buildRig(data.meshes);
-      inst.root.add(r.root);                           // ride along with the player transform
-      inst.gunRigs[id] = {
-        id, root: r.root, meshes: r.meshes,
-        originalPositions: r.originalPositions, boneIndices: r.boneIndices,
-        bones: data.bones, bindFrame: data.bindFrame,
-        bindWorld: computeBoneWorlds(data.bones, data.bindFrame, null, 0),
-      };
-    };
-    if (_pModelCache[id]) build(_pModelCache[id]);
-    else fetch(file).then(r => r.json())
-      .then(data => { _pModelCache[id] = data; build(data); })
-      .catch(err => console.warn('[mp] world weapon not loaded:', file, err));
-    return;
-  }
-  if (!rig) return;                                    // still loading
-  rig.root.visible = true;
-  const gunCur = _gunWorldFromHost(rig, hostCur, inst.nameToIdx);
-  _skinRig(rig.meshes, rig.originalPositions, rig.boneIndices, rig.bones, gunCur, rig.bindWorld);
-}
-
-// Compose the gun skeleton's world transforms from the player's: shared bones (by
-// name) copy the host's live world R/T; gun-only bones do FK from their parent with
-// their own bind-pose local transform. Mirrors player.js _updateWeaponAttachment but
-// works straight off the already-computed host world pose (computeBoneWorlds output).
-const _rgMat = new THREE.Matrix4(), _rgTr = new THREE.Vector3();
-function _gunWorldFromHost(rig, hostCur, hostNameToIdx) {
-  const bones = rig.bones, n = bones.length;
-  const R = new Array(n), T = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const hi = hostNameToIdx ? hostNameToIdx[bones[i].name] : undefined;
-    if (hi !== undefined && hostCur.R[hi]) {
-      R[i] = hostCur.R[hi]; T[i] = hostCur.T[hi];
-    } else {
-      const bf = rig.bindFrame[i];
-      const mat = boneEulerMat(bf[3], bf[4], bf[5]);
-      const tr = new THREE.Vector3(bf[0], bf[1], bf[2]);
-      const par = bones[i].parent;
-      if (par >= 0 && R[par]) { mat.premultiply(R[par]); tr.applyMatrix4(R[par]).add(T[par]); }
-      R[i] = mat; T[i] = tr;
-    }
-  }
-  return { R, T };
-}
-
-// ── Remote model lighting (GoldSrc R_LightPoint, like player.js) ─────────────
-// Trace to the floor under the player, read the baked lightmap (vertex colors) and
-// tint the body + gun so remote models darken in shadow / brighten in light.
-const _netLightRay = new THREE.Raycaster();
-const _netLightFrom = new THREE.Vector3();
-const _NET_DOWN = new THREE.Vector3(0, -1, 0);
-function _updateRemoteLight(inst, dt) {
-  if (typeof _shellRayTargets === 'undefined' || !_shellRayTargets) return;
-  _netLightFrom.set(inst.pos[0], inst.pos[2] + 16, -inst.pos[1]);
-  _netLightRay.set(_netLightFrom, _NET_DOWN); _netLightRay.far = 4096;
-  const hits = _netLightRay.intersectObjects(_shellRayTargets, false);
-  let r = 1, g = 1, b = 1;
-  const hit = hits.length ? hits[0] : null;
-  if (hit && hit.face) {
-    const col = hit.object.geometry.getAttribute('color');
-    if (col) {
-      const f = hit.face;
-      r = (col.getX(f.a) + col.getX(f.b) + col.getX(f.c)) / 3;
-      g = (col.getY(f.a) + col.getY(f.b) + col.getY(f.c)) / 3;
-      b = (col.getZ(f.a) + col.getZ(f.b) + col.getZ(f.c)) / 3;
-    }
-  }
-  const k = 1 - Math.exp(-8 * dt);
-  inst.lightCol.r += (r - inst.lightCol.r) * k;
-  inst.lightCol.g += (g - inst.lightCol.g) * k;
-  inst.lightCol.b += (b - inst.lightCol.b) * k;
-  for (const m of inst.meshes) m.material.color.copy(inst.lightCol);
-  const gun = inst.gunRigs[inst.curGun];
-  if (gun) for (const m of gun.meshes) m.material.color.copy(inst.lightCol);
+  _skinRig(inst.meshes, inst.originalPositions, inst.boneIndices, inst.bones, cur, inst.bindWorld);
+  for (const k in inst.gunRigs) { const g = inst.gunRigs[k]; if (g) g.root.visible = false; }   // drop the gun from view
+  if (inst.hboxes && typeof _updateHitboxes === 'function') _updateHitboxes(inst, cur);
 }
 
 function _removeRemote(id) {

@@ -35,7 +35,10 @@ function _playerArmorAbsorb(dmg, covered) {
 }
 
 // Apply damage to the player. opts.covered (default true) = armor can soak it.
+// In multiplayer the SERVER owns HP (all damage sources route through it, Phase 6B), so
+// every local damage call is a no-op — HP/death arrive via gstate `me` / `dmg` events.
 function playerTakeDamage(dmg, opts) {
+  if (typeof _netDriven !== 'undefined' && _netDriven) return;
   if (playerDead || !hasJoined || dmg <= 0) return;
   opts = opts || {};
   dmg = _playerArmorAbsorb(dmg, opts.covered !== false);
@@ -82,6 +85,36 @@ function resetPlayerHealth() {
   playerHealth = PLAYER_MAX_HP;
   playerDead = false;
   _hurtT = -Infinity;
+}
+
+// ── Server-authoritative HP mirror (Phase 6B) ────────────────────────────────
+// The server owns HP/armor/death; the client just reflects it. `applyServerSelf` syncs
+// from the periodic gstate `me`; `onServerDamage` is the instant per-hit feedback.
+function applyServerSelf(me) {
+  playerHealth = me.hp;
+  playerArmor  = me.armor;
+  playerHelmet = !!me.helmet;
+  playerDead   = !me.alive;
+  // Economy (Phase 6C): the server owns money/inventory; mirror it.
+  if (me.money != null) playerMoney = me.money;
+  if (Array.isArray(me.weapons)) {
+    ownedWeapons.clear(); ownedWeapons.add('knife');
+    me.weapons.forEach(w => ownedWeapons.add(w));
+  }
+  if (me.nades) for (const k of Object.keys(grenadeCounts)) grenadeCounts[k] = me.nades[k] || 0;
+  if (typeof hasDefuseKit !== 'undefined') hasDefuseKit = !!me.dk;
+}
+
+function onServerDamage(hg, hp, died, by) {
+  playerHealth = hp;
+  _hurtT = performance.now();
+  if (died) {
+    if (!playerDead) playerDead = true;
+    if (typeof playRandom === 'function')
+      playRandom(['player/pl_fallpain1.wav', 'player/pl_fallpain2.wav', 'player/pl_fallpain3.wav'], { volume: 0.9 });
+  } else if (typeof playRandom === 'function') {
+    playRandom(['player/pl_fallpain1.wav', 'player/pl_fallpain2.wav', 'player/pl_fallpain3.wav'], { volume: 0.6 });
+  }
 }
 
 // Grenades (slot 4) — held by count, not a single-owned slot. CS caps: HE 1, flash 2,
@@ -155,7 +188,7 @@ function _slotItem(slot) {
 // Selectable player classes per team (only converted models with full anim sets).
 const CLASSES = {
   t:  [{ name: 'Elite Crew', model: 'leet' }, { name: 'Phoenix Connexion', model: 'terror' }],
-  ct: [{ name: 'GIGN',       model: 'gign' }],
+  ct: [{ name: 'GIGN',       model: 'gign' }, { name: 'SAS', model: 'sas' }],
 };
 
 // ── Buy zone ────────────────────────────────────────────────────────────────
@@ -175,6 +208,18 @@ let _buyMsg = '', _buyMsgT = -Infinity;
 function _flashBuy(msg) { _buyMsg = msg; _buyMsgT = performance.now(); }
 
 function buyItem(item) {
+  // Multiplayer: the server owns the economy — send the intent, it validates + grants
+  // (reply comes back as a `bought` event). The local path below is solo only.
+  if (typeof _netDriven !== 'undefined' && _netDriven) {
+    const id = item.wid || item.equip;
+    // Grenades + defuse kit aren't server-modelled yet (throw/bomb are client-side, 6D);
+    // selling them in MP would desync counts/money, so block until then.
+    if (id === 'hegrenade' || id === 'flashbang' || id === 'smokegrenade' || id === 'defusekit')
+      return _flashBuy('Гранаты/дефуз-кит — пока недоступны в сети');
+    if (id && typeof netSendBuy === 'function') netSendBuy(id);
+    else _flashBuy('Нет модели — недоступно');
+    return;
+  }
   if (typeof buyTimeOpen === 'function' && !buyTimeOpen()) return _flashBuy('Время закупки вышло');
   if (item.teams && !item.teams.includes(playerTeam)) return _flashBuy('Недоступно вашей команде');
   if (!inBuyZone())     return _flashBuy('Вы не в зоне закупки');
@@ -237,6 +282,7 @@ function buyItem(item) {
 
 // Refill ammo for a slot (CS primary/secondary ammo categories buy one "fill").
 function buyAmmo(slot) {
+  if (typeof _netDriven !== 'undefined' && _netDriven) return _flashBuy('Докупка патронов — пока недоступна в сети');
   if (typeof buyTimeOpen === 'function' && !buyTimeOpen()) return _flashBuy('Время закупки вышло');
   if (!inBuyZone()) return _flashBuy('Вы не в зоне закупки');
   const isGun = w => w.type === 'gun';
@@ -359,7 +405,7 @@ function _chooseClass(i) {
   teamStage = null;
   document.getElementById('teammenu').style.display = 'none';
   hasJoined = true;
-  if (typeof netConnect === 'function') netConnect();   // join multiplayer relay (silent if none running)
+  if (typeof netConnect === 'function') netConnect(true);   // join the authoritative server (silent if none)
   if (typeof startMatch === 'function') startMatch();   // begin the round flow (buy time → live → …)
   if (inBuyZone()) _flashBuy('B — купить оружие');
 }

@@ -46,6 +46,7 @@
   .menu-btn:active { transform: translateY(1px); }
   .menu-btn.secondary { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.16); font-weight: 500; font-size: 13px; }
   .menu-btn.secondary:hover { background: rgba(255,255,255,.12); }
+  #mp-status { margin: 2px 0 8px; font-size: 12px; color: #c98a8a; }
   #crosshair {
     position: absolute; top: 50%; left: 50%;
     transform: translate(-50%,-50%);
@@ -97,12 +98,6 @@
     line-height: 1.8; display: none;
     text-shadow: 0 0 4px #000;
   }
-  #keys {
-    position: absolute; top: 16px; right: 16px;
-    color: rgba(255,255,255,.5); font-size: 11px;
-    line-height: 2; text-align: right; display: none;
-    text-shadow: 0 0 4px #000;
-  }
   #settings {
     display: flex; flex-direction: column; gap: 9px;
     padding-top: 12px; border-top: 1px solid rgba(255,255,255,.08);
@@ -129,22 +124,6 @@
     display: none; text-align: right; letter-spacing: 2px;
     text-shadow: 0 0 5px #000;
   }
-  /* ── Target dummy status (top-center) ── */
-  #target-hud {
-    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-    width: 230px; display: none; flex-direction: column; gap: 5px;
-    font-family: 'Segoe UI', system-ui, sans-serif; color: #e8e8ea;
-    text-shadow: 0 0 4px #000; pointer-events: none;
-  }
-  #th-name { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,.6); text-align: center; }
-  .th-row { display: flex; align-items: center; gap: 7px; }
-  .th-ico { width: 16px; text-align: center; font-size: 13px; }
-  .th-bar { flex: 1; height: 7px; background: rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.15); border-radius: 4px; overflow: hidden; }
-  .th-bar > div { height: 100%; width: 100%; transition: width .12s ease; }
-  #th-hp { background: linear-gradient(90deg, #4caf50, #8bc34a); }
-  #th-ap { background: linear-gradient(90deg, #3d7ce8, #78a8f0); }
-  .th-num { width: 30px; text-align: right; font-size: 13px; font-weight: 600; }
-  #th-last { text-align: center; font-size: 12px; font-weight: 700; letter-spacing: 1px; min-height: 15px; transition: opacity .25s; }
   /* ── Round flow HUD ── */
   #round-hud {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
@@ -223,6 +202,7 @@
     <div id="maplist">
       <div class="map-item selected" data-map="de_dust2">de_dust2 <span>тяни — вращать</span></div>
     </div>
+    <div id="mp-status">○ Сервер недоступен — соло</div>
     <button id="btn-play" class="menu-btn">Начать игру</button>
     <button id="btn-restart" class="menu-btn secondary" style="display:none">Заново (респаун)</button>
     <div id="settings">
@@ -250,18 +230,6 @@
 <div id="flash-overlay"></div>
 <div id="hurt-overlay"></div>
 <div id="hud"><div id="pos"></div><div id="spd"></div></div>
-<div id="keys">
-  W / S — forward / back<br>
-  A / D — left / right<br>
-  Space — jump<br>
-  Shift — walk &nbsp; Ctrl — crouch<br>
-  1 — M4A1 &nbsp; 2 — USP &nbsp; 3 — knife<br>
-  R — reload &nbsp; Q — prev weapon<br>
-  LMB — fire / slash &nbsp; RMB — stab<br>
-  B — закупка &nbsp; G — бросить<br>
-  E — заложить / разминировать бомбу (удерживать)<br>
-  ESC — pause
-</div>
 <div id="weapon-hud">
   <div id="ammo-display"></div>
   <div id="weapon-name">KNIFE</div>
@@ -274,12 +242,6 @@
 <div id="buymsg"></div>
 <div id="teammenu"></div>
 <div id="buymenu"></div>
-<div id="target-hud">
-  <div id="th-name">Манекен (T) — мишень</div>
-  <div class="th-row"><span class="th-ico" style="color:#8bc34a">♥</span><div class="th-bar"><div id="th-hp"></div></div><span class="th-num" id="th-hp-n">100</span></div>
-  <div class="th-row"><span class="th-ico" style="color:#78a8f0">⛊</span><div class="th-bar"><div id="th-ap"></div></div><span class="th-num" id="th-ap-n">100</span></div>
-  <div id="th-last"></div>
-</div>
 <div id="round-hud"></div>
 <div id="round-banner"></div>
 <div id="bomb-action"></div>
@@ -317,6 +279,7 @@
     'src/hud.js',
     'src/physics.js',
     'src/sim-core.js',
+    'src/combat-core.js',
     'src/game.js',
     'src/grenades.js',
     'src/rounds.js',

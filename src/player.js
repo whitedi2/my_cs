@@ -78,6 +78,48 @@ function _buildRig(meshList) {
   return { root, meshes, originalPositions, boneIndices };
 }
 
+// Fill a rig object with the per-model ANIMATION data shared by the local player and
+// every remote player: bind pose, locomotion sequences, the upper/lower bone split,
+// the leg-twist map, the bone-name index and the aim sets. (Mesh buffers are produced
+// by _buildRig separately.) Both loadPlayerModel and net.js _buildRemote call this so
+// remotes animate through the exact same pipeline as the local third-person model.
+function _initModelRig(rig, data) {
+  rig.bones = data.bones;
+  const bindSeq = data.sequences.find(s => s.name === (data.bindSeq || 'idle1')) || data.sequences[0];
+  rig.bindWorld = computeBoneWorlds(data.bones, bindSeq.frames[0], null, 0);
+  rig.idlePose  = bindSeq.frames[0];    // neutral local pose for the upper body
+  rig.aimSets   = data.aimSets || {};   // upper-body aim/shoot/reload per weapon class
+  rig.seqMap    = {};
+  data.sequences.forEach(s => { rig.seqMap[s.name] = s; });
+  if (rig.phase == null) rig.phase = 0;
+
+  // Upper/lower split. "Lower" (gait-driven) = ONLY the leg chains (descendants of a
+  // thigh). Everything else — pelvis, spine, arms, head — is "upper" (aim-driven).
+  const lThigh = data.bones.findIndex(b => b.name === 'Bip01 L Thigh');
+  const rThigh = data.bones.findIndex(b => b.name === 'Bip01 R Thigh');
+  rig.upper = data.bones.map((_, i) => {
+    for (let j = i; j >= 0; j = data.bones[j].parent) if (j === lThigh || j === rThigh) return false;
+    return true;
+  });
+
+  rig.nameToIdx = {};
+  data.bones.forEach((b, i) => { rig.nameToIdx[b.name] = i; });
+  rig.twistMap = _legTwistMap(data.bones);   // gait-yaw: legs twist, torso holds the aim
+  rig.handBone = rig.nameToIdx['Bip01 R Hand'];   // shell-ejection point
+
+  // Combat reactions (non-lethal flinch / death) — present only when the model was
+  // exported with --deaths (leet/terror/urban have them; gign currently does not, so
+  // its `flinch` is {} and these stay no-ops). Used for networked players' hit reactions.
+  rig.flinch    = data.flinch || {};
+  rig.flinchDur = 0.22;     // hold time of a flinch blend (s)
+  if (rig.flinchT == null) rig.flinchT = 0;
+
+  if (!rig.gunRigs)     rig.gunRigs = {};                       // weapon id → world-model rig
+  if (!rig.lightCol)    rig.lightCol = new THREE.Color(1, 1, 1);
+  if (!rig.handWorld)   rig.handWorld = new THREE.Vector3();
+  if (!rig.muzzleWorld) rig.muzzleWorld = new THREE.Vector3();
+}
+
 // Deferred: called once at "Start" so the ~2 MB player bundle isn't fetched on page load.
 let _playerLoaded = false;
 function loadPlayerModel() {
@@ -91,35 +133,9 @@ function loadPlayerModel() {
 
   player.root = rig.root;
   player.meshes = rig.meshes;
-  player.bones = data.bones;
   player.originalPositions = rig.originalPositions;
   player.boneIndices = rig.boneIndices;
-  const bindSeq = data.sequences.find(s => s.name === (data.bindSeq || 'idle1')) || data.sequences[0];
-  player.bindWorld = computeBoneWorlds(data.bones, bindSeq.frames[0], null, 0);
-  player.idlePose = bindSeq.frames[0];   // neutral local pose for the upper body
-  player.aimSets = data.aimSets || {};   // upper-body aim/shoot/reload per weapon class
-  player.seqMap = {};                    // name → gait sequence
-  data.sequences.forEach(s => { player.seqMap[s.name] = s; });
-  player.phase = 0;                      // normalized locomotion cycle phase [0,1)
-
-  // Upper/lower split. "Lower" (gait-driven) = ONLY the leg chains (anything that
-  // descends from a thigh). Everything else — pelvis, spine, arms, head — is
-  // "upper" (aim-driven). Keeping the PELVIS upper is key: the walk/run sequences
-  // rotate the pelvis (hip turn), and since the spine is its child that rotation
-  // would leak into the torso (a fixed sideways shift whenever moving). With the
-  // pelvis on the aim, the torso stays put and only the legs animate.
-  const lThigh = data.bones.findIndex(b => b.name === 'Bip01 L Thigh');
-  const rThigh = data.bones.findIndex(b => b.name === 'Bip01 R Thigh');
-  player.upper = data.bones.map((_, i) => {
-    for (let j = i; j >= 0; j = data.bones[j].parent) if (j === lThigh || j === rThigh) return false;
-    return true;
-  });
-
-  // Bone-name → index map (for cross-skinning the world weapon onto this skeleton).
-  player.nameToIdx = {};
-  data.bones.forEach((b, i) => { player.nameToIdx[b.name] = i; });
-  player.twistMap = _legTwistMap(data.bones);   // gait-yaw: legs twist, torso holds the aim
-  player.handBone = player.nameToIdx['Bip01 R Hand'];   // shell-ejection point
+  _initModelRig(player, data);   // bones, seqs, aim sets, upper/lower split, twist map, bind pose
 
   console.log(`Player model loaded: ${data.name} (${data.bones.length} bones, ${data.sequences.length} seqs)`);
   _loadGunRigs();          // starts the gun fetches (tracked) before ending this one
@@ -132,7 +148,6 @@ function loadPlayerModel() {
 // We drive that skeleton with the player's current pose (matched by bone name)
 // so the gun follows the hand; bones the gun adds (flash/muzzle) keep their bind
 // pose. Rigs are parented to player.root, so they inherit its world placement.
-const _gunRigs = {};                                  // weapon id → rig
 const _GUN_FILES = {
   m4: 'models/p_m4a1.json', usp: 'models/p_usp.json', knife: 'models/p_knife.json',
   ak47: 'models/p_ak47.json', galil: 'models/p_galil.json', famas: 'models/p_famas.json',
@@ -146,29 +161,69 @@ const _GUN_FILES = {
   smokegrenade: 'models/p_smokegrenade.json',
 };
 
+// Parsed p_*.json cache, shared across every third-person rig (local player + remotes).
+const _pModelCache = {};
+
+// Weapon id → type ('gun' | 'melee' | 'grenade') from the WPNS config (weapons.js).
+// Remote players only carry a weapon id; the upper-body layer needs the type to choose
+// additive recoil (guns) vs. an absolute swing (melee).
+function _weaponTypeOf(id) {
+  if (typeof WPNS === 'undefined' || !id) return 'gun';
+  const w = WPNS.find(x => x.id === id);
+  return w ? w.type : 'gun';
+}
+
+// Build the world weapon `id` for a rig and parent it under rig.root. Shared by the
+// local preload (_loadGunRigs) and the lazy per-remote loader (_ensureGunRig).
+function _buildGunRig(rig, id, data) {
+  if (!rig.root || !rig.gunRigs) return;
+  if (rig.gunRigs[id] && rig.gunRigs[id].root) return;   // already built (preload/lazy race)
+  const r = _buildRig(data.meshes);
+  r.root.visible = false;
+  rig.root.add(r.root);   // ride along with the model's transform
+  rig.gunRigs[id] = {
+    id, root: r.root, meshes: r.meshes,
+    originalPositions: r.originalPositions, boneIndices: r.boneIndices,
+    bones: data.bones, bindFrame: data.bindFrame,
+    bindWorld: computeBoneWorlds(data.bones, data.bindFrame, null, 0),
+  };
+}
+
+// Lazily ensure rig.gunRigs[id] is built (fetch + cache the p_*.json once). Returns the
+// built gun rig, or null while pending / for a weapon with no world model. Remotes call
+// this on demand; the local player has them all preloaded so it returns immediately.
+function _ensureGunRig(rig, id) {
+  if (!id || !rig.gunRigs) return null;
+  const cur = rig.gunRigs[id];
+  if (cur !== undefined) return cur;                   // built (obj) or pending (null)
+  const file = _GUN_FILES[id];
+  if (!file) { rig.gunRigs[id] = null; return null; }  // weapon with no world model
+  rig.gunRigs[id] = null;                              // pending sentinel (don't refetch)
+  if (_pModelCache[id]) { _buildGunRig(rig, id, _pModelCache[id]); return rig.gunRigs[id]; }
+  fetch(file).then(r => r.json())
+    .then(data => { _pModelCache[id] = data; _buildGunRig(rig, id, data); })
+    .catch(err => console.warn('[tp] gun rig not loaded:', file, err));
+  return null;
+}
+
+// Local player: preload every world model up-front (tracked by the loading screen) so
+// weapon switches don't hitch. Remotes load lazily through _ensureGunRig.
 function _loadGunRigs() {
   for (const [id, file] of Object.entries(_GUN_FILES)) {
     _trackFetchStart();
     fetch(file).then(r => r.json()).then(data => {
-      const rig = _buildRig(data.meshes);
-      rig.root.visible = false;
-      player.root.add(rig.root);   // ride along with the player model's transform
-      _gunRigs[id] = {
-        id, root: rig.root, meshes: rig.meshes,
-        originalPositions: rig.originalPositions, boneIndices: rig.boneIndices,
-        bones: data.bones, bindFrame: data.bindFrame,
-        bindWorld: computeBoneWorlds(data.bones, data.bindFrame, null, 0),
-      };
+      _pModelCache[id] = data;
+      _buildGunRig(player, id, data);
       _trackFetchEnd();
     }).catch(err => { _trackFetchEnd(); console.warn(`gun rig ${file} not loaded:`, err); });
   }
 }
 
 // Stand / crouch locomotion sequence names for the current speed & ground state.
-function _gaitNames() {
-  const spd = Math.hypot(vel[0], vel[1]);
-  const stand  = !onGround ? 'jump'        : (spd > 140 ? 'run' : spd > 12 ? 'walk' : 'idle1');
-  const crouch = !onGround ? 'crouch_idle' : (spd > 12 ? 'crouchrun' : 'crouch_idle');
+function _gaitNames(st) {
+  const spd = Math.hypot(st.vel[0], st.vel[1]);
+  const stand  = !st.onGround ? 'jump'        : (spd > 140 ? 'run' : spd > 12 ? 'walk' : 'idle1');
+  const crouch = !st.onGround ? 'crouch_idle' : (spd > 12 ? 'crouchrun' : 'crouch_idle');
   return { stand, crouch };
 }
 
@@ -253,25 +308,25 @@ function _easeAngle(cur, target, t) { return cur + _angleDiff(target, cur) * t; 
 // Advance the gait yaw; sets player.gaitReverse (back-pedal). The torso twist is
 // recomputed by the caller from player.gaitYaw.
 const _BACKPEDAL = 2.094;   // ~120°: beyond this, walk backward instead of turning the legs
-function _updateGaitYaw(dt) {
-  if (player.gaitYaw == null) player.gaitYaw = yaw;
-  const spd = Math.hypot(vel[0], vel[1]);
+function _updateGaitYaw(rig, st, dt) {
+  if (rig.gaitYaw == null) rig.gaitYaw = st.yaw;
+  const spd = Math.hypot(st.vel[0], st.vel[1]);
   let reverse = false;
-  if (onGround && spd > 12) {
-    let moveYaw = Math.atan2(-vel[0], vel[1]);   // legs face the movement direction
+  if (st.onGround && spd > 12) {
+    let moveYaw = Math.atan2(-st.vel[0], st.vel[1]);   // legs face the movement direction
     // Back-pedal (GoldSrc): if moving away from the aim by >120°, face the legs
     // toward the aim and play the gait cycle in reverse, instead of turning the
     // legs around (which would look like walking sideways/backwards-facing).
-    if (Math.abs(_angleDiff(moveYaw, yaw)) > _BACKPEDAL) { moveYaw += Math.PI; reverse = true; }
-    player.gaitYaw = _easeAngle(player.gaitYaw, moveYaw, 1 - Math.exp(-12 * dt));
+    if (Math.abs(_angleDiff(moveYaw, st.yaw)) > _BACKPEDAL) { moveYaw += Math.PI; reverse = true; }
+    rig.gaitYaw = _easeAngle(rig.gaitYaw, moveYaw, 1 - Math.exp(-12 * dt));
   } else {
-    player.gaitYaw = _easeAngle(player.gaitYaw, yaw, 1 - Math.exp(-5 * dt));  // legs catch up to aim
+    rig.gaitYaw = _easeAngle(rig.gaitYaw, st.yaw, 1 - Math.exp(-5 * dt));  // legs catch up to aim
   }
   // Clamp the legs to within TWIST_LIMIT of the aim (the torso twist limit).
-  const twist = _angleDiff(yaw, player.gaitYaw);
-  if (twist >  TWIST_LIMIT) player.gaitYaw = yaw - TWIST_LIMIT;
-  if (twist < -TWIST_LIMIT) player.gaitYaw = yaw + TWIST_LIMIT;
-  player.gaitReverse = reverse;
+  const twist = _angleDiff(st.yaw, rig.gaitYaw);
+  if (twist >  TWIST_LIMIT) rig.gaitYaw = st.yaw - TWIST_LIMIT;
+  if (twist < -TWIST_LIMIT) rig.gaitYaw = st.yaw + TWIST_LIMIT;
+  rig.gaitReverse = reverse;
 }
 
 // Native speed each locomotion cycle was authored for — used to scale playback
@@ -299,9 +354,9 @@ function _blendPose(a, b, t) {
 }
 
 // Aim hold pose, interpolated across the 9 pitch blends by the look pitch.
-function _aimPose(aim) {
+function _aimPose(aim, st) {
   const [s, e] = aim.range;
-  let pd = AIM_PITCH_SIGN * pitch * 180 / Math.PI;
+  let pd = AIM_PITCH_SIGN * st.pitch * 180 / Math.PI;
   pd = Math.max(Math.min(s, e), Math.min(Math.max(s, e), pd));
   const n = aim.blends.length;
   const idx = Math.max(0, Math.min((pd - s) / (e - s) * (n - 1), n - 1));
@@ -327,10 +382,10 @@ function _clipPose(clip, t) { return _framesAt(_clipFrames(clip), clip.fps, t); 
 // Pitched gesture (melee): the swing is stored at 3 pitch blends; pick/interp by
 // the look pitch, then sample at time t — so the knife cuts where you look. Gun
 // recoil stays additive over the aimed pose, so it doesn't need this.
-function _clipPosePitched(clip, t) {
+function _clipPosePitched(clip, t, st) {
   if (!clip.blends) return _clipPose(clip, t);
   const [s, e] = clip.range;
-  let pd = AIM_PITCH_SIGN * pitch * 180 / Math.PI;
+  let pd = AIM_PITCH_SIGN * st.pitch * 180 / Math.PI;
   pd = Math.max(Math.min(s, e), Math.min(Math.max(s, e), pd));
   const n = clip.blends.length;
   const idx = Math.max(0, Math.min((pd - s) / (e - s) * (n - 1), n - 1));
@@ -356,84 +411,128 @@ function _addGesture(base, clip, t) {
 }
 
 // Resolve the upper-body local pose for the current weapon + weapon state.
-function _resolveUpperPose(dt) {
-  const wpn = (typeof curW === 'function') ? curW() : null;
-  const set = wpn ? player.aimSets[_AIM_SET[wpn.id]] : null;
-  if (!set) return player.idlePose;
-  const ducked = phyDucked || duckAmount > 0.5;
-  const aim = (ducked && set.crouchAim) ? set.crouchAim : set.aim;
-  const base = aim ? _aimPose(aim) : player.idlePose;   // pitch-aimed hold pose
+function _resolveUpperPose(rig, st, dt) {
+  const wpnId = st.weaponId, wpnType = st.weaponType;
+  const set = wpnId ? rig.aimSets[_AIM_SET[wpnId]] : null;
+  let pose;
+  if (!set) {
+    pose = rig.idlePose;
+  } else {
+    const ducked = st.phyDucked || st.duckAmount > 0.5;
+    const aim = (ducked && set.crouchAim) ? set.crouchAim : set.aim;
+    const base = aim ? _aimPose(aim, st) : rig.idlePose;   // pitch-aimed hold pose
 
-  // Resolve the active gesture (if any) layered over the aimed base.
-  let gesture = null;
-  const firing = (wpn.type === 'gun' && ws === WS.FIRE) || ws === WS.SLASH || ws === WS.STAB;
-  if (firing) {
-    const clip = (ducked && set.crouchShoot) ? set.crouchShoot : set.shoot;
-    // Guns: small recoil → additive over the aim. Melee: play the REAL swing
-    // absolutely, pitch-blended (additive would flail a big swing).
-    if (clip) gesture = (wpn.type === 'gun') ? _addGesture(base, clip, wsT) : _clipPosePitched(clip, wsT);
-  } else if (ws === WS.RELOAD) {
-    const clip = (ducked && set.crouchReload) ? set.crouchReload : set.reload;
-    if (clip) gesture = _addGesture(base, clip, wsT);
+    // Resolve the active gesture (if any) layered over the aimed base.
+    let gesture = null;
+    const firing = (wpnType === 'gun' && st.ws === WS.FIRE) || st.ws === WS.SLASH || st.ws === WS.STAB;
+    if (firing) {
+      const clip = (ducked && set.crouchShoot) ? set.crouchShoot : set.shoot;
+      // Guns: small recoil → additive over the aim. Melee: play the REAL swing
+      // absolutely, pitch-blended (additive would flail a big swing).
+      if (clip) gesture = (wpnType === 'gun') ? _addGesture(base, clip, st.wsT) : _clipPosePitched(clip, st.wsT, st);
+    } else if (st.ws === WS.RELOAD) {
+      const clip = (ducked && set.crouchReload) ? set.crouchReload : set.reload;
+      if (clip) gesture = _addGesture(base, clip, st.wsT);
+    }
+
+    // Ease aim↔gesture so the torso doesn't snap its angle at attack start/end (the
+    // aim-hold and the swing are different poses; the engine cross-fades too). Blend
+    // out from the last gesture pose for a moment after the gesture ends.
+    if (gesture) rig._lastGesture = gesture;
+    const target = gesture ? 1 : 0;
+    rig._upperMix = (rig._upperMix == null) ? target
+      : rig._upperMix + (target - rig._upperMix) * (1 - Math.exp(-18 * (dt || 0.016)));
+    pose = (rig._upperMix < 0.002 || !rig._lastGesture) ? base
+         : _blendPose(base, rig._lastGesture, rig._upperMix);
   }
+  return _applyFlinch(rig, pose, dt);
+}
 
-  // Ease aim↔gesture so the torso doesn't snap its angle at attack start/end (the
-  // aim-hold and the swing are different poses; the engine cross-fades too). Blend
-  // out from the last gesture pose for a moment after the gesture ends.
-  if (gesture) player._lastGesture = gesture;
-  const target = gesture ? 1 : 0;
-  player._upperMix = (player._upperMix == null) ? target
-    : player._upperMix + (target - player._upperMix) * (1 - Math.exp(-18 * (dt || 0.016)));
-  if (player._upperMix < 0.002 || !player._lastGesture) return base;
-  return _blendPose(base, player._lastGesture, player._upperMix);
+// Blend a non-lethal hit flinch (head/gut, from the model's combat anims) over the
+// upper-body pose, fading out across flinchDur. No-op unless the rig is mid-flinch and
+// the model carries the data (set by _onRemoteReact for networked players). GoldSrc
+// plays the flinch as an upper-body layer over the gait, which is exactly this.
+function _applyFlinch(rig, pose, dt) {
+  const fl = (rig.flinchT > 0 && rig.flinch) ? rig.flinch[rig.flinchSeq] : null;
+  if (!fl || !fl.frames || !fl.frames.length) { if (rig.flinchT > 0) rig.flinchT = 0; return pose; }
+  const step = dt || 0.016;
+  rig.flinchT -= step;
+  const ffps = fl.fps > 0 ? fl.fps : 30, fN = fl.frames.length;
+  rig.flinchFrame = Math.min((rig.flinchFrame || 0) + step * ffps, fN - 1);
+  const fi = Math.floor(rig.flinchFrame), ffrac = rig.flinchFrame - fi;
+  const flPose = _blendPose(fl.frames[fi], fl.frames[Math.min(fi + 1, fN - 1)], ffrac);
+  const w = Math.max(0, Math.min(1, rig.flinchT / (rig.flinchDur || 0.22)));
+  return _blendPose(pose, flPose, w);
 }
 
 const _plSkinTmp = new THREE.Vector3();
 const _plHandTmp = new THREE.Vector3();
 
-// ── Per-frame update (called from the render loop) ──────────────────────────
+// ── Per-frame update for the LOCAL third-person model ───────────────────────
+// Thin wrapper: pack the player globals into a state object and drive the shared
+// animation core (also used for remote players in net.js).
 function updatePlayerModel(dt) {
   if (!player.root) return;
   player.root.visible = thirdPerson;
   if (!thirdPerson || !gsPos) return;
+  const w = (typeof curW === 'function') ? curW() : null;
+  animateThirdPerson(player, {
+    pos: gsPos, vel, yaw, pitch,
+    onGround, duckAmount, phyDucked,
+    weaponId: w ? w.id : null, weaponType: w ? w.type : null,
+    ws: (typeof ws !== 'undefined') ? ws : 0,
+    wsT: (typeof wsT !== 'undefined') ? wsT : 0,
+  }, dt);
+}
+
+// ── Shared third-person animation core (local player + remote players) ──────
+// rig : a model rig (mesh buffers from _buildRig + anim data from _initModelRig).
+// st  : per-frame state — { pos[gs], vel[gs], yaw, pitch, onGround, duckAmount,
+//       phyDucked, weaponId, weaponType, ws, wsT }. For the local player this comes
+//       from the module globals; for a remote it comes from the interpolated snapshot.
+// Drives gait + the upper-body aim/shoot/reload layer, skins the body, places it on
+// the floor, attaches the held weapon and tints it by the map light. If the rig has
+// per-bone OBB hitboxes (remotes), they're refreshed to the live pose for hit reg.
+function animateThirdPerson(rig, st, dt) {
+  if (!rig.root || !rig.bones) return;
 
   // Gait yaw: the root (torso) always faces the AIM, so the upper body never drifts
   // off-aim from movement. Only the LEGS get twisted toward the gait yaw (lags the
   // aim when turning, follows the movement direction). GoldSrc StudioProcessGait.
-  _updateGaitYaw(dt);                                            // updates player.gaitYaw (legs)
-  const legTwist = _angleDiff(player.gaitYaw, yaw) * TWIST_SIGN; // legs relative to aim
-  player.root.rotation.y = yaw + Math.PI / 2;
+  _updateGaitYaw(rig, st, dt);                                   // updates rig.gaitYaw (legs)
+  const legTwist = _angleDiff(rig.gaitYaw, st.yaw) * TWIST_SIGN; // legs relative to aim
+  rig.root.rotation.y = st.yaw + Math.PI / 2;
 
   // ── Gait (legs): cross-fade stand↔crouch by duckAmount ───────────────────
   // The crouch is a smooth transition (ducktime), so blend the stand and crouch
   // locomotion poses instead of snapping at a threshold — otherwise the legs
   // popped between poses and the body appeared to float up/down out of the floor.
-  const { stand, crouch } = _gaitNames();
-  const standSeq  = player.seqMap[stand]  || player.seqMap.idle1;
-  const crouchSeq = player.seqMap[crouch] || standSeq;
+  const { stand, crouch } = _gaitNames(st);
+  const standSeq  = rig.seqMap[stand]  || rig.seqMap.idle1;
+  const crouchSeq = rig.seqMap[crouch] || standSeq;
   if (!standSeq?.frames.length) return;
-  const d = Math.min(1, Math.max(0, duckAmount));
+  const d = Math.min(1, Math.max(0, st.duckAmount));
 
   // Advance one shared cycle phase at the dominant tier's speed-scaled rate.
   const domName = d > 0.5 ? crouch : stand;
   const domSeq  = d > 0.5 ? crouchSeq : standSeq;
   let fps = domSeq.fps > 0 ? domSeq.fps : 30;
   const base = _seqBaseSpeed[domName];
-  if (base) fps *= Math.max(0.35, Math.min(2.2, Math.hypot(vel[0], vel[1]) / base));
-  const dir = player.gaitReverse ? -1 : 1;   // back-pedal plays the cycle in reverse
-  const ph = player.phase + dir * dt * fps / domSeq.frames.length;
-  player.phase = ph - Math.floor(ph);         // wrap to [0,1) (handles negative)
+  if (base) fps *= Math.max(0.35, Math.min(2.2, Math.hypot(st.vel[0], st.vel[1]) / base));
+  const dir = rig.gaitReverse ? -1 : 1;   // back-pedal plays the cycle in reverse
+  const ph = rig.phase + dir * dt * fps / domSeq.frames.length;
+  rig.phase = ph - Math.floor(ph);         // wrap to [0,1) (handles negative)
 
   // Build the final per-bone local pose in quaternions (everything slerped, no
   // euler-lerp glitches): legs = stand & crouch sampled at the shared phase and
   // blended by duckAmount; upper body = the weapon's aim/shoot/reload layer.
-  const n = player.bones.length;
+  const n = rig.bones.length;
   _ensureScratch(n);
-  _sampleSeqQ(standSeq, player.phase, _qS, _tS);
-  if (d > 0) _sampleSeqQ(crouchSeq, player.phase, _qC, _tC);
-  const up = _resolveUpperPose(dt);
+  _sampleSeqQ(standSeq, rig.phase, _qS, _tS);
+  if (d > 0) _sampleSeqQ(crouchSeq, rig.phase, _qC, _tC);
+  const up = _resolveUpperPose(rig, st, dt);
   for (let b = 0; b < n; b++) {
-    if (player.upper[b]) {
+    if (rig.upper[b]) {
       boneEulerQuat(up[b][3], up[b][4], up[b][5], _qF[b]);
       _tF[b][0] = up[b][0]; _tF[b][1] = up[b][1]; _tF[b][2] = up[b][2];
     } else if (d <= 0) {
@@ -447,31 +546,34 @@ function updatePlayerModel(dt) {
       _tF[b][2] = _tS[b][2] + (_tC[b][2] - _tS[b][2]) * d;
     }
   }
-  const cur = _fkQ(player.bones, _qF, _tF, legTwist, player.twistMap);
+  const cur = _fkQ(rig.bones, _qF, _tF, legTwist, rig.twistMap);
 
-  _skinRig(player.meshes, player.originalPositions, player.boneIndices, player.bones, cur, player.bindWorld);
+  _skinRig(rig.meshes, rig.originalPositions, rig.boneIndices, rig.bones, cur, rig.bindWorld);
 
   // Vertical placement (analytic — no per-frame foot tracking, so no jitter/lag).
-  // On the ground the real floor = the hull bottom: gsPos.z − 36 standing, − 18
-  // with the duck hull. The crouch pose pulls the feet ~18u toward the origin, so
-  // drop the origin by 18·duckAmount to keep the soles on the floor across the
-  // whole stand↔crouch blend. In the air the pose already matches the active hull
-  // (jump↔stand, crouch↔duck), so the origin sits at gsPos.
-  const floorZ = gsPos[2] - (phyDucked ? 18 : 36);
-  const originY = onGround ? floorZ + 36 - 18 * d : gsPos[2];
-  player.root.position.set(gsPos[0], originY, -gsPos[1]);
+  // On the ground the real floor = the hull bottom: pos.z − 36 standing, − 18 with
+  // the duck hull. The crouch pose pulls the feet ~18u toward the origin, so drop the
+  // origin by 18·duckAmount to keep the soles on the floor across the whole
+  // stand↔crouch blend. In the air the pose already matches the active hull
+  // (jump↔stand, crouch↔duck), so the origin sits at pos.
+  const floorZ = st.pos[2] - (st.phyDucked ? 18 : 36);
+  const originY = st.onGround ? floorZ + 36 - 18 * d : st.pos[2];
+  rig.root.position.set(st.pos[0], originY, -st.pos[1]);
+  rig.root.updateMatrixWorld(true);   // hand/muzzle/hitbox world reads below need the fresh transform
 
   // Cache the right-hand world position for third-person shell ejection.
-  if (player.handBone !== undefined && cur.T[player.handBone]) {
-    player.root.updateMatrixWorld();
-    const h = cur.T[player.handBone];
+  if (rig.handBone !== undefined && cur.T[rig.handBone]) {
+    const h = cur.T[rig.handBone];
     _plHandTmp.set(h.x, h.z, -h.y);         // GoldSrc model space → Three local
-    player.handWorld.copy(player.root.localToWorld(_plHandTmp));
-    player.hasHandWorld = true;
+    rig.handWorld.copy(rig.root.localToWorld(_plHandTmp));
+    rig.hasHandWorld = true;
   }
 
-  _updateWeaponAttachment(_qF, _tF);   // gun rides the torso → already on the aim, no twist
-  _updateModelLight(dt);               // tint by the map's baked light (darken in shadow)
+  _updateWeaponAttachment(rig, st, _qF, _tF);   // gun rides the torso → already on the aim, no twist
+  _updateModelLight(rig, st, dt);               // tint by the map's baked light (darken in shadow)
+
+  // Per-bone OBB hitboxes (remotes only) track the live pose so hit reg lines up.
+  if (rig.hboxes && typeof _updateHitboxes === 'function') _updateHitboxes(rig, cur);
 }
 
 // Eject a shell from the third-person model's gun (world space), as in the
@@ -527,43 +629,43 @@ function _skinRig(meshes, origPositions, boneIndices, bones, cur, bind) {
 // name) and skin the gun mesh, so it tracks the hand. Bones the gun adds that the
 // player lacks (muzzle/flash helpers) keep their own bind pose.
 let _gScN = 0, _gq, _gt;
-function _updateWeaponAttachment(plQ, plT) {
-  const id = (typeof curW === 'function' && curW()) ? curW().id : null;
-  for (const k in _gunRigs) _gunRigs[k].root.visible = (k === id);
-  const rig = _gunRigs[id];
-  if (!rig) return;
+function _updateWeaponAttachment(rig, st, plQ, plT) {
+  const id = st.weaponId;
+  for (const k in rig.gunRigs) { const g = rig.gunRigs[k]; if (g) g.root.visible = (k === id); }
+  const gun = _ensureGunRig(rig, id);   // lazy-load (remotes) / preloaded (local)
+  if (!gun) return;                     // unknown weapon or still loading
+  gun.root.visible = true;
 
-  const N = rig.bones.length;
+  const N = gun.bones.length;
   if (_gScN !== N) {
     _gScN = N;
     _gq = Array.from({ length: N }, () => new THREE.Quaternion());
     _gt = Array.from({ length: N }, () => [0, 0, 0]);
   }
-  // Shared bones take the player's current local pose (by name); bones the gun
+  // Shared bones take the model's current local pose (by name); bones the gun
   // adds (muzzle/flash) keep their own bind pose.
   for (let i = 0; i < N; i++) {
-    const pj = player.nameToIdx[rig.bones[i].name];
+    const pj = rig.nameToIdx[gun.bones[i].name];
     if (pj !== undefined) {
       _gq[i].copy(plQ[pj]);
       _gt[i][0] = plT[pj][0]; _gt[i][1] = plT[pj][1]; _gt[i][2] = plT[pj][2];
     } else {
-      const bf = rig.bindFrame[i];
+      const bf = gun.bindFrame[i];
       boneEulerQuat(bf[3], bf[4], bf[5], _gq[i]);
       _gt[i][0] = bf[0]; _gt[i][1] = bf[1]; _gt[i][2] = bf[2];
     }
   }
-  const cur = _fkQ(rig.bones, _gq, _gt);
-  _skinRig(rig.meshes, rig.originalPositions, rig.boneIndices, rig.bones, cur, rig.bindWorld);
+  const cur = _fkQ(gun.bones, _gq, _gt);
+  _skinRig(gun.meshes, gun.originalPositions, gun.boneIndices, gun.bones, cur, gun.bindWorld);
 
   // Cache the muzzle ('flash' bone) world position for the third-person flash.
-  if (rig.muzzleBone === undefined)
-    rig.muzzleBone = rig.bones.findIndex(b => /flash|muzzle/i.test(b.name));
-  if (rig.muzzleBone >= 0 && cur.T[rig.muzzleBone]) {
-    const m = cur.T[rig.muzzleBone];
+  if (gun.muzzleBone === undefined)
+    gun.muzzleBone = gun.bones.findIndex(b => /flash|muzzle/i.test(b.name));
+  if (gun.muzzleBone >= 0 && cur.T[gun.muzzleBone]) {
+    const m = cur.T[gun.muzzleBone];
     _plHandTmp.set(m.x, m.z, -m.y);
-    player.root.updateMatrixWorld();
-    player.muzzleWorld.copy(player.root.localToWorld(_plHandTmp));
-    player.hasMuzzleWorld = true;
+    rig.muzzleWorld.copy(rig.root.localToWorld(_plHandTmp));
+    rig.hasMuzzleWorld = true;
   }
 }
 
@@ -579,9 +681,9 @@ function _muzzleFlashThirdPerson(wpn) {
 const _DOWN = new THREE.Vector3(0, -1, 0);
 const _lightOrigin = new THREE.Vector3();
 const _lightRay = new THREE.Raycaster();
-function _updateModelLight(dt) {
-  if (!gsPos || !_shellRayTargets) return;
-  _lightOrigin.set(gsPos[0], gsPos[2] + 16, -gsPos[1]);
+function _updateModelLight(rig, st, dt) {
+  if (!st.pos || !_shellRayTargets) return;
+  _lightOrigin.set(st.pos[0], st.pos[2] + 16, -st.pos[1]);
   _lightRay.set(_lightOrigin, _DOWN);
   _lightRay.far = 4096;
   const hits = _lightRay.intersectObjects(_shellRayTargets, false);
@@ -597,13 +699,12 @@ function _updateModelLight(dt) {
     }
   }
   const k = 1 - Math.exp(-8 * dt);
-  player.lightCol.r += (r - player.lightCol.r) * k;
-  player.lightCol.g += (g - player.lightCol.g) * k;
-  player.lightCol.b += (b - player.lightCol.b) * k;
-  for (const m of player.meshes) m.material.color.copy(player.lightCol);
-  const id = (typeof curW === 'function' && curW()) ? curW().id : null;
-  const rig = _gunRigs[id];
-  if (rig) for (const m of rig.meshes) m.material.color.copy(player.lightCol);
+  rig.lightCol.r += (r - rig.lightCol.r) * k;
+  rig.lightCol.g += (g - rig.lightCol.g) * k;
+  rig.lightCol.b += (b - rig.lightCol.b) * k;
+  for (const m of rig.meshes) m.material.color.copy(rig.lightCol);
+  const gun = rig.gunRigs[st.weaponId];
+  if (gun) for (const m of gun.meshes) m.material.color.copy(rig.lightCol);
 }
 
 // ── Chase camera: pull the FPS camera back behind the eye ───────────────────

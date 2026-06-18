@@ -25,6 +25,14 @@ let roundNum   = 0;
 let endTimer   = 0, endMsg = '', endColor = '#fff';
 let hasDefuseKit = false;
 
+// ── Server-driven round flow (Phase 6A) ──────────────────────────────────────
+// When connected to an authoritative server, IT owns phase/timer/score/restart; we
+// stop ticking our own state machine and just display `gstate` (see applyServerRound).
+// Solo (no server) keeps the local logic below unchanged.
+let _netDriven = false;
+let scoreT = 0, scoreCT = 0;   // team score (server-authoritative in MP; 0 solo)
+let serverMap = null;          // map name the server reports
+
 // Bomb state. `bomb` is null until planted; `carrying` is the un-planted C4 (T only).
 let carryingC4 = false;
 let plantProg  = 0;          // plant hold progress (s)
@@ -43,7 +51,14 @@ function startRound(skipRespawn) {
   roundPhase = 'buy';
   buyTimer   = BUY_TIME;
   roundTimer = ROUND_TIME;
-  plantProg  = 0;
+  _localRoundReset(skipRespawn);
+}
+
+// The LOCAL side effects of a new round (respawn, ammo refill, HP reset). Split out so
+// the server-driven path can trigger them on a round bump without re-running the local
+// state machine. HP/spawn stay client-side until 6B.
+function _localRoundReset(skipRespawn) {
+  plantProg = 0;
   _clearBomb();
   if (!skipRespawn && typeof respawn === 'function') respawn();   // reset to a team spawn
   // Refill ammo of owned guns (CS tops you up each round); weapons persist.
@@ -56,6 +71,35 @@ function startRound(skipRespawn) {
   // The T player carries the C4.
   carryingC4 = (playerTeam === 't');
   _banner('');
+}
+
+// ── Server-driven round state (Phase 6A) ─────────────────────────────────────
+// Called by net.js on every `gstate`. The server owns phase/timer/score/restart; we
+// display them and run the LOCAL body reset when the round number bumps.
+function applyServerRound(m) {
+  _netDriven = true;
+  serverMap = m.map;
+  scoreT = m.scoreT | 0; scoreCT = m.scoreCT | 0;
+  const prevRound = roundNum;
+  roundPhase = (m.phase === 'warmup') ? 'idle' : m.phase;   // 'buy' | 'live' | 'over'
+  roundNum   = m.round | 0;
+  if (m.phase === 'buy')        buyTimer = m.timer;
+  else if (m.phase === 'live')  roundTimer = m.timer;
+  else if (m.phase === 'over') { endTimer = m.timer; endMsg = m.reason || ''; endColor = (m.winner === 't') ? '#e8a33d' : '#78a8f0'; }
+  // New round (buy phase) → reset our body once we've actually joined a team. Only on a
+  // genuine round-number change (joining a fresh round 1 we already spawned in _chooseClass).
+  if (hasJoined && m.phase === 'buy' && m.round > 0 && m.round !== prevRound) {
+    _localRoundReset(false);
+  }
+  // HUD is drawn by the in-game loop (updateRound → _updateRoundDriven); don't draw it
+  // here, or it would appear over the start menu on a status-only connection.
+}
+
+// Server connection lost → resume a local (solo) match so play continues.
+function onNetRoundReset() {
+  if (!_netDriven) return;
+  _netDriven = false;
+  if (hasJoined && typeof startMatch === 'function') startMatch();
 }
 
 function endRound(winner, msg) {
@@ -131,6 +175,7 @@ function _detonateBomb() {
 
 // ── Per-frame update (called from the main loop) ────────────────────────────
 function updateRound(dt) {
+  if (_netDriven) { _updateRoundDriven(dt); return; }
   if (roundPhase === 'idle') return;
 
   if (roundPhase === 'over') {
@@ -156,6 +201,16 @@ function updateRound(dt) {
     roundTimer -= dt;
     if (roundTimer <= 0) endRound('ct', 'Время вышло — победа Контр-террористов');
   }
+  _updateRoundHUD();
+}
+
+// Server-driven per-frame: the server owns phase/timer/score; we only tick the displayed
+// timer locally between `gstate` (re-synced on arrival) and draw the HUD. Bomb/plant are
+// disabled in MP until they move server-side (6D).
+function _updateRoundDriven(dt) {
+  if (roundPhase === 'buy')        buyTimer   = Math.max(0, buyTimer - dt);
+  else if (roundPhase === 'live')  roundTimer = Math.max(0, roundTimer - dt);
+  else if (roundPhase === 'over')  endTimer   = Math.max(0, endTimer - dt);
   _updateRoundHUD();
 }
 
@@ -228,7 +283,8 @@ function _updateRoundHUD() {
     else if (bomb && bomb.live)     { cls += ' bomb'; t = _fmtTime(bomb.timer); sub = `Бомба на ${bomb.site.toUpperCase()}`; }
     else if (roundPhase === 'buy')  { cls += ' buy';  t = _fmtTime(buyTimer); sub = 'Время закупки (B)'; }
     else                            { t = _fmtTime(roundTimer); sub = `Раунд ${roundNum}`; }
-    hud.innerHTML = `<div class="${cls}">${t}</div><div class="rh-sub">${sub}</div>`;
+    const score = _netDriven ? `<div class="rh-score">T ${scoreT} : ${scoreCT} CT</div>` : '';
+    hud.innerHTML = score + `<div class="${cls}">${t}</div><div class="rh-sub">${sub}</div>`;
     hud.style.display = 'block';
   }
 
@@ -239,9 +295,10 @@ function _updateRoundHUD() {
     else if (ban._until && performance.now() > ban._until) ban.style.display = 'none';
   }
 
-  // Plant / defuse progress bar.
+  // Plant / defuse progress bar. Disabled in MP until the bomb moves server-side (6D).
   const ba = document.getElementById('bomb-action');
-  if (ba) {
+  if (ba && _netDriven) { ba.style.display = 'none'; }
+  else if (ba) {
     let label = '', frac = 0;
     if (plantProg > 0)              { label = 'Закладка бомбы…';   frac = plantProg / PLANT_TIME; }
     else if (bomb && bomb.defuse > 0) { label = 'Разминирование…'; frac = bomb.defuse / (hasDefuseKit ? DEFUSE_KIT : DEFUSE_TIME); }

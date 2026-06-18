@@ -419,11 +419,22 @@ function enemyTryShoot(maxDist, opts) {
   _enemyDir.set(-cp * Math.sin(Y), sp, -cp * Math.cos(Y)).normalize();
   _enemyRay.set(_enemyFrom, _enemyDir); _enemyRay.far = maxDist;
 
+  // This shot's ray in GoldSrc space, derived from the THREE ray we aim with
+  // (three → gs: (x,y,z)→(x,−z,y)) so the server tests the very same trajectory.
+  const oGs = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
+  const dGs = [_enemyDir.x, -_enemyDir.z, _enemyDir.y];
+
+  // Multiplayer bullets: the server does the authoritative, lag-compensated hitreg; the
+  // local pass below is only our blood/sound/hitmarker PREDICTION. We predict against
+  // remotes with the SAME stance box-stack the server uses (combat-core), so a predicted
+  // hit matches the authoritative one (no phantom blood / silent misses).
+  if (!opts.melee && typeof netSendShot === 'function') netSendShot(oGs, dGs, opts.wid, opts.sil);
+
   // First solid wall along the same aim — nothing past it can be hit.
   const wall = (typeof hitCheck === 'function') ? hitCheck(maxDist) : null;
   const wallDist = wall ? wall.fraction * maxDist : maxDist;
 
-  // Nearest bone hitbox (OBB) per live dummy.
+  // Nearest bone hitbox (OBB) per live practice dummy (local-only; not networked).
   const hits = [];
   for (const inst of enemies) {
     if (!inst.root || inst.state === 'dead' || !inst.hboxes) continue;
@@ -437,23 +448,21 @@ function enemyTryShoot(maxDist, opts) {
       hits.push({ inst, kind: 'enemy', hg, dist: best, point: pt });
     }
   }
-  // Networked remote players use the SAME per-bone OBB hitboxes (built by net.js).
-  if (typeof remotePlayers !== 'undefined') {
+  // Networked remote players: predict with the server's box-stack so it agrees with the
+  // authoritative result (combat-core, GoldSrc space, distance is frame-invariant).
+  if (typeof remotePlayers !== 'undefined' && typeof combatRayHitPlayer === 'function') {
     for (const inst of remotePlayers.values()) {
-      if (!inst.ready || !inst.root || !inst.hboxes) continue;
-      let best = Infinity, hg = -1;
-      for (const h of inst.hboxes) {
-        const t = _rayOBB(_enemyFrom, _enemyDir, h);
-        if (t < best) { best = t; hg = h.hg; }
-      }
-      if (hg >= 0 && best <= maxDist && best <= wallDist + 1) {
-        const pt = _enemyFrom.clone().addScaledVector(_enemyDir, best);
-        hits.push({ inst, kind: 'remote', hg, dist: best, point: pt });
+      if (!inst.ready || !inst.root || inst.dead || !inst.pos) continue;   // can't hit a corpse
+      const r = combatRayHitPlayer(oGs, dGs, inst.pos, !!inst.dk);
+      if (r && r.dist <= maxDist && r.dist <= wallDist + 1) {
+        const pt = _enemyFrom.clone().addScaledVector(_enemyDir, r.dist);
+        hits.push({ inst, kind: 'remote', hg: r.hg, dist: r.dist, point: pt });
       }
     }
   }
   if (!hits.length) return false;
   hits.sort((a, b) => a.dist - b.dist);
+  if (typeof _setHitMarker === 'function') _setHitMarker(hits[0].hg === 1);   // predicted hitmarker
 
   const apply = (h, penMult) => (h.kind === 'remote')
     ? _remoteDamage(h.inst, opts, h.hg, h.dist, h.point, penMult)
@@ -491,5 +500,9 @@ function _remoteDamage(inst, opts, hg, dist, point, penMult) {
   dmg = Math.max(0, Math.round(dmg));
   if (!opts.melee && typeof playVictimHit === 'function') playVictimHit(hg, false, false, dist);
   if (typeof _spawnBlood === 'function') _spawnBlood(point, _enemyDir, dmg, hg);
-  if (dmg > 0 && typeof netSendHit === 'function') netSendHit(inst.id, hg, dmg);
+  // Damage delivery: BULLETS are server-authoritative (the shot ray was already sent to
+  // the server in enemyTryShoot — it rewinds + computes damage). The KNIFE stays
+  // shooter-reported here (close range, server has no melee model yet). The blood/sound
+  // above are local prediction either way.
+  if (opts.melee && dmg > 0 && typeof netSendHit === 'function') netSendHit(inst.id, hg, dmg);
 }
