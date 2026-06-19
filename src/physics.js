@@ -159,10 +159,19 @@ function pickSpawn(team) {
 
 // Reset the player to a (re)spawn point. Used by initPhysics and the menu.
 function respawn() {
-  // Driven mode (Phase 6E): the SERVER owns the spawn position — it assigns a distinct spawn at
-  // round start and the snapshot/reconciliation places us. So don't pick a spawn or netHello here
-  // (that would fight the server); just reset local view/recoil so the new round starts clean.
+  // Driven mode (Phase 6E): the SERVER owns the authoritative spawn — it assigns one on join /
+  // at round start and the snapshot reconciliation places us there. But we must still seed our
+  // LOCAL prediction at OUR team's spawn: otherwise gsPos stays at the map-load default (a random
+  // CT spawn), so picking T left us standing at the CT base until the first reconcile — and any
+  // pre-reconcile hello that echoed gsPos would even report that CT spot. Pick our team's spawn
+  // locally (server still reconciles to its exact choice — both are at the same base, so no
+  // visible jump). Don't netHello here (the caller, _chooseClass, sends it after).
   if (typeof _netDriven !== 'undefined' && _netDriven) {
+    pickSpawn(playerTeam);
+    vel = [0, 0, 0];
+    onGround = false; wasJump = false; prevVelZ = 0;
+    duckAmount = 0; phyDucked = false; duckViewOfs = 0;
+    smoothCamY = null;
     recoilPitch = recoilYaw = 0;
     punchPitch = punchVel = punchRoll = punchRollVel = 0;
     pitch = 0;
@@ -267,7 +276,10 @@ function playerMove(dt) {
   // Same input mapping as before, expressed as a usercmd so the shared
   // deterministic core (sim-core.js) drives both this local prediction AND the
   // authoritative server. The client-only tail (view punch, recoil, camera) is below.
-  const wantDuck  = keys['ControlLeft'] || keys['ControlRight'];
+  // Ctrl ducks; planting/defusing the C4 also auto-crouches (CS kneel — shows on the 3rd-person
+  // model and to other players over the net).
+  const wantDuck  = keys['ControlLeft'] || keys['ControlRight'] ||
+                    (typeof bombActionActive === 'function' && bombActionActive());
   const walk      = keys['ShiftLeft'] || keys['ShiftRight'];
   const arrowMove = !thirdPerson;   // 3rd-person arrows orbit the camera, not move
   let fm = 0, sm = 0;
@@ -387,4 +399,7 @@ function syncCameraToPlayer() {
   smoothCamY = gsPos[2] + eyeH;
   yawObj.position.set(gsPos[0], smoothCamY, -gsPos[1]);
 }
+
+// Death cam (CS 1.6) lives in player.js (updateDeathCam): the view pulls back into third
+// person to show our own death animation, then spectates living players until respawn.
 

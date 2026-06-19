@@ -462,7 +462,6 @@ function enemyTryShoot(maxDist, opts) {
   }
   if (!hits.length) return false;
   hits.sort((a, b) => a.dist - b.dist);
-  if (typeof _setHitMarker === 'function') _setHitMarker(hits[0].hg === 1);   // predicted hitmarker
 
   const apply = (h, penMult) => (h.kind === 'remote')
     ? _remoteDamage(h.inst, opts, h.hg, h.dist, h.point, penMult)

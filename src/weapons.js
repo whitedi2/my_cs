@@ -208,7 +208,11 @@ const WPNS = [
   },
   // ── Pistols (group 2, semi-auto). Stats verified vs ReGameDLL. Elite (dual-wield)
   // deferred — it needs alternating left/right shoot sequences.
-  ..._pistol('glock18',   'Glock-18',     { damage: 25, rangeMod: 0.75,  ammo: 20, reserve: 120, reload: 2.2, fireInterval: 0.2,   recoilKick: 0.03,  spread: 0.010, fireSound: ['weapons/glock18-2.wav'], fire: ['shoot', 'shoot2', 'shoot3'], burstCapable: true, burstCount: 3, burstInterval: 0.1, burstCooldown: 0.3, muzzleBone: 20, muzzleOrg: [2.5, -8.7, 1.7],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
+  // Fire anim: only the subtle slide rack (shoot3). The MDL also has shoot/shoot2, but those
+  // throw the right hand far back — in the original the semi-auto glock just clicks the slide
+  // with a little recoil, so cycling all three looked wrong (big hand kick on 2 of 3 shots).
+  // 🔹 Deviation from the original 3-anim variety — see docs/DIFFERENCES.md.
+  ..._pistol('glock18',   'Glock-18',     { damage: 25, rangeMod: 0.75,  ammo: 20, reserve: 120, reload: 2.2, fireInterval: 0.2,   recoilKick: 0.03,  spread: 0.010, fireSound: ['weapons/glock18-2.wav'], fire: ['shoot3'], burstCapable: true, burstCount: 3, burstInterval: 0.1, burstCooldown: 0.3, muzzleBone: 20, muzzleOrg: [2.5, -8.7, 1.7],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
   ..._pistol('deagle',    'Desert Eagle', { damage: 54, rangeMod: 0.81,  ammo: 7,  reserve: 35,  reload: 2.2, fireInterval: 0.225, recoilKick: 0.08,  spread: 0.006, spreadGrow: 0.06, spreadMax: 0.10, fireSound: ['weapons/deagle-1.wav', 'weapons/deagle-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [2.6, -8.8, 1.4],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
   ..._pistol('p228',      'P228 Compact', { damage: 32, rangeMod: 0.8,   ammo: 13, reserve: 52,  reload: 2.7, fireInterval: 0.15,  recoilKick: 0.045, spread: 0.008, fireSound: ['weapons/p228-1.wav'], fire: ['shoot1', 'shoot2', 'shoot3'], muzzleBone: 20, muzzleOrg: [2.6, -6.8, 1.5],  ejectBone: 39, ejectOrg: [0, -2.0, 0] }),
   ..._pistol('fiveseven', 'Five-SeveN',   { damage: 20, rangeMod: 0.885, ammo: 20, reserve: 100, reload: 3.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.008, fireSound: ['weapons/fiveseven-1.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 41, muzzleOrg: [0, -6.0, 0],  ejectBone: 41, ejectOrg: [0, -2.5, 0] }),
@@ -533,6 +537,78 @@ function switchWeapon(idx) {
   }
   nextWpnIdx = idx;
   if (ws === WS.IDLE || ws === WS.DRAW || ws === WS.RELOAD || ws === WS.SILENCER) _beginDraw(nextWpnIdx);
+}
+
+// ── Spectator first-person viewmodel ────────────────────────────────────────
+// When dead and spectating a player in first-person, render a REAL viewmodel (vmScene, like
+// the local player's) of THAT player's weapon, animated by their weapon state (ws/wsT from the
+// snapshot). All viewmodels are preloaded by loadWeaponModels, so any weapon can be shown.
+// We hijack curWpnIdx + ws/wsT while spectating and restore them on exit (the local player is
+// dead, so its own weapon state doesn't matter until the server respawns it).
+let _specVmActive = false, _specVmSaveIdx = -1;
+function _specVmEnter() {
+  if (_specVmActive) return;
+  _specVmActive = true;
+  _specVmSaveIdx = curWpnIdx;
+}
+function _specVmExit() {
+  if (!_specVmActive) return;
+  _specVmActive = false;
+  if (WPNS[curWpnIdx] && WPNS[curWpnIdx].root) WPNS[curWpnIdx].root.visible = false;
+  if (_specVmSaveIdx >= 0) curWpnIdx = _specVmSaveIdx;
+  if (WPNS[curWpnIdx] && WPNS[curWpnIdx].root) WPNS[curWpnIdx].root.visible = true;
+  ws = WS.IDLE; wsT = 0;
+}
+// Per-frame: show the spectated weapon's viewmodel and pose it from the remote's ws/wsT, with
+// the same bob (from their movement), recoil kick, muzzle flash and shell eject a live player
+// sees. vel/og = the spectated player's velocity + on-ground (for bob).
+let _specPrevWs = -1, _specPrevWsT = 0;
+function _specVmUpdate(weaponId, rws, rwsT, vel, og, dt) {
+  const idx = WPNS.findIndex(w => w.id === weaponId);
+  if (idx < 0) return;
+  if (idx !== curWpnIdx) {
+    if (WPNS[curWpnIdx] && WPNS[curWpnIdx].root) WPNS[curWpnIdx].root.visible = false;
+    curWpnIdx = idx;
+    if (WPNS[curWpnIdx] && WPNS[curWpnIdx].root) WPNS[curWpnIdx].root.visible = true;
+    _specPrevWs = -1;                            // new weapon → don't carry a stale fire edge
+  }
+  const wpn = curW();
+  if (!wpn.root) return;
+  // Drive the skeletal pose from the spectated player's weapon state machine (same enum/timing
+  // the local player uses, so fire/reload/idle resolve identically).
+  ws = rws || WS.IDLE; wsT = rwsT || 0;
+  wsIdleT += dt;
+
+  // Weapon bob from the spectated player's movement (mirrors updateWeapon).
+  const _hspd = (vel && og) ? Math.hypot(vel[0], vel[1]) : 0;
+  const _tgtBob = og ? Math.min(_hspd / SV.maxspeed, 1) : 0;
+  bobAmt += (_tgtBob - bobAmt) * Math.min(dt * 8, 1);
+  if (_hspd > 5) bobCycle += dt * (_hspd / SV.maxspeed) * (Math.PI * 2);
+  const _bob = Math.sin(bobCycle) * bobAmt;
+  const bobYaw = -_bob * 0.035, bobX = -_bob * 0.035 * 2.4, bobZ = _bob * (_bob >= 0 ? 0.11 : 0.04);
+
+  const p = wpn.root.position, r = wpn.root.rotation;
+  if (ws === WS.FIRE) {                          // recoil kick (mirrors the FIRE state)
+    const DUR = wpn.fireInterval || 0.12;
+    const t = Math.min(wsT / DUR, 1);
+    const kick = t < 0.3 ? t / 0.3 : 1 - (t - 0.3) / 0.7;
+    p.set(wpn.pos.x + bobX, wpn.pos.y + kick * 0.03, wpn.pos.z + kick * 0.04 + bobZ);
+    r.set(wpn.rot.x - kick * 0.08, wpn.rot.y + bobYaw, wpn.rot.z);
+  } else {                                        // idle/reload/draw: base pose + idle sway + bob
+    p.set(wpn.pos.x + bobX, wpn.pos.y + Math.sin(wsIdleT * 1.6) * 0.005, wpn.pos.z + bobZ);
+    r.set(wpn.rot.x + Math.cos(wsIdleT * 0.9) * 0.007, wpn.rot.y + bobYaw, wpn.rot.z);
+  }
+
+  if (typeof applySkeletalAnimation === 'function') applySkeletalAnimation(wpn, dt);
+
+  // Fire edge → muzzle flash + shell (first-person, in vmScene), like a live shooter. A "shot"
+  // is entering FIRE or wsT resetting backward during sustained fire (≥1 per snapshot at worst).
+  const isShot = (ws === WS.FIRE) && (_specPrevWs !== WS.FIRE || wsT < _specPrevWsT - 1e-4);
+  if (isShot) {
+    if (typeof _showFlash === 'function')  _showFlash(wpn);
+    if (typeof _ejectShell === 'function') _ejectShell(wpn);
+  }
+  _specPrevWs = ws; _specPrevWsT = wsT;
 }
 
 function _beginDraw(idx) {

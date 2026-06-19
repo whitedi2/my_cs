@@ -204,8 +204,20 @@ function simPlayerMove(hull, st, cmd, dt, params) {
   // Duck transition (smooth 0..1) + duck hull state while airborne.
   if (wantDuck) st.duckAmount = Math.min(1, st.duckAmount + dt / SV.ducktime);
   else          st.duckAmount = Math.max(0, st.duckAmount - dt / SV.uncrouchtime);
-  if (!st.onGround &&  wantDuck) st.phyDucked = true;
-  if (!st.onGround && !wantDuck) st.phyDucked = false;
+  if (!st.onGround) {
+    if (wantDuck) {
+      st.phyDucked = true;
+    } else if (st.phyDucked) {
+      // Unduck in air ONLY if the stand hull fits where we are (mirrors GoldSrc PM_UnDuck:
+      // no room → stay ducked, retry next frame). Without this, toggling crouch off mid-air
+      // near a slope swaps the small duck hull (18u below center) for the tall stand hull
+      // (36u below center) which is then embedded in the slope — simSlideMove's anti-fallthrough
+      // zeroes velocity and the player sticks in place until they re-duck. In air the hulls
+      // share the same origin (no +19 shift, that's a ground-only standup adjustment), so a
+      // point trace of the stand hull at st.pos detects the embed.
+      if (!simTraceMove(hull, false, st.pos, st.pos).startsolid) st.phyDucked = false;
+    }
+  }
 
   // Categorize ground (uses current phyDucked hull).
   const wasGround = st.onGround;

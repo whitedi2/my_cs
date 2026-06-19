@@ -21,6 +21,25 @@ let playerHelmet = false;
 let playerDead   = false;
 let _hurtT = -Infinity;        // wall-clock of the last damage tick (drives the red flash)
 
+// Enter the dead state once (idempotent per death): mark dead + start the death cam (pulls back
+// to third person to show our death animation, then spectates). hg = killing-blow hitgroup
+// (selects head/gut/random death sequence).
+function _enterDeath(hg) {
+  if (playerDead) return;
+  playerDead = true;
+  if (typeof _beginDeathCam === 'function') _beginDeathCam(hg | 0);
+}
+
+// Leave the dead state (server revived us). Ends the death cam (restores our view preference)
+// and re-anchors the camera at the fresh spawn. Driven from the snapshot `al` flag (20 Hz) AND
+// gstate.me (5 Hz) — whichever lands first — so the spectator view never lingers into a respawn.
+function _exitDeath() {
+  if (!playerDead && (typeof _specMode === 'undefined' || _specMode === null)) return;
+  playerDead = false;
+  if (typeof _endDeathCam === 'function') _endDeathCam();
+  smoothCamY = null;                                       // snap the camera to the new spawn eye
+}
+
 // CS armor model (ReGameDLL CBasePlayer::TakeDamage): kevlar soaks part of an armor-
 // covered hit — half to health, the remainder eats armor at the bonus ratio. mp_armorratio
 // 0.5 / armor bonus 0.5 are the defaults. Blasts cover the whole body (covered=true).
@@ -67,7 +86,7 @@ function playerRadiusDamage(origin, baseDmg, radius) {
 
 function _playerDie() {
   if (playerDead) return;
-  playerDead = true;
+  _enterDeath();
   if (typeof playRandom === 'function')
     playRandom(['player/pl_fallpain1.wav', 'player/pl_fallpain2.wav', 'player/pl_fallpain3.wav'], { volume: 0.9 });
   // Sole member of your team eliminated → award the round to the other side, UNLESS a
@@ -83,7 +102,7 @@ function _playerDie() {
 // HP refills, armor/helmet persist (CS). Called from rounds.js at each round start.
 function resetPlayerHealth() {
   playerHealth = PLAYER_MAX_HP;
-  playerDead = false;
+  _exitDeath();              // clears playerDead + ends the death cam + re-anchors the camera
   _hurtT = -Infinity;
 }
 
@@ -91,10 +110,14 @@ function resetPlayerHealth() {
 // The server owns HP/armor/death; the client just reflects it. `applyServerSelf` syncs
 // from the periodic gstate `me`; `onServerDamage` is the instant per-hit feedback.
 function applyServerSelf(me) {
+  // Pure spectator has no body — ignore HP/alive/economy (the server reports us as not-alive,
+  // which would otherwise trip the death cam).
+  if (typeof spectating !== 'undefined' && spectating) return;
   playerHealth = me.hp;
   playerArmor  = me.armor;
   playerHelmet = !!me.helmet;
-  playerDead   = !me.alive;
+  if (!me.alive) _enterDeath();           // stamps the death-cam start on the false→true edge
+  else _exitDeath();                      // revived → drop the death-cam roll, re-anchor camera
   // Economy (Phase 6C): the server owns money/inventory; mirror it.
   if (me.money != null) playerMoney = me.money;
   if (Array.isArray(me.weapons)) {
@@ -114,7 +137,7 @@ function onServerDamage(hg, hp, died, by) {
   playerHealth = hp;
   _hurtT = performance.now();
   if (died) {
-    if (!playerDead) playerDead = true;
+    _enterDeath(hg);
     if (typeof playRandom === 'function')
       playRandom(['player/pl_fallpain1.wav', 'player/pl_fallpain2.wav', 'player/pl_fallpain3.wav'], { volume: 0.9 });
   } else if (typeof playRandom === 'function') {
@@ -327,10 +350,21 @@ function afterGrenadeThrow(wpn) {
 // ── Buy menu (numeric, CS-style) ────────────────────────────────────────────
 let buyOpen = false, _buyCat = -1;   // _buyCat: -1 = category list, else item list
 
+function _canBuyOpen() {
+  if (typeof isLocked !== 'undefined' && !isLocked) return false;
+  if (teamStage) return false;       // not during team select
+  if ((typeof spectating !== 'undefined' && spectating) || (typeof playerDead !== 'undefined' && playerDead)) return false;
+  return true;
+}
 function openBuyMenu() {
-  if (typeof isLocked !== 'undefined' && !isLocked) return;
-  if (teamStage) return;             // not during team select
+  if (!_canBuyOpen()) return;
   buyOpen = true; _buyCat = -1; _renderBuyMenu();
+}
+// Open the buy menu straight to the equipment page (grenades / armor / kit) — bound to O.
+function openEquipMenu() {
+  if (!_canBuyOpen()) return;
+  const idx = BUY_CATALOG.findIndex(c => c.name === 'Снаряжение');
+  buyOpen = true; _buyCat = idx >= 0 ? idx : -1; _renderBuyMenu();
 }
 function closeBuyMenu() { buyOpen = false; document.getElementById('buymenu').style.display = 'none'; }
 
@@ -401,6 +435,7 @@ function _balancedTeam(want) {
 
 function teamMenuKey(n) {
   if (teamStage === 'team') {
+    if (n === 6) { _chooseSpectator(); return; }   // наблюдатель (без тела)
     let want = null;
     if (n === 1) want = 't';
     else if (n === 2) want = 'ct';
@@ -418,20 +453,44 @@ function teamMenuKey(n) {
   }
 }
 
+// Join as a pure spectator (no body): hide the menu, tell the server, enter the spectator cam.
+function _chooseSpectator() {
+  teamStage = null;
+  document.getElementById('teammenu').style.display = 'none';
+  hasJoined = true;
+  if (typeof netSpectate === 'function') netSpectate();      // server: no body, just watch
+  if (typeof _beginSpectate === 'function') _beginSpectate();
+}
+
 function _chooseClass(i) {
+  if (typeof _endSpectate === 'function') _endSpectate();    // leaving spectator → become a player
   const list = CLASSES[_pendTeam] || [];
   const cls = list[Math.min(i, list.length - 1)] || list[0];
   if (cls) playerModelName = cls.model;          // model loads (first time) below
-  setTeam(_pendTeam);                            // spawn at the team's point + angle
-  ownedWeapons.clear(); ownedWeapons.add('knife'); ownedWeapons.add('usp');
-  playerMoney = START_MONEY;
-  playerArmor = 0; playerHelmet = false; resetPlayerHealth();   // fresh body on join
-  switchWeapon(WPNS.findIndex(w => w.id === 'usp'));   // spawn with the pistol out
+  const pistol = _pendTeam === 't' ? 'glock18' : 'usp';   // original CS sidearm: T = Glock-18, CT = USP
+  const driven = (typeof _netDriven !== 'undefined' && _netDriven);
+
+  if (driven) {
+    // The authoritative server owns spawn timing — you only spawn at a ROUND START, never mid-round
+    // (changing team while alive even kills you). So DON'T force ourselves alive or teleport here;
+    // just set local prefs + loadout for when the server actually spawns us. alive/position/HP all
+    // arrive via gstate/snapshots (applyServerSelf → death cam while we wait, then revive).
+    playerTeam = _pendTeam;
+    ownedWeapons.clear(); ownedWeapons.add('knife'); ownedWeapons.add(pistol);
+    switchWeapon(WPNS.findIndex(w => w.id === pistol));
+  } else {
+    // SOLO: spawn immediately (no server to defer to).
+    setTeam(_pendTeam);
+    ownedWeapons.clear(); ownedWeapons.add('knife'); ownedWeapons.add(pistol);
+    playerMoney = START_MONEY;
+    playerArmor = 0; playerHelmet = false; resetPlayerHealth();
+    switchWeapon(WPNS.findIndex(w => w.id === pistol));
+  }
   if (typeof loadPlayerModel === 'function') loadPlayerModel();   // deferred until class chosen
   teamStage = null;
   document.getElementById('teammenu').style.display = 'none';
   hasJoined = true;
-  if (typeof netConnect === 'function') netConnect(true);   // join the authoritative server (silent if none)
+  if (typeof netConnect === 'function') netConnect(true);   // hello → server decides spawn timing (silent if solo)
   if (typeof startMatch === 'function') startMatch();   // begin the round flow (buy time → live → …)
   if (inBuyZone()) _flashBuy('B — купить оружие');
 }
@@ -446,7 +505,8 @@ function _renderTeamMenu() {
     html = `<div class="tm-title">ВЫБОР КОМАНДЫ</div>` +
       `<div class="tm-row"><span class="tm-k">1</span> Террористы${cnt('t')}</div>` +
       `<div class="tm-row"><span class="tm-k">2</span> Контр-террористы${cnt('ct')}</div>` +
-      `<div class="tm-row"><span class="tm-k">5</span> Авто-выбор</div>`;
+      `<div class="tm-row"><span class="tm-k">5</span> Авто-выбор</div>` +
+      `<div class="tm-row"><span class="tm-k">6</span> Наблюдатель</div>`;
   } else {
     const list = CLASSES[_pendTeam] || [];
     html = `<div class="tm-title">ВЫБОР МОДЕЛИ — ${_pendTeam === 't' ? 'T' : 'CT'}</div>` +

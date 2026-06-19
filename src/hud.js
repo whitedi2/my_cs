@@ -2,11 +2,6 @@
 // Classic script — shares one global scope with the other src/*.js (THREE,
 // OBJLoader, MTLLoader are globals set in viewer.html). No imports/exports.
 
-// Predicted hitmarker (set by enemyTryShoot when a shot is predicted to hit a body).
-// Instant local feedback that agrees with the server's box-stack hitreg (combat-core).
-let _hitMarkerT = -Infinity, _hitMarkerHs = false;
-function _setHitMarker(headshot) { _hitMarkerT = performance.now(); _hitMarkerHs = !!headshot; }
-
 function drawCrosshair() {
   const canvas = document.getElementById('crosshair');
   if (canvas.style.display === 'none') return;
@@ -14,20 +9,6 @@ function drawCrosshair() {
   const W = canvas.width, H = canvas.height;
   const cx = W / 2, cy = H / 2;
   ctx.clearRect(0, 0, W, H);
-
-  // Hitmarker: four short 45° ticks that fade over ~160 ms (red on a headshot).
-  const hmAge = (performance.now() - _hitMarkerT) / 1000;
-  if (hmAge >= 0 && hmAge < 0.16) {
-    const a = 1 - hmAge / 0.16, in0 = 5, in1 = 11;
-    ctx.strokeStyle = _hitMarkerHs ? `rgba(255,80,80,${a})` : `rgba(255,255,255,${a})`;
-    ctx.lineWidth = 2; ctx.lineCap = 'round';
-    for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-      ctx.beginPath();
-      ctx.moveTo(cx + sx * in0, cy + sy * in0);
-      ctx.lineTo(cx + sx * in1, cy + sy * in1);
-      ctx.stroke();
-    }
-  }
 
   const wpn      = curW();
   // Snipers (AWP): no hip-fire crosshair at all — only the scope reticle (the
@@ -61,7 +42,27 @@ function drawCrosshair() {
   }
 }
 
+// Hide the gameplay HUD (crosshair / weapon / HP / money / debug) while spectating or dead —
+// a spectator has no body, so only the killfeed, round HUD and spectator banner stay. Driven
+// each frame (when locked); the lock handler owns visibility while unlocked.
+const _SPEC_HIDE_IDS = ['weapon-hud', 'money', 'hud'];   // crosshair handled below; player-status in updatePlayerStatus
+function _updateSpectatorHudVisibility() {
+  if (typeof isLocked !== 'undefined' && !isLocked) return;
+  const spec = (typeof spectating !== 'undefined' && spectating) || (typeof playerDead !== 'undefined' && playerDead);
+  // Crosshair stays in FIRST-PERSON spectate (we're looking through their eyes); hidden in the
+  // 3rd-person spectator cams and otherwise while dead.
+  const fpv = (typeof _specEye !== 'undefined' && _specEye);
+  const cross = document.getElementById('crosshair');
+  if (cross) { const w = (spec && !fpv) ? 'none' : 'block'; if (cross.style.display !== w) cross.style.display = w; }
+  const want = spec ? 'none' : 'block';
+  for (const id of _SPEC_HIDE_IDS) {
+    const el = document.getElementById(id);
+    if (el && el.style.display !== want) el.style.display = want;
+  }
+}
+
 function updateHUD() {
+  _updateSpectatorHudVisibility();
   drawCrosshair();
   const wpn = curW();
   document.getElementById('weapon-name').textContent = wpn.label + (wpn._burstMode ? '  •  BURST' : '');
@@ -83,7 +84,8 @@ function updateHUD() {
 function updatePlayerStatus() {
   const ps = document.getElementById('player-status');
   if (ps) {
-    if (typeof hasJoined !== 'undefined' && hasJoined) {
+    const specView = (typeof spectating !== 'undefined' && spectating) || (typeof playerDead !== 'undefined' && playerDead);
+    if (typeof hasJoined !== 'undefined' && hasJoined && !specView) {
       ps.style.display = 'flex';
       const hp = Math.max(0, Math.round(playerHealth));
       const hpEl = document.getElementById('ps-hp');

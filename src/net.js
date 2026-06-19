@@ -42,6 +42,7 @@ function netMyId() { return _myId; }   // our server id (to highlight ourselves 
 // the server keeps us out of the match until we pick a team); `join=true` also sends our
 // identity (hello) once open — or immediately if we're already connected.
 let _wantHello = false;
+let _wantSpectate = false;          // join as spectator once the socket opens
 function netConnect(join) {
   if (_ws && (_ws.readyState === 0 || _ws.readyState === 1)) {
     if (join) { _wantHello = true; if (_ws.readyState === 1) netHello(); }
@@ -50,7 +51,9 @@ function netConnect(join) {
   _wantHello = !!join;
   _setMpStatus('connecting');
   try { _ws = new WebSocket(NET_URL); } catch (e) { _setMpStatus('offline'); return; }
-  _ws.onopen    = () => { console.log('[mp] connected to', NET_URL); _setMpStatus('connected'); if (_wantHello) netHello(); };
+  _ws.onopen    = () => { console.log('[mp] connected to', NET_URL); _setMpStatus('connected');
+                          if (_wantSpectate) _ws.send(JSON.stringify({ t: 'hello', spec: 1 }));
+                          else if (_wantHello) netHello(); };
   _ws.onclose   = () => {
     _myId = null; _ackSeq = 0; _pending.length = 0;
     _authState = null; _authDirty = false; _clearRemotes();
@@ -93,6 +96,7 @@ function _setMpStatus(state, gs) {
 // Tell the server our identity + spawn pose (join, team change, respawn). A teleport
 // invalidates predicted history, so drop it — we snap cleanly to the server pose.
 function netHello() {
+  _wantSpectate = false;             // a real join supersedes any pending spectate
   if (!_ws || _ws.readyState !== 1) return;
   _pending.length = 0;
   _ws.send(JSON.stringify({
@@ -116,8 +120,16 @@ function _onPong(m) {
 }
 if (typeof setInterval !== 'undefined') setInterval(() => {
   if (_ws && _ws.readyState === 1 && typeof performance !== 'undefined')
-    _ws.send(JSON.stringify({ t: 'ping', ts: performance.now() }));
+    _ws.send(JSON.stringify({ t: 'ping', ts: performance.now(),
+                             ping: (_pingMs != null) ? Math.round(_pingMs) : undefined }));   // report our RTT for the scoreboard
 }, 700);
+
+// Join the server as a SPECTATOR (no body) — used by the "Наблюдатель" menu choice.
+function netSpectate() {
+  _wantSpectate = true; _wantHello = false;
+  if (_ws && _ws.readyState === 1) { _ws.send(JSON.stringify({ t: 'hello', spec: 1 })); return; }
+  netConnect(false);         // open the socket; onopen sends the spectate hello
+}
 
 function _onNetMsg(m) {
   switch (m.t) {
@@ -163,7 +175,7 @@ function _onGState(m) {
 // hurt/death feedback (game.js). For a remote → flinch, or play the death animation and
 // freeze the corpse. Revival (round respawn) comes from the snapshot `al` flag.
 function _onDamage(m) {
-  if (m.died && typeof pushKillFeed === 'function') pushKillFeed(m.by | 0, m.id, m.w);   // kill feed (6E)
+  if (m.died && typeof pushKillFeed === 'function') pushKillFeed(m.by | 0, m.id, m.w, m.hg | 0);   // kill feed (6E)
   if (m.id === _myId) {
     if (typeof onServerDamage === 'function') onServerDamage(m.hg | 0, m.hp | 0, !!m.died, m.by | 0);
     return;
@@ -231,6 +243,9 @@ function _onSnapshot(m) {
         phyDucked: !!e.dk, prevVelZ: e.pz || 0,
       };
       _authDirty = true;
+      // Revive on the snapshot edge (20 Hz) — faster than gstate (5 Hz) — so the death-cam
+      // roll never lingers onto a fresh respawn ("camera lying on its side at spawn").
+      if (e.al && typeof playerDead !== 'undefined' && playerDead && typeof _exitDeath === 'function') _exitDeath();
     } else {
       _onRemoteState(e, svt);
     }
@@ -303,6 +318,7 @@ function _onRemoteState(e, svt) {
     _buildRemote(inst);
   }
   if (e.w) inst.weapon = e.w;
+  if (e.tm) inst.team = e.tm;                 // for the spectator HUD label
   if (e.al && inst.dead) inst.dead = false;   // server revived them (round respawn) → clear corpse
   inst.buf.push({
     svt,
@@ -398,6 +414,9 @@ function _updateRemote(inst, dt) {
   const s = _sampleRemote(inst, _renderSvt);
   if (!s) return;
   inst.pos = s.pos; inst.yaw = s.yaw; inst.dk = s.dk;   // latest interp pose (corpse/light/backstab/hit-predict)
+  inst.pitch = s.pitch || 0; inst.da = s.da || 0;       // for the spectator 1st-person / eye cam
+  inst.ws = s.ws || 0; inst.wsT = s.wsT || 0;           // weapon state → spectator first-person viewmodel
+  inst.vel = s.vel || _ZERO3; inst.og = !!s.og;         // movement → spectator viewmodel bob
 
   // Dead → play the death animation and freeze the corpse (no gait/aim/gun).
   if (inst.dead) { _updateRemoteDead(inst, dt); return; }

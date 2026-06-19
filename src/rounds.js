@@ -129,13 +129,31 @@ function _syncDrivenBomb(sb, result) {
 
 // Dropped C4 on the ground (carrier died/left) — a small box + orange marker LED so a T can
 // find and walk over it (pickup is automatic, server-side). Built/cleared from gstate.dropC4.
+// Real C4 world model (models/w_c4.json, converted from w_c4.mdl) — replaces the placeholder box
+// for both the dropped and the planted bomb. Built from cached data (one fetch), reusing the
+// grenade world-mesh builder; GoldSrc Z-up → Three Y-up via rotation.x = -90° so it lies flat.
+let _c4Data = null;
+function _buildC4Into(container) {
+  const make = d => {
+    if (!container || typeof _buildWorldMesh !== 'function') return;
+    const g = _buildWorldMesh(d);
+    g.rotation.x = -Math.PI / 2;
+    g.traverse(o => { o.userData.noHitscan = true; });
+    container.add(g);
+  };
+  if (_c4Data) { make(_c4Data); return; }
+  if (typeof fetch === 'undefined') return;
+  fetch('models/w_c4.json').then(r => r.json()).then(d => { _c4Data = d; make(d); }).catch(() => {});
+}
+function _disposeObj(obj) { obj.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
+
 let _dropC4Mesh = null;
 function _syncDroppedC4(pos) {
   if (pos) {
     if (!_dropC4Mesh && typeof scene !== 'undefined') {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(9, 6, 13),
-        new THREE.MeshBasicMaterial({ color: 0x2a2418, toneMapped: false, fog: false }));
+      const m = new THREE.Group();
       m.userData.noHitscan = true; scene.add(m);
+      _buildC4Into(m);
       m._led = new THREE.Mesh(new THREE.SphereGeometry(1.4, 8, 8),
         new THREE.MeshBasicMaterial({ color: 0xffaa33, toneMapped: false, fog: false }));
       m._led.userData.noHitscan = true; scene.add(m._led);
@@ -146,7 +164,7 @@ function _syncDroppedC4(pos) {
       _dropC4Mesh._led.position.set(pos[0], pos[2] + 8, -pos[1]);
     }
   } else if (_dropC4Mesh) {
-    scene.remove(_dropC4Mesh); _dropC4Mesh.geometry.dispose();
+    scene.remove(_dropC4Mesh); _disposeObj(_dropC4Mesh);
     scene.remove(_dropC4Mesh._led); _dropC4Mesh._led.geometry.dispose();
     _dropC4Mesh = null;
   }
@@ -154,13 +172,45 @@ function _syncDroppedC4(pos) {
 
 // ── Kill feed + scoreboard (Phase 6E) ───────────────────────────────────────
 function _rosterTeam(id) { const r = mpRoster.find(p => p.id === id); return r ? r.team : null; }
-const _KF_WEAPON = { c4: '💣 C4', fall: 'падение', knife: 'нож', m4: 'M4A1', ak47: 'AK-47', usp: 'USP' };
-function _weaponLabel(w) { return _KF_WEAPON[w] || (w ? String(w).toUpperCase() : '☠'); }
+// Special-case the non-weapon causes; real weapons get their proper label from WPNS below.
+const _KF_WEAPON = { c4: '💣 C4', fall: 'падение', knife: 'нож' };
+function _weaponLabel(w) {
+  if (_KF_WEAPON[w]) return _KF_WEAPON[w];
+  if (typeof WPNS !== 'undefined') { const o = WPNS.find(x => x.id === w); if (o && o.label) return o.label; }
+  return w ? String(w).toUpperCase() : '☠';
+}
+
+// Original CS death-notice sprite icons (tools/extract_kill_icons.py → sprites/kill/d_*.png).
+// Weapon id → icon name (most map 1:1; a few differ); causes with no gun fall back to text.
+const _KF_ICON_MAP = { m4: 'm4a1', mp5: 'mp5navy', hegrenade: 'grenade', smokegrenade: 'grenade', c4: 'skull', fall: 'skull' };
+// Icon pixel widths (all 16px tall) from extract_kill_icons.py — needed to size the masked span.
+const _KF_ICON_W = { knife: 48, ak47: 48, awp: 48, deagle: 32, famas: 48, fiveseven: 32, flashbang: 48,
+  g3sg1: 48, galil: 48, glock18: 32, grenade: 32, m249: 48, m3: 48, m4a1: 48, mp5navy: 32, p228: 32,
+  p90: 48, scout: 48, sg550: 48, sg552: 48, ump45: 48, usp: 32, tmp: 32, xm1014: 48, skull: 32,
+  tracktrain: 32, aug: 44, mac10: 34, elite: 57, headshot: 36 };
+const _KF_ICONS = new Set(Object.keys(_KF_ICON_W));
+// Team tint = the original CS death-notice colours (HLSDK GetClientColor): T = g_ColorRed
+// {255,64,64}, CT = g_ColorBlue {153,204,255}; neutral grey for world/fall/C4.
+function _killTint(team) { return team === 't' ? '#ff4040' : team === 'ct' ? '#99ccff' : '#d8d8d8'; }
+// A white death-notice sprite recoloured to `col` via CSS mask (so any team colour works).
+function _killIconSpan(name, col, w, extraCls, title) {
+  const wpx = _KF_ICON_W[name] || 40;
+  return `<span class="kf-icon${extraCls ? ' ' + extraCls : ''}" title="${title || ''}" ` +
+    `style="width:${wpx}px;background-color:${col};` +
+    `-webkit-mask-image:url(sprites/kill/d_${name}.png);mask-image:url(sprites/kill/d_${name}.png)"></span>`;
+}
+function _killWeaponHtml(w, team) {
+  const name = _KF_ICON_MAP[w] || w;
+  if (name && _KF_ICONS.has(name)) return _killIconSpan(name, _killTint(team), w, null, _weaponLabel(w));
+  return `<span class="kf-w">${_weaponLabel(w)}</span>`;        // e.g. 'падение' if no icon
+}
 
 // Push a kill onto the feed (called from net.js _onDamage on a death). by=0 → world/fall (no killer).
-function pushKillFeed(byId, vicId, w) {
+// hg = victim hitgroup (1 = head) so the feed can flag headshots like the original.
+function pushKillFeed(byId, vicId, w, hg) {
   _killFeed.push({ byId: byId || 0, byTeam: byId ? _rosterTeam(byId) : null,
-                   vicId, vicTeam: _rosterTeam(vicId), w, until: performance.now() + 5000 });
+                   vicId, vicTeam: _rosterTeam(vicId), w, hs: (hg | 0) === 1,
+                   until: performance.now() + 5000 });
   while (_killFeed.length > 6) _killFeed.shift();
 }
 
@@ -170,11 +220,13 @@ function _renderKillFeed() {
   const now = performance.now();
   while (_killFeed.length && _killFeed[0].until < now) _killFeed.shift();
   const my = (typeof netMyId === 'function') ? netMyId() : null;
-  const cls = tm => tm === 't' ? 'kf-t' : 'kf-ct';
-  const lbl = (id, tm) => id === my ? 'Вы' : `${(tm || '').toUpperCase()}#${id}`;
+  // Names tinted by team in the original colours (same as the icon tint).
+  const nameSpan = (id, tm) => `<span style="color:${_killTint(tm)};font-weight:700">${id === my ? 'Вы' : `${(tm || '').toUpperCase()}#${id}`}</span>`;
+  // Headshot marker like the original (the d_headshot sprite, red, next to the weapon icon).
+  const hsMark = k => k.hs ? _killIconSpan('headshot', '#ff4040', null, 'kf-hs', 'в голову') : '';
   el.innerHTML = _killFeed.map(k => k.byId
-    ? `<div class="kf"><span class="${cls(k.byTeam)}">${lbl(k.byId, k.byTeam)}</span><span class="kf-w">${_weaponLabel(k.w)}</span><span class="${cls(k.vicTeam)}">${lbl(k.vicId, k.vicTeam)}</span></div>`
-    : `<div class="kf"><span class="kf-w">${_weaponLabel(k.w)}</span> <span class="${cls(k.vicTeam)}">${lbl(k.vicId, k.vicTeam)}</span></div>`
+    ? `<div class="kf">${nameSpan(k.byId, k.byTeam)}${_killWeaponHtml(k.w, k.byTeam)}${hsMark(k)}${nameSpan(k.vicId, k.vicTeam)}</div>`
+    : `<div class="kf">${_killWeaponHtml(k.w, null)} ${nameSpan(k.vicId, k.vicTeam)}</div>`
   ).join('');
 }
 
@@ -184,16 +236,24 @@ function _renderScoreboard() {
   if (!scoreboardOpen || !_netDriven) { if (el.style.display !== 'none') el.style.display = 'none'; return; }
   const my = (typeof netMyId === 'function') ? netMyId() : null;
   const sort = a => a.slice().sort((x, y) => y.kills - x.kills || x.deaths - y.deaths);
+  const name = r => r.id === my ? 'Вы' : ((r.team || '').toUpperCase() + '#' + r.id);
   const rows = list => sort(list).map(r =>
     `<div class="sb-row ${r.id === my ? 'me' : ''} ${r.alive ? '' : 'dead'}">` +
-    `<span>${r.id === my ? 'Вы' : (r.team.toUpperCase() + '#' + r.id)}${r.alive ? '' : ' ☠'}</span>` +
-    `<span class="sb-kd">${r.kills} / ${r.deaths}</span></div>`).join('');
-  const ct = mpRoster.filter(r => r.team === 'ct'), t = mpRoster.filter(r => r.team === 't');
+    `<span>${name(r)}${r.alive ? '' : ' ☠'}</span>` +
+    `<span class="sb-kd">${r.kills} / ${r.deaths}</span>` +
+    `<span class="sb-ping">${r.ping || 0} мс</span></div>`).join('');
+  const ct = mpRoster.filter(r => r.team === 'ct' && !r.spec);
+  const t  = mpRoster.filter(r => r.team === 't'  && !r.spec);
+  const spec = mpRoster.filter(r => r.spec);
+  const specRows = spec.map(r =>
+    `<div class="sb-row ${r.id === my ? 'me' : ''}"><span>${r.id === my ? 'Вы' : ('SPEC#' + r.id)}</span>` +
+    `<span class="sb-kd"></span><span class="sb-ping">${r.ping || 0} мс</span></div>`).join('');
   el.innerHTML =
     `<div class="sb-head"><span class="sb-title">${serverMap || 'de_dust2'} · Раунд ${roundNum}</span>` +
     `<span class="sb-score"><b class="t">T ${scoreT}</b> : <b class="ct">${scoreCT} CT</b></span></div>` +
     `<div class="sb-team"><span class="sb-team-h ct">Контр-террористы (${ct.length})</span>${rows(ct)}</div>` +
-    `<div class="sb-team"><span class="sb-team-h t">Террористы (${t.length})</span>${rows(t)}</div>`;
+    `<div class="sb-team"><span class="sb-team-h t">Террористы (${t.length})</span>${rows(t)}</div>` +
+    (spec.length ? `<div class="sb-team"><span class="sb-team-h">Наблюдатели (${spec.length})</span>${specRows}</div>` : '');
   el.style.display = 'block';
 }
 
@@ -230,7 +290,8 @@ function _inBombSite() {
 }
 
 function _plantBomb(site) {
-  bomb = { pos: [gsPos[0], gsPos[1], gsPos[2]], site: site.site, timer: C4_TIME,
+  const footZ = gsPos[2] - (phyDucked ? 18 : 36);   // origin (centre) → feet, so the bomb rests on the floor
+  bomb = { pos: [gsPos[0], gsPos[1], footZ], site: site.site, timer: C4_TIME,
            beepT: 0, defuse: 0, live: true, mesh: null };
   carryingC4 = false;
   _buildBombMesh();
@@ -241,12 +302,11 @@ function _plantBomb(site) {
 
 function _buildBombMesh() {
   if (!bomb || typeof scene === 'undefined') return;
-  const g = new THREE.BoxGeometry(9, 6, 13);
-  const m = new THREE.MeshBasicMaterial({ color: 0x222222, toneMapped: false, fog: false });
-  bomb.mesh = new THREE.Mesh(g, m);
+  bomb.mesh = new THREE.Group();
   bomb.mesh.userData.noHitscan = true;
   bomb.mesh.position.set(bomb.pos[0], bomb.pos[2] + 3, -bomb.pos[1]);   // gs → three
   scene.add(bomb.mesh);
+  _buildC4Into(bomb.mesh);                                              // real C4 model
   // A small blinking light on top (the C4's red LED).
   const lg = new THREE.SphereGeometry(1.6, 8, 8);
   const lm = new THREE.MeshBasicMaterial({ color: 0xff2020, toneMapped: false, fog: false });
@@ -258,7 +318,7 @@ function _buildBombMesh() {
 
 function _clearBomb() {
   if (bomb) {
-    if (bomb.mesh)  { scene.remove(bomb.mesh);  bomb.mesh.geometry.dispose(); }
+    if (bomb.mesh)  { scene.remove(bomb.mesh);  _disposeObj(bomb.mesh); }
     if (bomb.blink) { scene.remove(bomb.blink); bomb.blink.geometry.dispose(); }
   }
   bomb = null;
@@ -327,6 +387,18 @@ function _updateRoundDriven(dt) {
     }
   }
   _updateRoundHUD();
+}
+
+// True while we're actively planting or defusing (holding E in position) — drives the auto-crouch
+// (CS kneel) in physics.js. Works in solo and MP (carryingC4/plantProg come from gstate.me, bomb
+// from gstate in driven mode).
+function bombActionActive() {
+  if (typeof keys === 'undefined' || !keys['KeyE'] || typeof onGround === 'undefined' || !onGround) return false;
+  if (carryingC4 && typeof playerTeam !== 'undefined' && playerTeam === 't' &&
+      typeof _inBombSite === 'function' && _inBombSite()) return true;
+  if (bomb && bomb.live && typeof playerTeam !== 'undefined' && playerTeam === 'ct' && typeof gsPos !== 'undefined' && gsPos &&
+      Math.hypot(gsPos[0] - bomb.pos[0], gsPos[1] - bomb.pos[1]) < 64 && Math.abs(gsPos[2] - bomb.pos[2]) < 80) return true;
+  return false;
 }
 
 // T holds E inside a bomb site (on the ground) to plant.

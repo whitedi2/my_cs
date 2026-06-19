@@ -123,16 +123,24 @@ docs/              PLAN.md, DIFFERENCES.md
   автоматически: событийные (5004) из всех `v_*.mdl` + код-зависимые (выстрел/нож + шаги/приземление
   игрока) из списков в скрипте.
 - `player_to_json.py` — модель игрока (`models/player/<name>/<name>.mdl`) → `models/player_<name>.json`
-  (меш тела + кости + хитбоксы `mstudiobbox_t` (OBB по костям, поле `hitboxes`) + только движенческие
-  секвенции idle/walk/run/crouch/jump) + текстуры в `textures/player_*`.
+  (меш тела + кости + хитбоксы `mstudiobbox_t` (OBB по костям, поле `hitboxes`) + движенческие
+  секвенции idle/walk/run/crouch/jump + **death/flinch** (death1..3/head/gutshot/crouch_die,
+  head_flinch/gut_flinch — теперь ВСЕГДА: нужны и для death-камеры своей модели, и для удалённых
+  трупов; `--deaths` стал no-op) + текстуры в `textures/player_*`.
   Сейчас сконвертированы CT `gign` и `sas` (`python tools/player_to_json.py gign`); CT-модель в
   рантайме выбирается в меню класса (`CLASSES.ct` в `src/game.js`) — по умолчанию `playerModelName='gign'`.
 - `pweapon_to_json.py` — мировая модель оружия `p_<weapon>.mdl` → `models/p_<weapon>.json`
   (меш ствола + кости `Bip01…` + bind-поза). Рантайм гонит этот скелет позой игрока (по имени кости),
-  оружие крепится к кисти. Готовы `p_m4a1`, `p_usp`, `p_knife`.
+  оружие крепится к кисти. Готовы `p_m4a1`, `p_usp`, `p_knife`. Тем же тулзом сделаны **статичные
+  мировые модели** `w_*` (формат `{meshes,bones,bindFrame}`): гранаты `w_hegrenade/flashbang/smokegrenade`
+  и бомба `w_c4` (`python tools/pweapon_to_json.py w_c4`). Рендер — `_buildWorldMesh` (grenades.js),
+  GoldSrc Z-up → Three Y-up через `rotation.x=-90°`; C4 рисуется для выпавшей/заплантованной бомбы (rounds.js).
 - `bsp_to_obj.py` — BSP → `maps/de_dust2.obj/.mtl` + `maps/textures/`.
 - `bsp_phys.py` — BSP → `maps/de_dust2_hull.json` (clipnodes/planes + спауны, зоны закупки `func_buyzone`,
   бомбсайты `func_bomb_target` → `bombsites:[{min,max,site:'a'|'b'}]`). Запуск: `python tools/bsp_phys.py "<путь>/de_dust2.bsp"`.
+- `extract_kill_icons.py` → `sprites/kill/d_*.png` — иконки оружия для киллфида (death-notice
+  `d_<weapon>` из `640hud*.spr`, прямоугольники берутся из `sprites/hud.txt`). Карта id→иконка в
+  `_KF_ICON_MAP`/`_KF_ICONS` (`src/rounds.js`); `d_headshot` — маркер хедшота.
 - `extract_spr.py` → `sprites/` (muzzleflash, кровь, пуле-пуф `fast_wallpuff1`/`wall_puff1`; пути из `config.py`).
   `extract_decals.py` → `decals/` (пути абсолютные, поправь под себя).
 - `extract_skin.py`, `list_wad.py`, `debug_wad.py`, `_*.py` — вспомогательные/отладочные.

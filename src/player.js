@@ -476,8 +476,13 @@ const _plHandTmp = new THREE.Vector3();
 // animation core (also used for remote players in net.js).
 function updatePlayerModel(dt) {
   if (!player.root) return;
+  // Pure spectator has no body of their own — never render the local model.
+  if (spectating) { player.root.visible = false; return; }
   player.root.visible = thirdPerson;
   if (!thirdPerson || !gsPos) return;
+  // Dead → play our own death animation (held on the rig) and freeze the corpse, so the
+  // pulled-back death cam shows it from third person (CS 1.6). No gait/aim/gun.
+  if (typeof playerDead !== 'undefined' && playerDead) { _animateLocalDead(dt); return; }
   const w = (typeof curW === 'function') ? curW() : null;
   animateThirdPerson(player, {
     pos: gsPos, vel, yaw, pitch,
@@ -715,13 +720,17 @@ function _updateModelLight(rig, st, dt) {
 // camera doesn't clip through walls.
 function updateChaseCamera() {
   if (!thirdPerson || !gsPos) { camera.position.set(0, 0, 0); return; }
+  // First-person spectate: sit exactly at the eye (no pull-back).
+  if (typeof _specEye !== 'undefined' && _specEye) { camera.position.set(0, 0, 0); return; }
+  // Focus the chase on the spectated player while dead (_camFocus), else on ourselves.
+  const focus = (typeof _camFocus !== 'undefined' && _camFocus) ? _camFocus : gsPos;
   let dist = THIRD_DIST;
   // Trace from the eye straight back along the camera's (fixed, arrow-orbited)
   // angle — independent of mouse-look, matching yawObj/pitchObj in the render loop.
   const az = orbitYaw, el = orbitPitch;
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const eyeH = (focus === gsPos) ? (SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand)) : SV.eyestand;
   const cp = Math.cos(el), sp = Math.sin(el);
-  const from = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
+  const from = [focus[0], focus[1], focus[2] + eyeH];
   const bx = Math.sin(az) * cp, by = -Math.cos(az) * cp, bz = sp;   // backward dir
   const to = [from[0] + bx * dist, from[1] + by * dist, from[2] + bz * dist];
   if (gPlanes) {
@@ -741,4 +750,190 @@ function toggleThirdPerson(on) {
   orbitPitch = 0;
   const cb = document.getElementById('opt-third-person');
   if (cb) cb.checked = thirdPerson;
+}
+
+// ── Death cam + spectator (CS 1.6) ──────────────────────────────────────────
+// On death the view pulls back into third person to show our own death animation
+// (_animateLocalDead), then follows living players until we respawn at the next round.
+// Reuses the third-person camera (orbit + updateChaseCamera) with the focus point
+// redirected to the spectated player via _camFocus. Driven from input.js while playerDead.
+let _specMode = null;            // null | 'deathanim' | 'spectate'
+let _specStart = 0;              // performance.now() when the death cam began
+let _specTarget = null;          // remote id we're following
+let _camFocus = null;            // [x,y,z] gs focus for the chase cam (null → own gsPos)
+let _thirdPersonPref = false;    // user's own 3rd-person toggle, restored on respawn
+let _specCam = 0;                // spectator camera mode: 0 free-3rd, 1 locked-3rd, 2 first-person
+let _specEye = false;            // first-person spectate → updateChaseCamera parks at the eye
+let spectating = false;          // pure spectator (chose "Наблюдатель" in the menu — no body)
+const SPEC_DEATH_HOLD = 3200;    // ms to watch our own death animation before spectating (CS-ish)
+
+// Enter pure spectator mode (menu "Наблюдатель"): no body, go straight to following players.
+function _beginSpectate() {
+  spectating = true;
+  _thirdPersonPref = thirdPerson;
+  thirdPerson = true;
+  if (typeof resetScope === 'function') resetScope();
+  _specMode = 'spectate'; _specCam = 0; _specTarget = null; _camFocus = null; _specEye = false;
+  if (player) player.deathSeq = null;
+  specCycle(0);
+}
+
+// Leave spectator mode (picked a team) — restore view + the avatars we hid.
+function _endSpectate() {
+  if (!spectating) return;
+  spectating = false;
+  _specMode = null; _specTarget = null; _camFocus = null; _specEye = false; _specCam = 0;
+  _setSpectatorHud('');
+  if (typeof _specVmExit === 'function') _specVmExit();
+  if (typeof remotePlayers !== 'undefined') for (const o of remotePlayers.values()) if (o.root) o.root.visible = true;
+  thirdPerson = _thirdPersonPref;
+  smoothCamY = null;
+}
+
+// Cycle the spectator camera mode (Space while spectating): free 3rd → locked 3rd → 1st person.
+function cycleSpecCam() {
+  if (_specMode !== 'spectate') return;
+  _specCam = (_specCam + 1) % 3;
+}
+
+// Enter the death cam: force 3rd person, pick our corpse's death sequence by hitgroup, and
+// freeze the corpse facing. Called from game.js _enterDeath on the alive→dead edge.
+function _beginDeathCam(hg) {
+  _thirdPersonPref = thirdPerson;
+  thirdPerson = true;
+  if (typeof resetScope === 'function') resetScope();          // no scope while dead/spectating
+  orbitYaw   = (typeof yaw === 'number' && isFinite(yaw)) ? yaw : 0;
+  orbitPitch = -0.15;
+  _specMode  = 'deathanim';
+  _specStart = (typeof performance !== 'undefined') ? performance.now() : 0;
+  _specTarget = null; _camFocus = null;
+  if (player) {
+    player._deathYaw = (typeof yaw === 'number') ? yaw : 0;     // corpse facing, frozen
+    player.deathSeq  = (typeof _pickDeathSeq === 'function') ? _pickDeathSeq(player, hg | 0) : null;
+    player.frame = 0;
+  }
+}
+
+// Leave the death cam (respawn): restore the player's own view preference.
+function _endDeathCam() {
+  _specMode = null; _specTarget = null; _camFocus = null; _specEye = false; _specCam = 0;
+  _setSpectatorHud('');
+  if (typeof _specVmExit === 'function') _specVmExit();          // restore our own viewmodel/weapon
+  // Restore any avatars we hid for the first-person spectate cam.
+  if (typeof remotePlayers !== 'undefined')
+    for (const o of remotePlayers.values()) if (o.root) o.root.visible = true;
+  thirdPerson = _thirdPersonPref;
+  const cb = (typeof document !== 'undefined') && document.getElementById('opt-third-person');
+  if (cb) cb.checked = thirdPerson;
+  if (player) { player.deathSeq = null; player.frame = 0; }
+}
+
+// Cycle the spectated player (dir +1/-1) among living, rendered remotes.
+function specCycle(dir) {
+  if (typeof remotePlayers === 'undefined') { _specTarget = null; return; }
+  const ids = [];
+  for (const inst of remotePlayers.values()) if (inst && inst.ready && !inst.dead) ids.push(inst.id);
+  if (!ids.length) { _specTarget = null; return; }
+  let i = ids.indexOf(_specTarget);
+  i = (i < 0) ? 0 : (i + (dir || 1) + ids.length) % ids.length;
+  _specTarget = ids[i];
+}
+
+// Per-frame death/spectator camera. While the death anim plays we chase our own corpse; once it
+// finishes (after SPEC_DEATH_HOLD) we spectate a living player in one of three camera modes
+// (Space cycles): 0 free 3rd-person (mouse orbits), 1 locked behind the player, 2 first-person
+// through their eyes (their weapon-in-hand + animation render forward of the eye). Called from
+// the main loop while playerDead.
+function updateDeathCam(dt) {
+  if (!gsPos) return;
+  const now = (typeof performance !== 'undefined') ? performance.now() : 0;
+  if (_specMode === 'deathanim') {
+    const seq = player && player.deathSeq && player.seqMap[player.deathSeq];
+    const animDone = seq ? (player.frame >= seq.frames.length - 1) : true;
+    if ((now - _specStart > SPEC_DEATH_HOLD) && animDone) { _specMode = 'spectate'; specCycle(0); }
+  }
+
+  // Resolve the spectated player (skip to the next if ours died/left).
+  let inst = null;
+  if (_specMode === 'spectate') {
+    inst = (_specTarget != null && typeof remotePlayers !== 'undefined') ? remotePlayers.get(_specTarget) : null;
+    if (!inst || inst.dead || !inst.ready) { specCycle(1); inst = (_specTarget != null) ? remotePlayers.get(_specTarget) : null; }
+  }
+
+  _specEye = false;
+  let focus = gsPos, eyeH = SV.eyestand;
+  if (_specMode === 'spectate' && inst && inst.pos) {
+    focus = inst.pos;
+    eyeH = SV.eyestand + (inst.da || 0) * (SV.eyeduck - SV.eyestand);
+    if (_specCam === 2) {            // first-person: look exactly where they look, camera at eye
+      _specEye = true;
+      orbitYaw = inst.yaw; orbitPitch = (typeof inst.pitch === 'number') ? inst.pitch : 0;
+    } else if (_specCam === 1) {     // locked behind: camera fixed at their back, slightly above
+      orbitYaw = inst.yaw; orbitPitch = -0.18;
+    } else {                         // free: mouse orbits around them
+      if (typeof yaw === 'number')   orbitYaw   = yaw;
+      if (typeof pitch === 'number') orbitPitch = Math.max(-1.2, Math.min(1.2, pitch));
+    }
+  } else {
+    // Death anim (or no one to follow): free orbit around our own corpse.
+    if (typeof yaw === 'number')   orbitYaw   = yaw;
+    if (typeof pitch === 'number') orbitPitch = Math.max(-1.2, Math.min(1.2, pitch));
+  }
+  _camFocus = (focus === gsPos) ? null : [focus[0], focus[1], focus[2]];
+
+  const fy = _camFocus || gsPos;
+  const targetY = fy[2] + eyeH;
+  if (smoothCamY === null) smoothCamY = targetY;
+  // First-person follows tightly (no smoothing lag); 3rd-person eases.
+  smoothCamY += (targetY - smoothCamY) * (_specEye ? 1 : Math.min(1, dt * 8));
+  yawObj.position.set(fy[0], smoothCamY, -fy[1]);
+
+  // First-person: hide the spectated player's whole third-person avatar and instead render a
+  // REAL viewmodel of their weapon (vmScene), driven by their ws/wsT — exactly like the local
+  // player's gun. Other modes show everyone normally.
+  if (_specEye && inst) {
+    if (typeof _specVmEnter === 'function') _specVmEnter();
+    if (typeof _specVmUpdate === 'function') _specVmUpdate(inst.weapon, inst.ws, inst.wsT, inst.vel, inst.og, dt);
+  } else if (typeof _specVmExit === 'function') {
+    _specVmExit();
+  }
+  if (typeof remotePlayers !== 'undefined')
+    for (const o of remotePlayers.values()) if (o.root) o.root.visible = !(_specEye && o === inst);
+
+  _updateSpectatorHud(inst);
+}
+
+// Spectator HUD: who we're watching + the controls, mirrored to a small banner.
+function _updateSpectatorHud(inst) {
+  if (_specMode !== 'spectate') { _setSpectatorHud(''); return; }
+  const my = (typeof netMyId === 'function') ? netMyId() : null;
+  const who = inst ? (inst.id === my ? 'Вы' : `${(inst.team || '').toUpperCase()}#${inst.id}`)
+                   : (inst === null ? '—' : '');
+  const mode = ['Свободная камера', 'Камера сзади', 'От 1-го лица'][_specCam] || '';
+  _setSpectatorHud(`👁 Наблюдение: <b>${who || '—'}</b> · ${mode}<br><span class="spec-keys">ЛКМ/ПКМ — игрок · Пробел — камера</span>`);
+}
+function _setSpectatorHud(html) {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('spectator');
+  if (!el) return;
+  if (!html) { if (el.style.display !== 'none') el.style.display = 'none'; return; }
+  el.innerHTML = html; el.style.display = 'block';
+}
+
+// Render our corpse: play the death sequence once (hold the last frame), frozen in place.
+// Mirrors net.js _updateRemoteDead but for the local player rig.
+function _animateLocalDead(dt) {
+  const rig = player;
+  if (!rig.bones || !rig.seqMap) return;
+  const seq = (rig.deathSeq && rig.seqMap[rig.deathSeq]) || rig.seqMap.idle1;
+  if (!seq || !seq.frames.length) return;
+  const fps = seq.fps > 0 ? seq.fps : 30, N = seq.frames.length;
+  rig.frame = Math.min((rig.frame || 0) + dt * fps, N - 1);
+  const i = Math.floor(rig.frame), frac = rig.frame - i, next = Math.min(i + 1, N - 1);
+  const cur = computeBoneWorlds(rig.bones, seq.frames[i], (frac > 0.001 && next > i) ? seq.frames[next] : null, frac);
+  rig.root.rotation.y = (rig._deathYaw || 0) + Math.PI / 2;
+  rig.root.position.set(gsPos[0], gsPos[2], -gsPos[1]);
+  rig.root.updateMatrixWorld(true);
+  _skinRig(rig.meshes, rig.originalPositions, rig.boneIndices, rig.bones, cur, rig.bindWorld);
+  for (const k in rig.gunRigs) { const g = rig.gunRigs[k]; if (g && g.root) g.root.visible = false; }   // drop the gun
 }

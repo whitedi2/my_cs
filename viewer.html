@@ -222,6 +222,22 @@
   #killfeed .kf .kf-ct { color: #78a8f0; font-weight: 700; }
   #killfeed .kf .kf-t  { color: #e8a33d; font-weight: 700; }
   #killfeed .kf .kf-w  { color: rgba(255,255,255,.6); margin: 0 5px; }
+  #killfeed .kf { display: flex; align-items: center; gap: 6px; }
+  /* Death-notice icons: white sprite recoloured to the team tint via CSS mask. */
+  #killfeed .kf .kf-icon {
+    display: inline-block; height: 16px;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+    -webkit-mask-position: center; mask-position: center;
+    -webkit-mask-size: contain; mask-size: contain;
+  }
+  #killfeed .kf .kf-hs { height: 15px; }
+  #spectator {
+    position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%); display: none;
+    background: rgba(8,10,14,.62); border: 1px solid rgba(255,255,255,.14); border-radius: 6px;
+    padding: 7px 16px; color: #e8e8e8; text-align: center; pointer-events: none;
+    font-family: 'Segoe UI', system-ui, sans-serif; font-size: 15px; text-shadow: 0 1px 3px #000;
+  }
+  #spectator .spec-keys { font-size: 12px; opacity: .6; }
   #scoreboard {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
     display: none; pointer-events: none; width: min(92vw, 560px);
@@ -240,7 +256,10 @@
   #scoreboard .sb-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 8px; border-bottom: 1px solid rgba(255,255,255,.05); }
   #scoreboard .sb-row.me { background: rgba(255,255,255,.06); border-radius: 4px; }
   #scoreboard .sb-row.dead { color: rgba(255,255,255,.4); }
-  #scoreboard .sb-kd { font-variant-numeric: tabular-nums; color: rgba(255,255,255,.75); }
+  #scoreboard .sb-kd { font-variant-numeric: tabular-nums; color: rgba(255,255,255,.75); margin-left: auto; padding: 0 18px; min-width: 70px; text-align: right; }
+  #scoreboard .sb-team-h:not(.t):not(.ct) { background: rgba(255,255,255,.10); color: rgba(255,255,255,.6); }
+  #scoreboard .sb-ping { font-variant-numeric: tabular-nums; color: rgba(255,255,255,.45); min-width: 56px; text-align: right; }
+  #scoreboard .sb-row span:first-child { flex: 1; }
   #ammo-display {
     font-size: 24px; font-weight: bold; letter-spacing: 3px;
     color: rgba(255,255,255,.95);
@@ -362,6 +381,7 @@
 <div id="round-banner"></div>
 <div id="bomb-action"></div>
 <div id="killfeed"></div>
+<div id="spectator"></div>
 <div id="scoreboard"></div>
 
 <script type="importmap">

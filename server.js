@@ -40,6 +40,9 @@ try {
 // GoldSrc entity yaw (deg, 0=+X) → our yaw (forward = (-sin,cos)).
 function _angleToYaw(deg) { return (deg - 90) * Math.PI / 180; }
 
+// Default starting sidearm by team (original CS: T = Glock-18, CT = USP).
+function _teamPistol(team) { return team === 't' ? 'glock18' : 'usp'; }
+
 function _pickSpawn(team) {
   const spawns = _hullData && _hullData.spawns;
   const list = (spawns && spawns[team] && spawns[team].length) ? spawns[team]
@@ -72,22 +75,41 @@ function _assignSpawns(world) {
   }
 }
 
+// Make sure SOME live Terrorist carries the bomb during an active round. Called at round start
+// (with the freshly revived roster) and whenever a T joins mid-round — otherwise a lone T who
+// connected after `roundStart` would have no bomb until the next round. No-op if a bomb is already
+// planted/dropped, someone already carries it, or the round isn't running.
+function _ensureBombCarrier(world) {
+  const ph = world.match.phase;
+  if (ph !== 'buy' && ph !== 'live') return;
+  if (world.match.bomb || world.droppedC4) return;                       // already planted / loose on the ground
+  const ts = [];
+  for (const pl of world.players.values()) {
+    if (!pl.joined || pl.team !== 't' || !pl.alive) continue;
+    if (pl.carryingC4) return;                                           // a carrier already exists
+    ts.push(pl);
+  }
+  if (ts.length) ts[Math.floor(Math.random() * ts.length)].carryingC4 = true;
+}
+
 function createWorld() { return { players: new Map(), match: match.matchCreate(), droppedC4: null }; }
 
 function worldAddPlayer(world, id, opts = {}) {
-  const sp = _pickSpawn(opts.tm === 't' ? 't' : 'ct');
+  const team = opts.tm === 't' ? 't' : 'ct';
+  const pistol = _teamPistol(team);
+  const sp = _pickSpawn(team);
   const pl = {
     id,
     state:   sim.simMakeState(opts.p || sp.pos),
     yaw:     (opts.p ? (opts.y || 0) : sp.yaw),
-    team:    opts.tm === 't' ? 't' : 'ct',
+    team,
     model:   opts.m || 'gign',
-    weapon:  opts.w || 'usp',
+    weapon:  opts.w || pistol,
     lastSeq: 0,
     hp:      100, armor: 0, helmet: false,   // authoritative health (Phase 6B)
     alive:   true,
     money:   match.MATCH_START_MONEY,        // authoritative economy (Phase 6C)
-    weapons: new Set(['knife', 'usp']),
+    weapons: new Set(['knife', pistol]),
     nades:   { hegrenade: 0, flashbang: 0, smokegrenade: 0 },
     dk:      false,
     carryingC4: false, plantProg: 0, use: false,   // C4 (Phase 6D): carrier flag + plant hold + E-held
@@ -108,14 +130,15 @@ function worldRespawn(pl, opts = {}) {
   pl.hp = 100; pl.armor = 0; pl.helmet = false; pl.alive = true;   // fresh body on (re)join
   // Fresh economy on join / team change (CS resets money on team switch).
   pl.money = match.MATCH_START_MONEY;
-  pl.weapons = new Set(['knife', 'usp']);
   pl.nades = { hegrenade: 0, flashbang: 0, smokegrenade: 0 };
   pl.dk = false;
   pl.carryingC4 = false; pl.plantProg = 0;     // carrier is (re)assigned at round start
   pl.kills = 0; pl.deaths = 0;                  // team change / fresh join resets the scoreline
   if (opts.tm) pl.team = opts.tm === 't' ? 't' : 'ct';
   if (opts.m)  pl.model = opts.m;
-  if (opts.w)  pl.weapon = opts.w;
+  const pistol = _teamPistol(pl.team);          // original CS sidearm: T = Glock-18, CT = USP
+  pl.weapons = new Set(['knife', pistol]);
+  pl.weapon = opts.w || pistol;
   const sp = opts.p ? { pos: opts.p.slice(), yaw: opts.y || 0 } : _pickSpawn(pl.team);
   pl.state = sim.simMakeState(sp.pos);
   pl.yaw = sp.yaw;
@@ -127,6 +150,7 @@ function worldRespawn(pl, opts = {}) {
 function worldApplyCmd(pl, c) {
   if (!_hull || !c || (c.seq | 0) <= pl.lastSeq) return null;
   pl.lastSeq = c.seq | 0;
+  pl.lastCmdAt = Date.now();          // for the idle-tick: this player is actively sending input
   pl.yaw = c.y || 0;
   if (c.w) pl.weapon = c.w;
   // Presentation-only state we relay so other clients can render this player's
@@ -147,6 +171,23 @@ function worldApplyCmd(pl, c) {
       const r = match.matchApplyDamage(pl, fd, 0);
       if (r.dealt > 0) return { dealt: r.dealt, died: r.died };
     }
+  }
+  return null;
+}
+
+// Keep simulating a player who stopped sending usercmds (menu open / paused input) so
+// gravity/friction/landing still run — otherwise their body freezes wherever it was (e.g.
+// hanging mid-jump) on every other client's screen, doesn't settle, and looks broken on
+// hit/death. Neutral input; keeps their current stance and facing. Returns a fall-damage
+// event like worldApplyCmd. Active players (cmd every frame) never reach this — only those
+// idle past the grace window in the snapshot loop.
+function worldIdleTick(pl, dt) {
+  if (!_hull || !pl.alive) return null;
+  const cmd = { forwardMove: 0, sideMove: 0, jump: false, duck: !!pl.state.phyDucked, walk: false, yaw: pl.yaw };
+  const ev = sim.simPlayerMove(_hull, pl.state, cmd, Math.min(Math.max(dt, 0), 0.1), { wpnMax: CONFIG.maxspeed });
+  if (ev.landed) {
+    const fd = match.matchFallDamage(ev.fallVel);
+    if (fd > 0) { const r = match.matchApplyDamage(pl, fd, 0); if (r.dealt > 0) return { dealt: r.dealt, died: r.died }; }
   }
   return null;
 }
@@ -181,10 +222,23 @@ function worldTickMatch(world, dt) {
   for (const pl of world.players.values()) roster.push({ team: pl.team, alive: pl.alive, joined: pl.joined });
   const ev = match.matchTick(world.match, roster, dt);          // phases / clock / C4 fuse → detonate
   if (ev.roundStart) {                                          // fresh round: respawn + revive + reassign C4
+    // Apply deferred team/model changes (mid-round joins/switches) now, with a fresh loadout.
+    for (const pl of world.players.values()) {
+      if (!pl.pendingTeam) continue;
+      pl.team = pl.pendingTeam;
+      if (pl.pendingModel) pl.model = pl.pendingModel;
+      const pistol = _teamPistol(pl.team);
+      pl.weapons = new Set(['knife', pistol]);
+      pl.weapon = pl.pendingW || pistol;
+      pl.money = match.MATCH_START_MONEY; pl.armor = 0; pl.helmet = false; pl.dk = false;
+      pl.nades = { hegrenade: 0, flashbang: 0, smokegrenade: 0 };
+      pl.pendingTeam = pl.pendingModel = pl.pendingW = null;
+    }
     _assignSpawns(world);                                       // authoritative distinct spawns (6E)
     world.droppedC4 = null;                                     // clear any loose bomb from last round
     const ts = [];
     for (const pl of world.players.values()) {
+      if (pl.spectator) continue;                               // spectators stay out of play
       match.matchRevive(pl);
       pl.carryingC4 = false; pl.plantProg = 0;
       if (pl.joined && pl.team === 't') ts.push(pl);
@@ -215,6 +269,11 @@ function _inBuyZone(pl) {
 }
 
 // ── C4 bomb (Phase 6D) ───────────────────────────────────────────────────────
+// Bomb resting position on the FLOOR: the player origin sits at body centre (~36 above the
+// feet, 18 ducked), so plant/drop at the origin floats the bomb in mid-air. Drop to the feet.
+function _bombFloorPos(st) {
+  return [st.pos[0], st.pos[1], st.pos[2] - (st.phyDucked ? 18 : 36)];
+}
 // Which bombsite (if any) a player is standing in. Bombsites come from the BSP hull
 // (`bombsites:[{min,max,site}]`) with the same ±64 Z tolerance the client uses.
 function _bombSiteAt(pl) {
@@ -244,7 +303,7 @@ function _nearDrop(pl, drop) {
 function _tickC4Carry(world) {
   if (world.match.bomb) { world.droppedC4 = null; return; }   // already planted → nothing loose
   for (const pl of world.players.values()) {
-    if (pl.carryingC4 && !pl.alive) { pl.carryingC4 = false; world.droppedC4 = { pos: pl.state.pos.slice() }; }
+    if (pl.carryingC4 && !pl.alive) { pl.carryingC4 = false; world.droppedC4 = { pos: _bombFloorPos(pl.state) }; }
   }
   if (world.droppedC4) {
     for (const pl of world.players.values()) {
@@ -269,7 +328,7 @@ function worldTickBomb(world, dt, ev) {
         pl.plantProg = (pl.plantProg || 0) + dt;
         if (pl.plantProg >= match.MATCH_PLANT_TIME) {
           pl.plantProg = 0; pl.carryingC4 = false;
-          match.matchBombPlant(ms, pl.state.pos, site.site);
+          match.matchBombPlant(ms, _bombFloorPos(pl.state), site.site);
           pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + match.MATCH_PLANT_REWARD);
           ev.bombPlanted = true;     // force an immediate gstate so the bomb/sound appear at once
           break;
@@ -329,8 +388,11 @@ function gameState(world, pl) {
     dropC4: world.droppedC4 ? world.droppedC4.pos : null,   // loose bomb on the ground (6D drop)
     roster: [],   // connected players for the scoreboard / kill feed (Phase 6E)
   };
-  for (const p of world.players.values()) if (p.joined)
-    gs.roster.push({ id: p.id, team: p.team, alive: !!p.alive, kills: p.kills, deaths: p.deaths });
+  for (const p of world.players.values()) {
+    if (!p.joined && !p.spectator) continue;
+    gs.roster.push({ id: p.id, team: p.team, alive: !!p.alive, kills: p.kills, deaths: p.deaths,
+                     ping: p.ping || 0, spec: !!p.spectator });
+  }
   if (pl) gs.me = {
     hp: pl.hp, armor: pl.armor, helmet: !!pl.helmet, alive: !!pl.alive, team: pl.team,
     money: pl.money, weapons: [...pl.weapons], nades: pl.nades, dk: !!pl.dk,
@@ -363,7 +425,8 @@ function _pushPlayer(pl, axis, delta) {
 
 function resolveCollisions(world) {
   if (!_hull) return;
-  const list = [...world.players.values()];
+  // Only LIVE, joined players are solid — corpses don't block (you run through them).
+  const list = [...world.players.values()].filter(pl => pl.alive && pl.joined);
   for (let i = 0; i < list.length; i++) {
     for (let j = i + 1; j < list.length; j++) {
       const a = list[i].state, b = list[j].state;
@@ -451,6 +514,112 @@ function worldProcessShot(world, shooterId, msg) {
   return out;
 }
 
+// ── Bots (simple server-side AI) ─────────────────────────────────────────────
+// Bots are ordinary world players the server drives with SYNTHESIZED usercmds, so they show
+// up in snapshots and every client renders them through the normal remote path (zero client
+// changes). AI: wander (turn when blocked) until an enemy is in view (FOV + line of sight),
+// then face it and fire through the SAME authoritative hitreg humans use (worldProcessShot).
+// Navigation is the simple "steer + bounce off walls" approach — no waypoints.
+const BOT_MODELS = { t: ['leet', 'terror'], ct: ['gign', 'sas'] };
+const BOT_RIFLE  = { t: 'ak47', ct: 'm4' };
+let _botSeq = 0;
+
+function spawnBot(world, team) {
+  team = team === 't' ? 't' : 'ct';
+  const id = 9001 + (_botSeq++);
+  const models = BOT_MODELS[team];
+  const model  = models[Math.floor(Math.random() * models.length)];
+  const pl = worldAddPlayer(world, id, { tm: team, m: model });
+  pl.joined = true;
+  pl.isBot  = true;
+  const rifle = BOT_RIFLE[team];                 // hand it a rifle so it can actually fight
+  pl.weapon = rifle; pl.weapons.add(rifle);
+  pl.ai = { yaw: pl.yaw, roamT: 0, lastPos: pl.state.pos.slice(), fireCd: 0, reactT: 0 };
+  return pl;
+}
+
+function _botEye(pl)    { return [pl.state.pos[0], pl.state.pos[1], pl.state.pos[2] + CONFIG.eyestand]; }
+function _botCenter(pl) { return [pl.state.pos[0], pl.state.pos[1], pl.state.pos[2] + 12]; }   // ~chest
+
+// Nearest living enemy in the bot's view (within ~140° FOV and with clear line of sight).
+function _botAcquire(world, bot) {
+  const eye = _botEye(bot);
+  const fwd = [-Math.sin(bot.yaw), Math.cos(bot.yaw)];
+  let best = null, bestD = Infinity;
+  for (const tp of world.players.values()) {
+    if (tp === bot || !tp.alive || tp.team === bot.team) continue;
+    const c = _botCenter(tp);
+    const dx = c[0]-eye[0], dy = c[1]-eye[1], dz = c[2]-eye[2];
+    const h = Math.hypot(dx, dy) || 1e-3;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist > 2200 || dist >= bestD) continue;
+    if ((dx/h)*fwd[0] + (dy/h)*fwd[1] < 0.34) continue;                    // outside ~140° FOV
+    if (sim.simTraceMove(_hull, false, eye, c).fraction < 0.96) continue;  // wall blocks LOS
+    best = tp; bestD = dist;
+  }
+  return best;
+}
+
+function _botAim(bot, enemy) {
+  const eye = _botEye(bot), c = _botCenter(enemy);
+  const dx = c[0]-eye[0], dy = c[1]-eye[1], dz = c[2]-eye[2];
+  const h = Math.hypot(dx, dy) || 1e-3;
+  return { yaw: Math.atan2(-dx, dy), pitch: Math.atan2(dz, h), dir: [dx, dy, dz] };
+}
+
+// One AI tick: moves the bot through the shared sim and, when engaging, returns shot hits +
+// fall damage for the caller to broadcast (it owns dmgEvent). No-op for a dead bot.
+function worldBotTick(world, bot, dt) {
+  if (!_hull || !bot.alive) return null;
+  const ai = bot.ai || (bot.ai = { yaw: bot.yaw, roamT: 0, lastPos: bot.state.pos.slice(), fireCd: 0, reactT: 0 });
+  // Only hunt/shoot during the live round — during buy/freeze/over they just wander, so a
+  // joining player isn't gunned down before they can act.
+  const enemy = (world.match.phase === 'live') ? _botAcquire(world, bot) : null;
+
+  let yaw, pitch = 0, fm = 1;
+  if (enemy) {
+    const a = _botAim(bot, enemy);
+    yaw = a.yaw; pitch = a.pitch; fm = 0;                  // hold position and shoot (simple)
+  } else {
+    // Wander: big turn when blocked, small drift otherwise.
+    ai.roamT -= dt;
+    const moved = Math.hypot(bot.state.pos[0]-ai.lastPos[0], bot.state.pos[1]-ai.lastPos[1]);
+    if (ai.roamT <= 0 || moved < 0.6) {
+      ai.yaw += (Math.random() * 2 - 1) * (moved < 0.6 ? 2.0 : 0.8);
+      ai.roamT = 1.0 + Math.random() * 2.5;
+    }
+    yaw = ai.yaw;
+  }
+  ai.lastPos = bot.state.pos.slice();
+  bot.yaw = yaw; bot.pitch = pitch;
+
+  const cmd = { forwardMove: fm, sideMove: 0, jump: false, duck: false, walk: false, yaw };
+  const ev = sim.simPlayerMove(_hull, bot.state, cmd, Math.min(Math.max(dt, 0), 0.1), { wpnMax: CONFIG.maxspeed });
+  let fall = null;
+  if (ev.landed) {
+    const fd = match.matchFallDamage(ev.fallVel);
+    if (fd > 0) { const r = match.matchApplyDamage(bot, fd, 0); if (r.dealt > 0) fall = { dealt: r.dealt, died: r.died }; }
+  }
+
+  // Fire: short reaction delay on first sight, then a rifle cadence with slight inaccuracy.
+  let hits = null;
+  ai.fireCd -= dt;
+  if (enemy) {
+    if (ai.reactT > 0) ai.reactT -= dt;
+    else if (ai.fireCd <= 0) {
+      const a = _botAim(bot, enemy);
+      const l = Math.hypot(a.dir[0], a.dir[1], a.dir[2]) || 1;
+      const s = 0.03;                                       // aim error (≈1.7°)
+      const d = [a.dir[0]/l + (Math.random()*2-1)*s, a.dir[1]/l + (Math.random()*2-1)*s, a.dir[2]/l + (Math.random()*2-1)*s];
+      hits = worldProcessShot(world, bot.id, { o: _botEye(bot), d, w: bot.weapon, s: 0, svt: Infinity });
+      ai.fireCd = 0.11 + Math.random() * 0.06;
+    }
+  } else {
+    ai.reactT = 0.18 + Math.random() * 0.22;                // reset reaction for the next sighting
+  }
+  return { fall, hits };
+}
+
 // ── WebSocket transport (only when run directly) ─────────────────────────────
 function startServer(port) {
   const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -458,6 +627,12 @@ function startServer(port) {
   const world = createWorld();
   const sockets = new Map();               // id → socket
   let _nextId = 1;
+
+  // Fill the server with bots (MP_BOTS, default 4 — split evenly between teams). They idle
+  // until a human connects (the snapshot loop early-returns while no one is watching).
+  const BOT_COUNT = process.env.MP_BOTS != null ? Math.max(0, Number(process.env.MP_BOTS) | 0) : 4;
+  for (let i = 0; i < BOT_COUNT; i++) spawnBot(world, i % 2 === 0 ? 'ct' : 't');
+  if (BOT_COUNT) console.log(`[mp] spawned ${BOT_COUNT} bots`);
 
   const broadcast = (str) => { for (const s of sockets.values()) _send(s, str); };
   // Broadcast a damage/death event so the victim updates HP + others flinch/animate death.
@@ -514,7 +689,7 @@ function startServer(port) {
       if (!sockets.has(id)) return;
       sockets.delete(id);
       const lp = world.players.get(id);
-      if (lp && lp.carryingC4 && !world.match.bomb) world.droppedC4 = { pos: lp.state.pos.slice() };   // carrier left → drop the bomb
+      if (lp && lp.carryingC4 && !world.match.bomb) world.droppedC4 = { pos: _bombFloorPos(lp.state) };   // carrier left → drop the bomb
       world.players.delete(id);
       broadcast(JSON.stringify({ t: 'leave', id }));
       console.log(`[mp] client ${id} left (${sockets.size} online)`);
@@ -527,12 +702,22 @@ function startServer(port) {
     if (msg.t === 'ping') {                               // app-level latency probe (works pre-join)
       const sk = sockets.get(id);
       if (sk) _send(sk, JSON.stringify({ t: 'pong', ts: msg.ts }));
+      const pp = world.players.get(id);                  // client reports its measured RTT → roster ping
+      if (pp && typeof msg.ping === 'number' && isFinite(msg.ping)) pp.ping = Math.max(0, Math.round(msg.ping));
       return;
     }
     const pl = world.players.get(id);
     if (!pl) return;
     switch (msg.t) {
-      case 'hello': {                                     // join / team change / respawn
+      case 'hello': {                                     // join / team change / respawn / spectate
+        if (msg.spec) {                                   // join as a SPECTATOR — no body, not a player
+          const wasJoined = pl.joined;
+          pl.spectator = true; pl.joined = false; pl.alive = false;
+          pl.team = 'spec';
+          if (wasJoined) broadcast(JSON.stringify({ t: 'leave', id }));   // drop their body on other clients
+          break;
+        }
+        pl.spectator = false;
         let tm = msg.tm === 't' ? 't' : 'ct', model = msg.m;
         // Team-balance backstop (Phase 6E): never let a team get 2+ ahead. Honest clients already
         // balance in the menu; this catches the rest (reassign + a team-appropriate default model).
@@ -540,7 +725,28 @@ function startServer(port) {
         for (const p of world.players.values()) { if (!p.joined || p.id === id) continue; if (p.team === 't') nt++; else nct++; }
         const cur = tm === 't' ? nt : nct, oth = tm === 't' ? nct : nt;
         if ((cur + 1) - oth >= 2) { tm = tm === 't' ? 'ct' : 't'; model = tm === 't' ? 'leet' : 'gign'; }
-        worldRespawn(pl, { tm, m: model, w: msg.w, p: msg.p, y: msg.y });
+        // Round-respawn discipline (CS): once you're in the match you only (re)spawn at a ROUND
+        // START. A brand-new first join is fielded immediately; but a RESPAWN after death or a TEAM
+        // CHANGE during an active round (buy/live) does NOT field you this round — you wait for the
+        // next one. A LIVE player switching teams counts as a suicide (death anim on all clients + a death).
+        const midRound = world.match.phase === 'buy' || world.match.phase === 'live';
+        const wasInMatch = pl.joined;                      // already part of the match (respawn / team change)
+        if (!midRound || !wasInMatch) {
+          // Warmup, between rounds, OR a brand-new first join → field them now.
+          worldRespawn(pl, { tm, m: model, w: msg.w });
+        } else {
+          const wasLive = pl.alive;                        // a fielded, living player switching teams
+          pl.pendingTeam = tm; pl.pendingModel = model || null; pl.pendingW = msg.w || null;  // applied at next round start
+          pl.alive = false;
+          if (wasLive) {
+            pl.hp = 0;
+            dmgEvent(pl.id, 0, 0, 0, 0, true, 'world');   // team-change suicide: death anim + death tally
+            // keep current team/model for the corpse; the pending team applies next round
+          } else {
+            pl.team = tm; if (model) pl.model = model;     // dead player reselecting → show on the chosen team while waiting
+          }
+        }
+        _ensureBombCarrier(world);     // lone/new T mid-round still gets the C4 (not only at roundStart)
         break;
       }
       case 'cmd': {
@@ -588,6 +794,28 @@ function startServer(port) {
     const dt = Math.min(0.25, Math.max(0, (now - _lastMs) / 1000));   // real elapsed (round clock accuracy)
     _lastMs = now;
     _svt += SNAP_MS;
+    // Bots: drive their AI + movement and broadcast any shots / fall damage they cause.
+    for (const pl of world.players.values()) {
+      if (!pl.isBot || !pl.alive) continue;
+      const r = worldBotTick(world, pl, dt);
+      if (!r) continue;
+      if (r.fall) dmgEvent(pl.id, 0, pl.id, r.fall.dealt, pl.hp, r.fall.died, 'fall');
+      if (r.hits) for (const h of r.hits) {
+        dmgEvent(h.tid, h.hg, pl.id, h.dealt, h.hp, h.died, pl.weapon);
+        if (h.died) _award(pl, match.matchKillReward(pl.weapon));
+      }
+    }
+    // Idle players (menu open / paused input — no usercmds flowing) keep being simulated so
+    // they fall & land instead of freezing mid-air for everyone else. The 200 ms grace tolerates
+    // brief cmd gaps on low-FPS clients (active players send a cmd every frame → never idle here).
+    // Bots are driven above, not here.
+    for (const pl of world.players.values()) {
+      if (pl.isBot) continue;
+      if (pl.joined && pl.alive && now - (pl.lastCmdAt || 0) > 200) {
+        const fe = worldIdleTick(pl, dt);
+        if (fe) dmgEvent(pl.id, 0, pl.id, fe.dealt, pl.hp, fe.died, 'fall');
+      }
+    }
     resolveCollisions(world);                 // solid bodies: separate overlapping players
     worldRecordHistory(world, _svt);          // lag-comp position history
     const ev = worldTickMatch(world, dt);     // round phases / timers / score / bomb
@@ -660,4 +888,5 @@ module.exports = {
   createWorld, worldAddPlayer, worldRespawn, worldApplyCmd, worldSnapshot,
   snapshotEntry, resolveCollisions, worldRecordHistory, worldProcessShot,
   worldTickMatch, gameState, startServer,
+  spawnBot, worldBotTick,
 };

@@ -296,6 +296,11 @@ document.addEventListener('keydown', e => {
   // ESC on the pause menu = the "Продолжить" button (resume / re-lock the pointer).
   if (e.code === 'Escape' && !isLocked && hasStarted) { _startGame(); return; }
   if (!isLocked) return;
+  // Dead or spectating → Space cycles the spectator camera (free 3rd / locked 3rd / 1st person).
+  if (((typeof playerDead !== 'undefined' && playerDead) || (typeof spectating !== 'undefined' && spectating)) && e.code === 'Space') {
+    if (typeof cycleSpecCam === 'function') cycleSpecCam();
+    e.preventDefault(); return;
+  }
   if (e.code === 'Tab' && typeof scoreboardOpen !== 'undefined') { scoreboardOpen = true; e.preventDefault(); }   // hold Tab → scoreboard (6E)
   // Stop browser hotkeys (Ctrl+W close, Ctrl+S save, …) while playing — but keep
   // the page-reload shortcut working (the project relies on Ctrl+Shift+R).
@@ -304,10 +309,12 @@ document.addEventListener('keydown', e => {
   if (teamStage || buyOpen) {
     const m = e.code.match(/^(?:Digit|Numpad)(\d)$/);
     if (m) { const n = +m[1]; if (teamStage) teamMenuKey(n); else buyMenuKey(n); e.preventDefault(); return; }
-    if (buyOpen && e.code === 'KeyB') { closeBuyMenu(); return; }
+    if (buyOpen && (e.code === 'KeyB' || e.code === 'KeyO')) { closeBuyMenu(); return; }
     if (teamStage) return;                 // nothing else works during team select
   }
   if (e.code === 'KeyB') { openBuyMenu(); return; }
+  if (e.code === 'KeyO' && typeof openEquipMenu === 'function') { openEquipMenu(); return; }  // equipment (grenades/armor/kit)
+  if (e.code === 'KeyM' && typeof openTeamMenu === 'function') { openTeamMenu(); return; }   // switch team / spectate
   // Arrow keys orbit the third-person camera — keep them from scrolling the page.
   if (thirdPerson && e.code.startsWith('Arrow')) e.preventDefault();
   // Slot keys pick the OWNED weapon in that slot (1 primary, 2 secondary, 3 knife).
@@ -362,7 +369,10 @@ document.addEventListener('mousedown', e => {
   if (e.button === 0) lmbHeld = true;
   if (e.button === 2) rmbHeld = true;
   if (!isLocked) return;
-  if (typeof playerDead !== 'undefined' && playerDead) return;   // no acting while dead
+  if ((typeof playerDead !== 'undefined' && playerDead) || (typeof spectating !== 'undefined' && spectating)) {
+    if (typeof specCycle === 'function') specCycle(e.button === 2 ? -1 : 1);   // spectate: click cycles target
+    return;
+  }
   const wpn = curW();
   // Knife: gated by meleeCooldown (CS rate); held-repeat handled in updateWeapon.
   if (wpn.type === 'melee') {
@@ -448,12 +458,18 @@ function animate(t) {
   }
 
   if (isLocked && gsPos && !gameLoading) {
-    if (!teamStage && !playerDead) {   // frozen while choosing team/class or dead
+    if (teamStage) {
+      syncCameraToPlayer();        // keep the frozen view at the spawn (team/class menu)
+    } else if ((typeof spectating !== 'undefined' && spectating) && typeof updateDeathCam === 'function') {
+      updateDeathCam(dt);          // pure spectator: follow living players
+    } else if (!playerDead) {
       playerMove(dt);
       if (typeof updateMovementSounds === 'function') updateMovementSounds(dt);
       updateWeapon(dt);
+    } else if (typeof updateDeathCam === 'function') {
+      updateDeathCam(dt);          // death cam: 3rd-person death anim → spectate living players
     } else {
-      syncCameraToPlayer();        // keep the frozen view at the spawn / death spot
+      syncCameraToPlayer();
     }
     updatePlayerModel(dt);
     if (typeof updatePickups === 'function') updatePickups(dt);   // dropped-weapon physics + pickup
@@ -489,7 +505,7 @@ function animate(t) {
   } else {
     yawObj.rotation.y   = isFinite(yaw)   ? yaw   + recoilYaw   : 0;
     pitchObj.rotation.x = isFinite(pitch) ? pitch + punchPitch + recoilPitch : 0;
-    camera.rotation.z   = punchRoll;   // landing tilt to one side
+    camera.rotation.z   = punchRoll;   // landing tilt to one side (dead uses the 3rd-person cam)
   }
   updateChaseCamera();               // third-person: pull camera back; else recenter
 
@@ -505,7 +521,9 @@ function animate(t) {
     // In third-person the view-model/muzzle-flash overlay is hidden (we see the
     // world-space player model instead). Scoped (AWP) also hides it — you're
     // looking through the lens, not over the gun.
-    if (!thirdPerson && !isScoped()) {
+    // Viewmodel: shown in first person, AND while spectating a player in first-person
+    // (_specEye) — there we render THEIR weapon's viewmodel (driven in updateDeathCam).
+    if ((!thirdPerson || (typeof _specEye !== 'undefined' && _specEye)) && !isScoped()) {
       vmCamera.updateProjectionMatrix();
       const shouldFlip = curW().id === 'knife' ? !rightHand : rightHand;
       if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
