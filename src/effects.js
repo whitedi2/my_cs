@@ -560,8 +560,10 @@ function _updateShells(dt) {
       if (s.mesh.position.y <= groundY + 1) {
         s.mesh.position.y = groundY;
         s.bounces++;
-        // Brass "tink" on the first couple of contacts (engine TE_BOUNCE_SHELL).
-        if (s.bounces <= 2 && typeof playShellDrop === 'function') playShellDrop();
+        // Brass "tink" on the first couple of contacts (engine TE_BOUNCE_SHELL). Silent in the
+        // start menu — the showcase ejects brass too, but its sound must not leak into the menu.
+        if (s.bounces <= 2 && typeof playShellDrop === 'function' && (typeof isLocked === 'undefined' || isLocked))
+          playShellDrop();
         const restitution = 0.4 - s.bounces * 0.08;
         if (restitution > 0.05 && s.bounces < 4) {
           s.vel.y  = Math.abs(s.vel.y) * restitution;

@@ -159,6 +159,15 @@ function pickSpawn(team) {
 
 // Reset the player to a (re)spawn point. Used by initPhysics and the menu.
 function respawn() {
+  // Driven mode (Phase 6E): the SERVER owns the spawn position — it assigns a distinct spawn at
+  // round start and the snapshot/reconciliation places us. So don't pick a spawn or netHello here
+  // (that would fight the server); just reset local view/recoil so the new round starts clean.
+  if (typeof _netDriven !== 'undefined' && _netDriven) {
+    recoilPitch = recoilYaw = 0;
+    punchPitch = punchVel = punchRoll = punchRollVel = 0;
+    pitch = 0;
+    return;
+  }
   pickSpawn(playerTeam);
   vel = [0, 0, 0];
   onGround = false;

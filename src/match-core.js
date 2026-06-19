@@ -55,6 +55,15 @@ const MATCH_BUY = {
   defusekit:   { price: 200,  team: 'ct',   kind: 'dk' },
 };
 
+// ── C4 bomb (Phase 6D) — numbers mirror rounds.js ────────────────────────────
+const MATCH_C4_TIME      = 40;    // fuse seconds after a successful plant
+const MATCH_PLANT_TIME   = 3.0;   // hold seconds to plant (standing in a bombsite)
+const MATCH_DEFUSE_TIME  = 10;    // hold seconds to defuse without a kit
+const MATCH_DEFUSE_KIT   = 5;     // …with a defuse kit
+const MATCH_C4_DAMAGE    = 500;   // blast damage at the origin
+const MATCH_C4_RADIUS    = 700;   // blast radius (units)
+const MATCH_PLANT_REWARD = 800;   // money awarded for planting
+
 // Per-kill reward (ReGameDLL: knife $1500, most guns $300). 🔹 Approx — flat $300 otherwise.
 function matchKillReward(weapon) { return weapon === 'knife' ? 1500 : 300; }
 
@@ -108,6 +117,8 @@ function matchCreate(map) {
     timer: 0,                   // remaining seconds of the current phase
     scoreT: 0, scoreCT: 0,
     winner: null, reason: '',   // last round result (shown during 'over')
+    bomb: null,                 // planted C4 (Phase 6D): { pos, site, timer, defuseProg, live }
+    bombResult: null,           // 'explode' | 'defuse' for one round — drives the client cue
     _ended: false,
   };
 }
@@ -128,16 +139,28 @@ function matchTick(ms, roster, dt) {
 
   if (ms.phase === 'buy') {
     // Elimination can already settle it; otherwise buy time elapses into live.
-    const w = _matchCheckElim(joined);
+    const w = _matchCheckElim(joined, false);
     if (w) { _matchEndRound(ms, ev, w.winner, w.reason); return ev; }
     if (ms.timer <= 0) { ms.phase = 'live'; ms.timer = MATCH_ROUND_TIME; }
     return ev;
   }
 
   if (ms.phase === 'live') {
-    const w = _matchCheckElim(joined);
+    // A planted bomb runs its OWN fuse; the round clock no longer ends the round. The bomb
+    // must be defused (CT win) or it detonates → T win + blast damage (applied by the server,
+    // which has the geometry). ev.bombDetonate tells the server where to apply it.
+    if (ms.bomb && ms.bomb.live) {
+      ms.bomb.timer -= dt;
+      if (ms.bomb.timer <= 0) {
+        ev.bombDetonate = { pos: ms.bomb.pos.slice() };
+        ms.bombResult = 'explode';
+        _matchEndRound(ms, ev, 't', 'Бомба взорвана — победа Террористов');
+        return ev;
+      }
+    }
+    const w = _matchCheckElim(joined, !!(ms.bomb && ms.bomb.live));
     if (w) { _matchEndRound(ms, ev, w.winner, w.reason); return ev; }
-    if (ms.timer <= 0) _matchEndRound(ms, ev, 'ct', 'Время вышло — победа Контр-террористов');
+    if (!ms.bomb && ms.timer <= 0) _matchEndRound(ms, ev, 'ct', 'Время вышло — победа Контр-террористов');
     return ev;
   }
 
@@ -157,8 +180,20 @@ function _matchStartRound(ms, ev) {
   ms.phase = 'buy';
   ms.timer = MATCH_BUY_TIME;
   ms.winner = null; ms.reason = '';
+  ms.bomb = null;             // fresh round → no planted bomb (carrier reassigned by the server)
+  ms.bombResult = null;
   ms._ended = false;
   ev.roundStart = true;
+}
+
+// Server validated a completed plant (carrier + bombsite + 3s hold) → arm the bomb.
+function matchBombPlant(ms, pos, site) {
+  ms.bomb = { pos: [pos[0], pos[1], pos[2]], site: site || 'a', timer: MATCH_C4_TIME, defuseProg: 0, live: true };
+}
+// Server validated a completed defuse → CT win (ev carries the round-end for reward handling).
+function matchBombDefuse(ms, ev) {
+  ms.bombResult = 'defuse';
+  _matchEndRound(ms, ev, 'ct', 'Бомба обезврежена — победа Контр-террористов');
 }
 
 function _matchEndRound(ms, ev, winner, reason) {
@@ -166,6 +201,7 @@ function _matchEndRound(ms, ev, winner, reason) {
   ms._ended = true;
   ms.phase = 'over';
   ms.timer = MATCH_ROUND_END;
+  ms.bomb = null;             // any round end removes the planted bomb (cue via ms.bombResult)
   ms.winner = winner; ms.reason = reason;
   if (winner === 't') ms.scoreT++; else ms.scoreCT++;
   ev.roundEnd = { winner, reason };
@@ -173,13 +209,16 @@ function _matchEndRound(ms, ev, winner, reason) {
 
 // Elimination needs BOTH teams present (else a one-team practice round only ends on the
 // clock). A team that has members but none alive loses.
-function _matchCheckElim(joined) {
+function _matchCheckElim(joined, bombPlanted) {
   const t = joined.filter(p => p.team === 't');
   const ct = joined.filter(p => p.team === 'ct');
   if (!t.length || !ct.length) return null;
   const tAlive = t.some(p => p.alive), ctAlive = ct.some(p => p.alive);
-  if (!tAlive && ctAlive) return { winner: 'ct', reason: 'Террористы уничтожены — победа Контр-террористов' };
+  // CTs all dead → T win, always.
   if (!ctAlive && tAlive) return { winner: 't',  reason: 'Спецназ уничтожен — победа Террористов' };
+  // With the bomb live, wiping the Ts does NOT end the round — the CTs still have to defuse.
+  if (bombPlanted) return null;
+  if (!tAlive && ctAlive) return { winner: 'ct', reason: 'Террористы уничтожены — победа Контр-террористов' };
   if (!tAlive && !ctAlive) return { winner: 'ct', reason: 'Ничья — раунд за Контр-террористами' };
   return null;
 }
@@ -220,8 +259,10 @@ function matchRevive(pl) { pl.hp = MATCH_MAX_HP; pl.alive = true; }
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     matchCreate, matchTick, matchApplyDamage, matchFallDamage, matchRevive,
-    matchBuy, matchKillReward,
+    matchBuy, matchKillReward, matchBombPlant, matchBombDefuse,
     MATCH_BUY_TIME, MATCH_ROUND_TIME, MATCH_ROUND_END, MATCH_WARMUP_MIN, MATCH_MAX_HP,
     MATCH_START_MONEY, MATCH_MONEY_CAP, MATCH_WIN_REWARD, MATCH_LOSS_REWARD, MATCH_BUY,
+    MATCH_C4_TIME, MATCH_PLANT_TIME, MATCH_DEFUSE_TIME, MATCH_DEFUSE_KIT,
+    MATCH_C4_DAMAGE, MATCH_C4_RADIUS, MATCH_PLANT_REWARD,
   };
 }

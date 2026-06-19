@@ -31,6 +31,9 @@ let hasDefuseKit = false;
 // Solo (no server) keeps the local logic below unchanged.
 let _netDriven = false;
 let scoreT = 0, scoreCT = 0;   // team score (server-authoritative in MP; 0 solo)
+let mpRoster = [];             // connected players for scoreboard/kill feed (from gstate.roster, 6E)
+let scoreboardOpen = false;    // Tab held → show the scoreboard
+const _killFeed = [];          // recent kills: { byTeam, byMe, vicTeam, vicMe, w, until }
 let serverMap = null;          // map name the server reports
 
 // Bomb state. `bomb` is null until planted; `carrying` is the un-planted C4 (T only).
@@ -80,6 +83,7 @@ function applyServerRound(m) {
   _netDriven = true;
   serverMap = m.map;
   scoreT = m.scoreT | 0; scoreCT = m.scoreCT | 0;
+  mpRoster = m.roster || [];
   const prevRound = roundNum;
   roundPhase = (m.phase === 'warmup') ? 'idle' : m.phase;   // 'buy' | 'live' | 'over'
   roundNum   = m.round | 0;
@@ -91,8 +95,106 @@ function applyServerRound(m) {
   if (hasJoined && m.phase === 'buy' && m.round > 0 && m.round !== prevRound) {
     _localRoundReset(false);
   }
+  _syncDrivenBomb(m.bomb, m.bombResult);   // server-authoritative C4 (6D): build/clear mesh + cues
+  _syncDroppedC4(m.dropC4);                // loose C4 on the ground (carrier died/left)
   // HUD is drawn by the in-game loop (updateRound → _updateRoundDriven); don't draw it
   // here, or it would appear over the start menu on a status-only connection.
+}
+
+// Reconcile the local bomb visuals with the server's bomb state (driven mode). Builds the mesh
+// + plays the plant cue when it appears, updates the fuse/defuse, and plays the right cue
+// (defused vs exploded, from the round winner) + explosion when it disappears.
+function _syncDrivenBomb(sb, result) {
+  if (sb) {
+    if (!bomb) {
+      bomb = { pos: sb.pos.slice(), site: sb.site, timer: sb.timer, defuse: sb.defuseProg || 0,
+               live: true, mesh: null, blink: null, _beepT: 0, _defuseNeed: sb.defuseNeed || DEFUSE_TIME };
+      _buildBombMesh();
+      if (typeof playSound === 'function') playSound('weapons/c4_plant.wav', { volume: 0.9 });
+    } else {
+      bomb.timer = sb.timer; bomb.site = sb.site;
+      bomb.defuse = sb.defuseProg || 0; bomb._defuseNeed = sb.defuseNeed || bomb._defuseNeed;
+    }
+  } else if (bomb) {
+    const pos = bomb.pos.slice();
+    if (result === 'explode') {
+      if (typeof playSound === 'function') playSound('weapons/c4_explode1.wav', { volume: 1.0 });
+      if (typeof _spawnHEExplosion === 'function') { _spawnHEExplosion(pos); _spawnHEExplosion([pos[0], pos[1], pos[2] + 40]); }
+    } else if (result === 'defuse') {
+      if (typeof playSound === 'function') playSound('weapons/c4_disarmed.wav', { volume: 0.9 });
+    }
+    _clearBomb();   // any other reason (elimination with bomb live) → silent clear
+  }
+}
+
+// Dropped C4 on the ground (carrier died/left) — a small box + orange marker LED so a T can
+// find and walk over it (pickup is automatic, server-side). Built/cleared from gstate.dropC4.
+let _dropC4Mesh = null;
+function _syncDroppedC4(pos) {
+  if (pos) {
+    if (!_dropC4Mesh && typeof scene !== 'undefined') {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(9, 6, 13),
+        new THREE.MeshBasicMaterial({ color: 0x2a2418, toneMapped: false, fog: false }));
+      m.userData.noHitscan = true; scene.add(m);
+      m._led = new THREE.Mesh(new THREE.SphereGeometry(1.4, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0xffaa33, toneMapped: false, fog: false }));
+      m._led.userData.noHitscan = true; scene.add(m._led);
+      _dropC4Mesh = m;
+    }
+    if (_dropC4Mesh) {
+      _dropC4Mesh.position.set(pos[0], pos[2] + 3, -pos[1]);          // gs → three
+      _dropC4Mesh._led.position.set(pos[0], pos[2] + 8, -pos[1]);
+    }
+  } else if (_dropC4Mesh) {
+    scene.remove(_dropC4Mesh); _dropC4Mesh.geometry.dispose();
+    scene.remove(_dropC4Mesh._led); _dropC4Mesh._led.geometry.dispose();
+    _dropC4Mesh = null;
+  }
+}
+
+// ── Kill feed + scoreboard (Phase 6E) ───────────────────────────────────────
+function _rosterTeam(id) { const r = mpRoster.find(p => p.id === id); return r ? r.team : null; }
+const _KF_WEAPON = { c4: '💣 C4', fall: 'падение', knife: 'нож', m4: 'M4A1', ak47: 'AK-47', usp: 'USP' };
+function _weaponLabel(w) { return _KF_WEAPON[w] || (w ? String(w).toUpperCase() : '☠'); }
+
+// Push a kill onto the feed (called from net.js _onDamage on a death). by=0 → world/fall (no killer).
+function pushKillFeed(byId, vicId, w) {
+  _killFeed.push({ byId: byId || 0, byTeam: byId ? _rosterTeam(byId) : null,
+                   vicId, vicTeam: _rosterTeam(vicId), w, until: performance.now() + 5000 });
+  while (_killFeed.length > 6) _killFeed.shift();
+}
+
+function _renderKillFeed() {
+  const el = document.getElementById('killfeed');
+  if (!el) return;
+  const now = performance.now();
+  while (_killFeed.length && _killFeed[0].until < now) _killFeed.shift();
+  const my = (typeof netMyId === 'function') ? netMyId() : null;
+  const cls = tm => tm === 't' ? 'kf-t' : 'kf-ct';
+  const lbl = (id, tm) => id === my ? 'Вы' : `${(tm || '').toUpperCase()}#${id}`;
+  el.innerHTML = _killFeed.map(k => k.byId
+    ? `<div class="kf"><span class="${cls(k.byTeam)}">${lbl(k.byId, k.byTeam)}</span><span class="kf-w">${_weaponLabel(k.w)}</span><span class="${cls(k.vicTeam)}">${lbl(k.vicId, k.vicTeam)}</span></div>`
+    : `<div class="kf"><span class="kf-w">${_weaponLabel(k.w)}</span> <span class="${cls(k.vicTeam)}">${lbl(k.vicId, k.vicTeam)}</span></div>`
+  ).join('');
+}
+
+function _renderScoreboard() {
+  const el = document.getElementById('scoreboard');
+  if (!el) return;
+  if (!scoreboardOpen || !_netDriven) { if (el.style.display !== 'none') el.style.display = 'none'; return; }
+  const my = (typeof netMyId === 'function') ? netMyId() : null;
+  const sort = a => a.slice().sort((x, y) => y.kills - x.kills || x.deaths - y.deaths);
+  const rows = list => sort(list).map(r =>
+    `<div class="sb-row ${r.id === my ? 'me' : ''} ${r.alive ? '' : 'dead'}">` +
+    `<span>${r.id === my ? 'Вы' : (r.team.toUpperCase() + '#' + r.id)}${r.alive ? '' : ' ☠'}</span>` +
+    `<span class="sb-kd">${r.kills} / ${r.deaths}</span></div>`).join('');
+  const ct = mpRoster.filter(r => r.team === 'ct'), t = mpRoster.filter(r => r.team === 't');
+  el.innerHTML =
+    `<div class="sb-head"><span class="sb-title">${serverMap || 'de_dust2'} · Раунд ${roundNum}</span>` +
+    `<span class="sb-score"><b class="t">T ${scoreT}</b> : <b class="ct">${scoreCT} CT</b></span></div>` +
+    `<div class="sb-team"><span class="sb-team-h ct">Контр-террористы (${ct.length})</span>${rows(ct)}</div>` +
+    `<div class="sb-team"><span class="sb-team-h t">Террористы (${t.length})</span>${rows(t)}</div>`;
+  el.style.display = 'block';
 }
 
 // Server connection lost → resume a local (solo) match so play continues.
@@ -211,6 +313,19 @@ function _updateRoundDriven(dt) {
   if (roundPhase === 'buy')        buyTimer   = Math.max(0, buyTimer - dt);
   else if (roundPhase === 'live')  roundTimer = Math.max(0, roundTimer - dt);
   else if (roundPhase === 'over')  endTimer   = Math.max(0, endTimer - dt);
+  // Server-driven bomb: smooth-tick the fuse between gstates + accelerating beep / LED blink.
+  if (bomb && bomb.live) {
+    bomb.timer = Math.max(0, bomb.timer - dt);
+    bomb._beepT = (bomb._beepT || 0) - dt;
+    if (bomb._beepT <= 0) {
+      const frac = Math.max(0, bomb.timer / C4_TIME);
+      bomb._beepT = 0.18 + frac * 1.2;                     // faster near the end
+      if (typeof playRandom === 'function')
+        playRandom(['weapons/c4_beep1.wav', 'weapons/c4_beep2.wav', 'weapons/c4_beep3.wav',
+                    'weapons/c4_beep4.wav', 'weapons/c4_beep5.wav'], { volume: 0.5 });
+      if (bomb.blink) bomb.blink.visible = !bomb.blink.visible;
+    }
+  }
   _updateRoundHUD();
 }
 
@@ -295,13 +410,14 @@ function _updateRoundHUD() {
     else if (ban._until && performance.now() > ban._until) ban.style.display = 'none';
   }
 
-  // Plant / defuse progress bar. Disabled in MP until the bomb moves server-side (6D).
+  // Plant / defuse progress bar. Works in both solo and MP (6D): in driven mode plantProg /
+  // carryingC4 come from gstate.me and bomb.defuse from gstate.bomb.
   const ba = document.getElementById('bomb-action');
-  if (ba && _netDriven) { ba.style.display = 'none'; }
-  else if (ba) {
+  if (ba) {
     let label = '', frac = 0;
+    const defNeed = (bomb && bomb._defuseNeed) || (hasDefuseKit ? DEFUSE_KIT : DEFUSE_TIME);
     if (plantProg > 0)              { label = 'Закладка бомбы…';   frac = plantProg / PLANT_TIME; }
-    else if (bomb && bomb.defuse > 0) { label = 'Разминирование…'; frac = bomb.defuse / (hasDefuseKit ? DEFUSE_KIT : DEFUSE_TIME); }
+    else if (bomb && bomb.defuse > 0) { label = 'Разминирование…'; frac = bomb.defuse / defNeed; }
     else if (roundPhase === 'live' && carryingC4 && _inBombSite()) { label = 'Удерживайте E — заложить бомбу'; frac = 0; }
     else if (bomb && bomb.live && playerTeam === 'ct') {
       const near = gsPos && Math.hypot(gsPos[0] - bomb.pos[0], gsPos[1] - bomb.pos[1]) < 64;
@@ -312,4 +428,7 @@ function _updateRoundHUD() {
       ba.style.display = 'block';
     } else ba.style.display = 'none';
   }
+
+  _renderKillFeed();      // MP kill feed (top-right) — empty/no-op in solo
+  _renderScoreboard();    // MP scoreboard (Tab) — hidden in solo / when not held
 }

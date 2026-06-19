@@ -57,6 +57,8 @@ $btnRestart.addEventListener('click', () => { if (typeof respawn === 'function')
 let _menuDragging = false, _menuLastX = 0, _menuLastY = 0;
 $overlay.addEventListener('mousedown', e => {
   if (isLocked || !mapReady) return;
+  if (e.target.closest('#showcase-ctrl')) return;        // scene switch arrows
+  if (typeof showcaseInMap === 'function' && !showcaseInMap()) return;   // duel phase: no drag
   if (e.target.closest('#menu')) return;                 // not over the card
   if (e.clientX < innerWidth * MENU_LEFT_FRAC) return;   // only over the map area
   _menuDragging = true; _menuLastX = e.clientX; _menuLastY = e.clientY;
@@ -69,6 +71,14 @@ window.addEventListener('mousemove', e => {
 });
 window.addEventListener('mouseup', () => { _menuDragging = false; });
 
+// Grab/hand cursor only over the rotating map region (right side, not the card).
+$overlay.addEventListener('mousemove', e => {
+  if (isLocked) return;
+  const inMap = (typeof showcaseInMap !== 'function') || showcaseInMap();
+  const overMap = inMap && mapReady && !e.target.closest('#menu') && e.clientX >= innerWidth * MENU_LEFT_FRAC;
+  $overlay.style.cursor = _menuDragging ? 'grabbing' : (overMap ? 'grab' : 'default');
+});
+
 // Render the rotating map into the right-hand region; dark fill elsewhere.
 function _renderMenuBackdrop(dt) {
   renderer.setScissorTest(false);
@@ -76,16 +86,24 @@ function _renderMenuBackdrop(dt) {
   renderer.setClearColor(0x0a0c10, 1);
   renderer.clear(true, true, true);
   if (!mapReady) return;
-  if (!_menuDragging) menuAzimuth += dt * 0.12;   // slow auto-rotate
-  frameMenuCamera();
+  // Showcase decides the scene: a slow-mo duel (its own camera) or the rotating map.
+  const show = (typeof showcaseTick === 'function') ? showcaseTick(dt) : null;
+  let cam;
+  if (show && show.camera) {
+    cam = show.camera;
+  } else {
+    if (!_menuDragging) menuAzimuth += dt * 0.12;   // slow auto-rotate
+    frameMenuCamera();
+    cam = menuCamera;
+  }
   const reg = _menuRegion();
   renderer.setScissorTest(true);
   renderer.setViewport(reg.x, reg.y, reg.w, reg.h);
   renderer.setScissor(reg.x, reg.y, reg.w, reg.h);
   renderer.clear(true, true, true);
   const savedFog = scene.fog, savedBg = scene.background;
-  scene.fog = null; scene.background = null;       // dark backdrop, only the map shows
-  renderer.render(scene, menuCamera);
+  scene.fog = null; scene.background = null;       // dark backdrop, only the map/duel shows
+  renderer.render(scene, cam);
   scene.fog = savedFog; scene.background = savedBg;
   renderer.setScissorTest(false);
   renderer.setViewport(0, 0, innerWidth, innerHeight);
@@ -95,17 +113,22 @@ document.addEventListener('pointerlockchange', () => {
   isLocked = document.pointerLockElement === renderer.domElement;
   if (isLocked) {
     mouseIgnore = 5; hasStarted = true;
+    if (typeof showcaseStop === 'function') showcaseStop();   // drop the menu duel models
     _kbLock();                       // grab reserved browser combos while playing
     // First time in: choose team & class (old-style menu) before playing.
     if (typeof hasJoined !== 'undefined' && !hasJoined) openTeamMenu();
   } else {
     _kbUnlock();
     // Menu shown (first time or paused): primary button label + restart visibility.
-    $btnPlay.textContent      = hasStarted ? 'Продолжить' : 'Начать игру';
+    if (hasStarted) $btnPlay.textContent = 'Продолжить';
+    else if (typeof updateMenuChrome === 'function') updateMenuChrome();
     $btnRestart.style.display = hasStarted ? '' : 'none';
     gameLoading = false; $gameload.style.display = 'none';   // ESC during load → back to menu
     if (typeof closeBuyMenu === 'function') closeBuyMenu();
     document.getElementById('teammenu').style.display = 'none';
+    if (typeof scoreboardOpen !== 'undefined') scoreboardOpen = false;   // don't leave it stuck over the menu
+    const _sb = document.getElementById('scoreboard'); if (_sb) _sb.style.display = 'none';
+    const _kf = document.getElementById('killfeed');   if (_kf) _kf.innerHTML = '';
   }
   if (!isLocked && typeof resetScope === 'function') resetScope();   // drop the AWP scope on pause
   $overlay.style.display = isLocked ? 'none' : 'flex';
@@ -174,12 +197,67 @@ if (_optFs) _optFs.addEventListener('change', e => {
 // Null-guarded: if a stale cached viewer.html lacks #opt-volume, a hard throw here
 // would abort the rest of input.js (key handlers, render loop) — so guard it.
 const _volSlider = document.getElementById('opt-volume');
-if (_volSlider) _volSlider.addEventListener('input', e => { if (typeof setMasterVolume === 'function') setMasterVolume(e.target.value / 100); });
+const _volVal    = document.getElementById('opt-volume-val');
+if (_volSlider) _volSlider.addEventListener('input', e => {
+  if (typeof setMasterVolume === 'function') setMasterVolume(e.target.value / 100);
+  if (_volVal) _volVal.textContent = e.target.value + '%';
+});
+
+// ── Start-menu chrome: map name over the preview + Play/Connect label ────────
+// Solo (no server) → pick a map from the list; online → server owns the map and
+// the list is hidden. Driven by net.js's _setMpStatus via mpOnline/mpServerMap.
+let mpOnline = false, mpServerMap = null;       // server presence + its current map
+let selectedMapName = 'de_dust2';               // solo map choice
+function updateMenuChrome() {
+  const maplist = document.getElementById('maplist');
+  const mapName = document.getElementById('map-name');
+  if (maplist) maplist.style.display = mpOnline ? 'none' : 'flex';
+  if (mapName) mapName.textContent = mpOnline ? (mpServerMap || selectedMapName) : selectedMapName;
+  // Play button label — only while in the menu, map loaded and not yet started.
+  if (mapReady && !hasStarted) $btnPlay.textContent = mpOnline ? 'Подключиться' : 'Начать игру';
+}
+
+// Solo map selection (the list is shown only offline).
+document.querySelectorAll('#maplist .map-item').forEach(it => it.addEventListener('click', () => {
+  if (mpOnline) return;
+  document.querySelectorAll('#maplist .map-item').forEach(x => x.classList.remove('selected'));
+  it.classList.add('selected');
+  selectedMapName = it.dataset.map || it.textContent.trim();
+  updateMenuChrome();
+}));
+
+// Showcase scene switch arrows (testing): jump between map / void duel / arena duel.
+const _scPrev = document.getElementById('sc-prev');
+const _scNext = document.getElementById('sc-next');
+if (_scPrev) _scPrev.addEventListener('click', e => { e.stopPropagation(); if (typeof showcaseGo === 'function') showcaseGo(-1); });
+if (_scNext) _scNext.addEventListener('click', e => { e.stopPropagation(); if (typeof showcaseGo === 'function') showcaseGo(1); });
+
+// Settings tabs (Игра / Видео / Отладка).
+document.querySelectorAll('#settings .tab-btn').forEach(btn => btn.addEventListener('click', () => {
+  const tab = btn.dataset.tab;
+  document.querySelectorAll('#settings .tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+  document.querySelectorAll('#settings .tab-pane').forEach(p => p.classList.toggle('active', p.dataset.pane === tab));
+}));
+
+// Mouse sensitivity slider: slider value v → sensitivity = v·0.0001 (shown as v/10).
+let sensitivity = CONFIG.sensitivity;   // movementX/Y → radians (declared before the slider uses it)
+const _sensSlider = document.getElementById('opt-sens');
+const _sensVal    = document.getElementById('opt-sens-val');
+if (_sensSlider) {
+  _sensSlider.value = Math.round(sensitivity / 0.0001);   // init from CONFIG
+  const _applySens = () => {
+    sensitivity = _sensSlider.value * 0.0001;
+    const shown = (_sensSlider.value / 10).toFixed(2);
+    if (_sensVal) _sensVal.textContent = shown;
+    _sensSlider.title = shown;            // numeric value on hover over the thumb
+  };
+  _applySens();
+  _sensSlider.addEventListener('input', _applySens);
+}
 
 // ── Mouse look ────────────────────────────────────────────────────────────
 let yaw = 0, pitch = 0;
 let pendingYaw = 0, pendingPitch = 0;
-const SENS = CONFIG.sensitivity;
 const MAX_DELTA_PER_FRAME = Math.PI / 2;   // max 90° yaw or pitch change per frame
 
 document.addEventListener('mousemove', e => {
@@ -190,8 +268,8 @@ document.addEventListener('mousemove', e => {
   // Scoped: scale look speed by the zoom ratio so aiming stays controllable (CS-style).
   const zf = (typeof scopeFov === 'function') ? scopeFov() : null;
   const sm = zf != null ? zf / 90 : 1;
-  pendingYaw   -= e.movementX * SENS * sm;
-  pendingPitch -= e.movementY * SENS * sm * (invertY ? -1 : 1);
+  pendingYaw   -= e.movementX * sensitivity * sm;
+  pendingPitch -= e.movementY * sensitivity * sm * (invertY ? -1 : 1);
 });
 
 // ── Keyboard ──────────────────────────────────────────────────────────────
@@ -211,13 +289,14 @@ function _playSwitchSound() {
 // manual reload shortcut (Ctrl/⌘+R, incl. Ctrl+Shift+R) is deliberately let through.
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyR', 'KeyF', 'KeyG', 'KeyV', 'KeyQ', 'KeyB', 'KeyE',
-  'Space', 'ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight',
+  'Space', 'ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight', 'Tab',
 ]);
 document.addEventListener('keydown', e => {
   keys[e.code] = true;
   // ESC on the pause menu = the "Продолжить" button (resume / re-lock the pointer).
   if (e.code === 'Escape' && !isLocked && hasStarted) { _startGame(); return; }
   if (!isLocked) return;
+  if (e.code === 'Tab' && typeof scoreboardOpen !== 'undefined') { scoreboardOpen = true; e.preventDefault(); }   // hold Tab → scoreboard (6E)
   // Stop browser hotkeys (Ctrl+W close, Ctrl+S save, …) while playing — but keep
   // the page-reload shortcut working (the project relies on Ctrl+Shift+R).
   if (GAME_KEYS.has(e.code) && !((e.ctrlKey || e.metaKey) && e.code === 'KeyR')) e.preventDefault();
@@ -272,7 +351,10 @@ document.addEventListener('keydown', e => {
     }
   }
 });
-document.addEventListener('keyup', e => { keys[e.code] = false; });
+document.addEventListener('keyup', e => {
+  keys[e.code] = false;
+  if (e.code === 'Tab' && typeof scoreboardOpen !== 'undefined') scoreboardOpen = false;   // release Tab → hide scoreboard
+});
 
 // ── Weapon input ──────────────────────────────────────────────────────────
 let lmbHeld = false, rmbHeld = false;

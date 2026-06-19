@@ -49,7 +49,30 @@ function _pickSpawn(team) {
   return { pos: [0, 0, 200], yaw: 0 };
 }
 
-function createWorld() { return { players: new Map(), match: match.matchCreate() }; }
+// Place a player at a spawn point (resets velocity/stance + the lag-comp history so a shot
+// right after respawn can't rewind to the pre-teleport spot).
+function _placeAtSpawn(pl, sp) {
+  pl.state = sim.simMakeState([sp.origin[0], sp.origin[1], sp.origin[2] + 1]);
+  pl.yaw = _angleToYaw(sp.angle || 0);
+  pl.hist.length = 0;
+}
+
+// Server-authoritative round spawns (Phase 6E): hand each joined player a DISTINCT spawn from
+// their team's list (cycles if there are more players than pads), so nobody overlaps and the
+// client no longer has to pick + push its own spawn.
+function _assignSpawns(world) {
+  const spawns = _hullData && _hullData.spawns;
+  if (!spawns) return;
+  const idx = { t: 0, ct: 0 };
+  for (const pl of world.players.values()) {
+    if (!pl.joined) continue;
+    const list = (spawns[pl.team] && spawns[pl.team].length) ? spawns[pl.team] : (spawns.ct || []);
+    if (!list.length) continue;
+    _placeAtSpawn(pl, list[idx[pl.team]++ % list.length]);
+  }
+}
+
+function createWorld() { return { players: new Map(), match: match.matchCreate(), droppedC4: null }; }
 
 function worldAddPlayer(world, id, opts = {}) {
   const sp = _pickSpawn(opts.tm === 't' ? 't' : 'ct');
@@ -67,6 +90,8 @@ function worldAddPlayer(world, id, opts = {}) {
     weapons: new Set(['knife', 'usp']),
     nades:   { hegrenade: 0, flashbang: 0, smokegrenade: 0 },
     dk:      false,
+    carryingC4: false, plantProg: 0, use: false,   // C4 (Phase 6D): carrier flag + plant hold + E-held
+    kills:   0, deaths: 0,  // scoreboard / kill feed (Phase 6E)
     hist:    [],            // lag-comp ring: [{ svt, pos:[x,y,z], dk }]
     // Not broadcast until the client sends its real identity (hello). A bare connection
     // (no team/model/pos yet) sits in the team menu — don't render it as the default
@@ -86,6 +111,8 @@ function worldRespawn(pl, opts = {}) {
   pl.weapons = new Set(['knife', 'usp']);
   pl.nades = { hegrenade: 0, flashbang: 0, smokegrenade: 0 };
   pl.dk = false;
+  pl.carryingC4 = false; pl.plantProg = 0;     // carrier is (re)assigned at round start
+  pl.kills = 0; pl.deaths = 0;                  // team change / fresh join resets the scoreline
   if (opts.tm) pl.team = opts.tm === 't' ? 't' : 'ct';
   if (opts.m)  pl.model = opts.m;
   if (opts.w)  pl.weapon = opts.w;
@@ -106,6 +133,7 @@ function worldApplyCmd(pl, c) {
   // third-person avatar (look pitch + weapon state machine). Not used by the sim.
   pl.pitch = c.pi || 0;
   if (c.wsv !== undefined) { pl.ws = c.wsv; pl.wsT = c.wsp || 0; }
+  pl.use = !!c.u;                                   // E held (plant / defuse intent, Phase 6D)
   if (!pl.alive) return null;                       // a corpse doesn't move
   const dt = Math.max(0, Math.min(c.dt || 0, 0.1));
   const cmd = {
@@ -151,9 +179,21 @@ function worldSnapshot(world) {
 function worldTickMatch(world, dt) {
   const roster = [];
   for (const pl of world.players.values()) roster.push({ team: pl.team, alive: pl.alive, joined: pl.joined });
-  const ev = match.matchTick(world.match, roster, dt);
-  if (ev.roundStart) for (const pl of world.players.values()) match.matchRevive(pl);   // full HP + alive
-  if (ev.roundEnd) {                                              // round reward (win/loss bonus)
+  const ev = match.matchTick(world.match, roster, dt);          // phases / clock / C4 fuse → detonate
+  if (ev.roundStart) {                                          // fresh round: respawn + revive + reassign C4
+    _assignSpawns(world);                                       // authoritative distinct spawns (6E)
+    world.droppedC4 = null;                                     // clear any loose bomb from last round
+    const ts = [];
+    for (const pl of world.players.values()) {
+      match.matchRevive(pl);
+      pl.carryingC4 = false; pl.plantProg = 0;
+      if (pl.joined && pl.team === 't') ts.push(pl);
+    }
+    if (ts.length) ts[Math.floor(Math.random() * ts.length)].carryingC4 = true;   // one random T gets the bomb
+  }
+  worldTickBomb(world, dt, ev);                                 // plant / defuse (geometry) — may end the round
+  if (ev.bombDetonate) ev.bombDmg = worldC4Damage(world, ev.bombDetonate.pos);   // blast → dmg events
+  if (ev.roundEnd) {                                            // round reward (win/loss bonus)
     const win = ev.roundEnd.winner;
     for (const pl of world.players.values()) if (pl.joined)
       pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + (pl.team === win ? match.MATCH_WIN_REWARD : match.MATCH_LOSS_REWARD));
@@ -174,6 +214,103 @@ function _inBuyZone(pl) {
   return false;
 }
 
+// ── C4 bomb (Phase 6D) ───────────────────────────────────────────────────────
+// Which bombsite (if any) a player is standing in. Bombsites come from the BSP hull
+// (`bombsites:[{min,max,site}]`) with the same ±64 Z tolerance the client uses.
+function _bombSiteAt(pl) {
+  const sites = _hullData && _hullData.bombsites;
+  if (!sites) return null;
+  const p = pl.state.pos;
+  for (const s of sites) {
+    if (p[0] >= s.min[0] && p[0] <= s.max[0] && p[1] >= s.min[1] && p[1] <= s.max[1] &&
+        p[2] >= s.min[2] - 64 && p[2] <= s.max[2] + 64) return s;
+  }
+  return null;
+}
+// Is a CT close enough to the planted bomb to defuse it? (same thresholds as the client)
+function _nearBomb(pl, bomb) {
+  const p = pl.state.pos, b = bomb.pos;
+  return Math.hypot(p[0] - b[0], p[1] - b[1]) < 64 && Math.abs(p[2] - b[2]) < 80;
+}
+// Is a T close enough to a dropped C4 to pick it up? (walk-over radius)
+function _nearDrop(pl, drop) {
+  const p = pl.state.pos, b = drop.pos;
+  return Math.hypot(p[0] - b[0], p[1] - b[1]) < 40 && Math.abs(p[2] - b[2]) < 72;
+}
+
+// C4 carrier drop + pickup (Phase 6D drop): if the carrier dies the bomb falls where they
+// stood; any live T walking over it picks it up (becomes the new carrier). Runs every tick
+// (a carrier can die in buy or live).
+function _tickC4Carry(world) {
+  if (world.match.bomb) { world.droppedC4 = null; return; }   // already planted → nothing loose
+  for (const pl of world.players.values()) {
+    if (pl.carryingC4 && !pl.alive) { pl.carryingC4 = false; world.droppedC4 = { pos: pl.state.pos.slice() }; }
+  }
+  if (world.droppedC4) {
+    for (const pl of world.players.values()) {
+      if (pl.team === 't' && pl.alive && _nearDrop(pl, world.droppedC4)) { pl.carryingC4 = true; world.droppedC4 = null; break; }
+    }
+  }
+}
+
+// Plant / defuse accumulation (server-authoritative, geometry-checked). Driven from the
+// usercmd `use` (E) flag once per tick. Mutates the match bomb state; fills `ev` with
+// roundEnd on a completed defuse (so the caller awards round money).
+function worldTickBomb(world, dt, ev) {
+  const ms = world.match;
+  _tickC4Carry(world);                 // drop on death / pickup by a nearby T (any phase)
+  if (ms.phase !== 'live') return;
+  // PLANT: a T carrying C4, alive, on the ground, holding E inside a bombsite.
+  if (!ms.bomb) {
+    for (const pl of world.players.values()) {
+      if (pl.team !== 't' || !pl.carryingC4 || !pl.alive) continue;
+      const site = _bombSiteAt(pl);
+      if (pl.use && pl.state.onGround && site) {
+        pl.plantProg = (pl.plantProg || 0) + dt;
+        if (pl.plantProg >= match.MATCH_PLANT_TIME) {
+          pl.plantProg = 0; pl.carryingC4 = false;
+          match.matchBombPlant(ms, pl.state.pos, site.site);
+          pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + match.MATCH_PLANT_REWARD);
+          ev.bombPlanted = true;     // force an immediate gstate so the bomb/sound appear at once
+          break;
+        }
+      } else pl.plantProg = 0;
+    }
+  }
+  // DEFUSE: while the bomb is live, a CT alive, on the ground, holding E next to it.
+  if (ms.bomb && ms.bomb.live) {
+    let defuser = null;
+    for (const pl of world.players.values()) {
+      if (pl.team === 'ct' && pl.alive && pl.use && pl.state.onGround && _nearBomb(pl, ms.bomb)) { defuser = pl; break; }
+    }
+    if (defuser) {
+      ms.bomb.defuseProg = (ms.bomb.defuseProg || 0) + dt;
+      ms.bomb._kit = !!defuser.dk;
+      const need = defuser.dk ? match.MATCH_DEFUSE_KIT : match.MATCH_DEFUSE_TIME;
+      if (ms.bomb.defuseProg >= need) match.matchBombDefuse(ms, ev);
+    } else {
+      ms.bomb.defuseProg = 0;
+    }
+  }
+}
+
+// C4 detonation blast: radius damage with linear falloff + a wall LOS check (same model as the
+// client/HE grenades). Returns dmg events for the caller to broadcast. hg=2 → kevlar absorbs.
+function worldC4Damage(world, origin) {
+  const out = [];
+  for (const pl of world.players.values()) {
+    if (!pl.alive) continue;
+    const c = [pl.state.pos[0], pl.state.pos[1], pl.state.pos[2] + 36];
+    const dist = Math.hypot(c[0] - origin[0], c[1] - origin[1], c[2] - origin[2]);
+    if (dist > match.MATCH_C4_RADIUS) continue;
+    if (_hull) { const tr = sim.simTraceMove(_hull, false, origin, c); if (tr.fraction < 0.7) continue; }
+    const dmg = match.MATCH_C4_DAMAGE * (1 - dist / match.MATCH_C4_RADIUS);
+    const r = match.matchApplyDamage(pl, dmg, 2);
+    if (r.dealt > 0) out.push({ tid: pl.id, hg: 0, dealt: r.dealt, hp: pl.hp, died: r.died });
+  }
+  return out;
+}
+
 // Authoritative match state for a given recipient: shared bits (map/phase/timer/score/
 // online) + that player's own HP/armor/alive (`me`).
 function gameState(world, pl) {
@@ -183,11 +320,21 @@ function gameState(world, pl) {
   const gs = {
     t: 'gstate', map: ms.map, phase: ms.phase, round: ms.round,
     timer: Math.max(0, ms.timer), scoreT: ms.scoreT, scoreCT: ms.scoreCT,
-    winner: ms.winner, reason: ms.reason, online,
+    winner: ms.winner, reason: ms.reason, online, bombResult: ms.bombResult,
+    bomb: ms.bomb ? {
+      pos: ms.bomb.pos, site: ms.bomb.site, timer: Math.max(0, ms.bomb.timer),
+      defuseProg: ms.bomb.defuseProg || 0,
+      defuseNeed: ms.bomb._kit ? match.MATCH_DEFUSE_KIT : match.MATCH_DEFUSE_TIME,
+    } : null,
+    dropC4: world.droppedC4 ? world.droppedC4.pos : null,   // loose bomb on the ground (6D drop)
+    roster: [],   // connected players for the scoreboard / kill feed (Phase 6E)
   };
+  for (const p of world.players.values()) if (p.joined)
+    gs.roster.push({ id: p.id, team: p.team, alive: !!p.alive, kills: p.kills, deaths: p.deaths });
   if (pl) gs.me = {
     hp: pl.hp, armor: pl.armor, helmet: !!pl.helmet, alive: !!pl.alive, team: pl.team,
     money: pl.money, weapons: [...pl.weapons], nades: pl.nades, dk: !!pl.dk,
+    c4: !!pl.carryingC4, plantProg: pl.plantProg || 0,
   };
   return gs;
 }
@@ -314,8 +461,15 @@ function startServer(port) {
 
   const broadcast = (str) => { for (const s of sockets.values()) _send(s, str); };
   // Broadcast a damage/death event so the victim updates HP + others flinch/animate death.
-  const dmgEvent = (vId, hg, by, dealt, hp, died, w) =>
+  // On a death also tally K/D (scoreboard + kill feed, Phase 6E): victim +death, killer +kill
+  // (only a different live player — fall/C4/world deaths credit no one).
+  const dmgEvent = (vId, hg, by, dealt, hp, died, w) => {
+    if (died) {
+      const v = world.players.get(vId); if (v) v.deaths++;
+      const k = world.players.get(by);  if (k && by !== vId) k.kills++;
+    }
     broadcast(JSON.stringify({ t: 'dmg', id: vId, hg, by, dealt, hp, died, w }));
+  };
   const _award = (pl, amount) => { pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + amount); };
 
   const server = http.createServer((req, res) => { res.writeHead(426); res.end('WebSocket only'); });
@@ -359,6 +513,8 @@ function startServer(port) {
     const drop = () => {
       if (!sockets.has(id)) return;
       sockets.delete(id);
+      const lp = world.players.get(id);
+      if (lp && lp.carryingC4 && !world.match.bomb) world.droppedC4 = { pos: lp.state.pos.slice() };   // carrier left → drop the bomb
       world.players.delete(id);
       broadcast(JSON.stringify({ t: 'leave', id }));
       console.log(`[mp] client ${id} left (${sockets.size} online)`);
@@ -368,12 +524,25 @@ function startServer(port) {
   }
 
   function _onMsg(id, msg) {
+    if (msg.t === 'ping') {                               // app-level latency probe (works pre-join)
+      const sk = sockets.get(id);
+      if (sk) _send(sk, JSON.stringify({ t: 'pong', ts: msg.ts }));
+      return;
+    }
     const pl = world.players.get(id);
     if (!pl) return;
     switch (msg.t) {
-      case 'hello':                                       // join / team change / respawn
-        worldRespawn(pl, { tm: msg.tm, m: msg.m, w: msg.w, p: msg.p, y: msg.y });
+      case 'hello': {                                     // join / team change / respawn
+        let tm = msg.tm === 't' ? 't' : 'ct', model = msg.m;
+        // Team-balance backstop (Phase 6E): never let a team get 2+ ahead. Honest clients already
+        // balance in the menu; this catches the rest (reassign + a team-appropriate default model).
+        let nt = 0, nct = 0;
+        for (const p of world.players.values()) { if (!p.joined || p.id === id) continue; if (p.team === 't') nt++; else nct++; }
+        const cur = tm === 't' ? nt : nct, oth = tm === 't' ? nct : nt;
+        if ((cur + 1) - oth >= 2) { tm = tm === 't' ? 'ct' : 't'; model = tm === 't' ? 'leet' : 'gign'; }
+        worldRespawn(pl, { tm, m: model, w: msg.w, p: msg.p, y: msg.y });
         break;
+      }
       case 'cmd': {
         const apply = (c) => { const fe = worldApplyCmd(pl, c); if (fe) dmgEvent(id, 0, id, fe.dealt, pl.hp, fe.died, 'fall'); };
         if (Array.isArray(msg.cmds)) for (const c of msg.cmds) apply(c);
@@ -398,10 +567,12 @@ function startServer(port) {
         break;
       }
       case 'buy': {                                        // server-validated purchase (Phase 6C)
-        if (world.match.phase !== 'buy') { _send(socket, JSON.stringify({ t: 'bought', ok: false, reason: 'Время закупки вышло' })); break; }
-        if (!_inBuyZone(pl))             { _send(socket, JSON.stringify({ t: 'bought', ok: false, reason: 'Вы не в зоне закупки' })); break; }
+        const sk = sockets.get(id);                        // _onMsg has no `socket` in scope — look it up
+        if (!sk) break;
+        if (world.match.phase !== 'buy') { _send(sk, JSON.stringify({ t: 'bought', ok: false, reason: 'Время закупки вышло' })); break; }
+        if (!_inBuyZone(pl))             { _send(sk, JSON.stringify({ t: 'bought', ok: false, reason: 'Вы не в зоне закупки' })); break; }
         const r = match.matchBuy(pl, String(msg.id || ''));
-        _send(socket, JSON.stringify({ t: 'bought', ok: r.ok, reason: r.reason || '', id: r.id, kind: r.kind, money: pl.money }));
+        _send(sk, JSON.stringify({ t: 'bought', ok: r.ok, reason: r.reason || '', id: r.id, kind: r.kind, money: pl.money }));
         break;
       }
     }
@@ -419,7 +590,8 @@ function startServer(port) {
     _svt += SNAP_MS;
     resolveCollisions(world);                 // solid bodies: separate overlapping players
     worldRecordHistory(world, _svt);          // lag-comp position history
-    const ev = worldTickMatch(world, dt);     // round phases / timers / score
+    const ev = worldTickMatch(world, dt);     // round phases / timers / score / bomb
+    if (ev.bombDmg) for (const h of ev.bombDmg) dmgEvent(h.tid, h.hg, 0, h.dealt, h.hp, h.died, 'c4');   // C4 blast
     const players = worldSnapshot(world);
     for (const [cid, socket] of sockets) {
       const pl = world.players.get(cid);
@@ -428,7 +600,7 @@ function startServer(port) {
     // Game state ~5×/s, plus immediately on any round transition. Per-recipient (carries
     // that player's own HP/armor/alive in `me`).
     _gstateAcc += dt;
-    if (ev.roundStart || ev.roundEnd || _gstateAcc >= 0.2) {
+    if (ev.roundStart || ev.roundEnd || ev.bombPlanted || _gstateAcc >= 0.2) {
       _gstateAcc = 0;
       for (const [cid, socket] of sockets) _send(socket, JSON.stringify(gameState(world, world.players.get(cid))));
     }

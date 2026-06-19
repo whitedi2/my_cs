@@ -170,5 +170,90 @@ const check = (name, cond, extra) => {
         gs.me ? `money=${gs.me.money}` : 'no me');
 }
 
+// ── C4 bomb (Phase 6D): plant / detonate / defuse / elimination interplay ────
+{
+  const A = [1152, 2464, 144];   // de_dust2 bombsite A centre (matches the BSP hull)
+  const setup = () => {
+    const w = srv.createWorld();
+    const t = srv.worldAddPlayer(w, 1, { tm: 't' });
+    const ct = srv.worldAddPlayer(w, 2, { tm: 'ct' });
+    srv.worldTickMatch(w, 0.1);                       // warmup → round 1 buy (assigns a carrier)
+    t.carryingC4 = true; t.state.onGround = true; ct.state.onGround = true;
+    srv.worldTickMatch(w, M.MATCH_BUY_TIME + 0.01);   // → live
+    return { w, t, ct };
+  };
+
+  // Plant
+  const { w, t } = setup();
+  t.state.pos = A.slice(); t.use = true;
+  check('bomb not planted yet', w.match.bomb === null);
+  for (let i = 0; i < 40; i++) srv.worldTickMatch(w, 0.1);   // 4s > PLANT_TIME (3)
+  check('held E in a bombsite → planted on site A', w.match.bomb && w.match.bomb.site === 'a',
+        w.match.bomb ? `site=${w.match.bomb.site}` : 'no bomb');
+  check('planter rewarded + carrier cleared', t.money >= M.MATCH_START_MONEY && t.carryingC4 === false);
+  check('gstate carries the bomb', srv.gameState(w, t).bomb && srv.gameState(w, t).bomb.site === 'a');
+
+  // Detonate (fuse runs out → T win + blast events)
+  let det = null;
+  for (let i = 0; i < 500 && !det; i++) { const ev = srv.worldTickMatch(w, 0.1); if (ev.bombDetonate) det = ev; }
+  check('bomb detonates after the fuse', det && Array.isArray(det.bombDmg),
+        det ? `dmg=${det.bombDmg.length}` : 'no detonate');
+  check('detonation → over, T win, explode cue', w.match.phase === 'over' && w.match.winner === 't' && w.match.bombResult === 'explode',
+        `phase=${w.match.phase} winner=${w.match.winner} res=${w.match.bombResult}`);
+
+  // Defuse
+  {
+    const { w, t, ct } = setup();
+    t.state.pos = A.slice(); t.use = true;
+    for (let i = 0; i < 40; i++) srv.worldTickMatch(w, 0.1);   // plant
+    t.use = false; ct.state.pos = A.slice(); ct.use = true;     // a CT holds E on the bomb
+    for (let i = 0; i < 110; i++) srv.worldTickMatch(w, 0.1);   // 11s > DEFUSE_TIME (10)
+    check('defuse → over, CT win, defuse cue', w.match.phase === 'over' && w.match.winner === 'ct' && w.match.bombResult === 'defuse',
+          `phase=${w.match.phase} winner=${w.match.winner} res=${w.match.bombResult}`);
+  }
+
+  // Bomb live + all Ts dead → round must NOT end (CTs still have to defuse)
+  {
+    const { w, t } = setup();
+    t.state.pos = A.slice(); t.use = true;
+    for (let i = 0; i < 40; i++) srv.worldTickMatch(w, 0.1);   // plant
+    t.use = false; t.alive = false;
+    srv.worldTickMatch(w, 0.1);
+    check('Ts wiped but bomb live → round continues', w.match.phase === 'live', `phase=${w.match.phase}`);
+  }
+}
+
+// ── Server-authoritative spawns (Phase 6E): distinct spawn per player at round start ─
+{
+  const w = srv.createWorld();
+  const a = srv.worldAddPlayer(w, 1, { tm: 't',  p: [0, 0, 0] });
+  const b = srv.worldAddPlayer(w, 2, { tm: 't',  p: [0, 0, 0] });
+  const c = srv.worldAddPlayer(w, 3, { tm: 'ct', p: [0, 0, 0] });
+  srv.worldTickMatch(w, 0.1);                                  // warmup → round 1 (assigns spawns)
+  const key = p => p.state.pos.join(',');
+  check('round start moves players off their join pos', key(a) !== '0,0,0');
+  check('two Ts get DISTINCT spawns', key(a) !== key(b), `${key(a)} vs ${key(b)}`);
+  check('CT spawns away from the Ts', key(c) !== key(a) && key(c) !== key(b));
+  check('respawn clears the lag-comp history', a.hist.length === 0);
+}
+
+// ── C4 drop / pickup (Phase 6D drop): carrier dies → bomb falls → a T picks it up ────
+{
+  const w = srv.createWorld();
+  const t1 = srv.worldAddPlayer(w, 1, { tm: 't' });
+  const t2 = srv.worldAddPlayer(w, 2, { tm: 't' });
+  srv.worldAddPlayer(w, 3, { tm: 'ct' });
+  srv.worldTickMatch(w, 0.1);                                  // round 1
+  t1.carryingC4 = true; t2.carryingC4 = false;
+  t1.state.pos = [100, 100, 0]; t2.state.pos = [900, 900, 0];
+
+  t1.alive = false; srv.worldTickMatch(w, 0.1);               // carrier dies
+  check('carrier death drops the C4', w.droppedC4 && t1.carryingC4 === false);
+  check('gstate exposes the loose bomb', Array.isArray(srv.gameState(w, t2).dropC4));
+
+  t2.state.pos = w.droppedC4.pos.slice(); srv.worldTickMatch(w, 0.1);   // a live T walks over it
+  check('nearby live T picks it up', t2.carryingC4 === true && w.droppedC4 === null);
+}
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

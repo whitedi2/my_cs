@@ -15,9 +15,8 @@
     padding-left: clamp(24px, 6vw, 80px);
     background: linear-gradient(90deg, rgba(5,6,9,.92) 0%, rgba(5,6,9,.5) 40%, rgba(5,6,9,0) 62%);
     color: #e8e8ea; -webkit-user-select: none; user-select: none;
-    cursor: grab; font-family: 'Segoe UI', system-ui, sans-serif;
+    cursor: default; font-family: 'Segoe UI', system-ui, sans-serif;
   }
-  #overlay:active { cursor: grabbing; }
   #maplist { display: flex; flex-direction: column; gap: 6px; }
   .map-item {
     padding: 8px 12px; font-size: 13px; border-radius: 7px; cursor: pointer;
@@ -32,6 +31,8 @@
     backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
     box-shadow: 0 24px 70px rgba(0,0,0,.55);
     display: flex; flex-direction: column; gap: 14px;
+    /* Never spill past the viewport: cap to its height and scroll the card if needed. */
+    max-height: calc(100vh - 28px); overflow-y: auto;
   }
   #title { font-size: 30px; font-weight: 800; letter-spacing: 4px; color: #fff; line-height: 1; }
   #title b { color: #e8a33d; font-weight: 800; }
@@ -47,6 +48,67 @@
   .menu-btn.secondary { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.16); font-weight: 500; font-size: 13px; }
   .menu-btn.secondary:hover { background: rgba(255,255,255,.12); }
   #mp-status { margin: 2px 0 8px; font-size: 12px; color: #c98a8a; }
+  .mp-detail { margin-top: 3px; font-size: 11px; color: rgba(255,255,255,.55); letter-spacing: .3px; }
+  .ml-head { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,.4); margin-bottom: 2px; }
+  /* Map name shown over the rotating preview on the right (solo: selected map; online: server map) */
+  #map-label {
+    position: absolute; top: clamp(20px, 5vh, 44px); right: clamp(20px, 5vw, 56px);
+    text-align: right; pointer-events: none; text-shadow: 0 2px 14px rgba(0,0,0,.9);
+  }
+  #map-name { font-size: 22px; font-weight: 800; letter-spacing: 2px; color: #fff; }
+  /* Black cross-fade over the preview region (left edge = map area start). Driven by JS. */
+  #backdrop-fade {
+    position: absolute; top: 0; bottom: 0; right: 0; left: 42%;
+    background: #05060a; opacity: 0; pointer-events: none;
+  }
+  /* Manual scene switcher over the preview (testing) */
+  #showcase-ctrl {
+    position: absolute; bottom: clamp(16px, 4vh, 40px); left: 42%; right: 0;
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    pointer-events: none;
+  }
+  .sc-arrow {
+    pointer-events: auto; width: 40px; height: 40px; font-size: 22px; line-height: 1; cursor: pointer;
+    color: #fff; background: rgba(18,20,26,.55); border: 1px solid rgba(255,255,255,.2);
+    border-radius: 50%; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  .sc-arrow:hover { background: rgba(232,163,61,.3); border-color: rgba(232,163,61,.6); }
+  #sc-name {
+    pointer-events: none; min-width: 130px; text-align: center;
+    font-size: 12px; letter-spacing: 1px; color: rgba(255,255,255,.75); text-shadow: 0 2px 10px #000;
+  }
+  #map-hint { margin-top: 3px; font-size: 11px; color: rgba(255,255,255,.45); }
+  /* Settings tabs */
+  #settings .tabs { display: flex; gap: 4px; }
+  .tab-btn {
+    flex: 1; padding: 6px 4px; font: inherit; font-size: 12px; cursor: pointer;
+    color: rgba(255,255,255,.6); background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.1); border-radius: 7px; transition: background .12s;
+  }
+  .tab-btn:hover { background: rgba(255,255,255,.09); }
+  .tab-btn.active { color: #fff; border-color: rgba(232,163,61,.6); background: rgba(232,163,61,.16); }
+  /* All panes share one grid cell → wrapper height = tallest pane, so switching
+     tabs doesn't resize the menu. Inactive panes stay laid out but hidden. */
+  #settings .tab-panes { display: grid; }
+  .tab-pane {
+    grid-column: 1; grid-row: 1;
+    display: flex; flex-direction: column; gap: 9px;
+    visibility: hidden; pointer-events: none;
+  }
+  .tab-pane.active { visibility: visible; pointer-events: auto; }
+  /* Range sliders — large thumb/track so they're easy to grab */
+  #settings input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    flex: 1; height: 18px; background: transparent; cursor: pointer;
+  }
+  #settings input[type=range]::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,.18); }
+  #settings input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; margin-top: -6px;
+    width: 18px; height: 18px; border-radius: 50%; background: #e8a33d; border: 2px solid #14161c;
+  }
+  #settings input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,.18); }
+  #settings input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: #e8a33d; border: 2px solid #14161c; }
+  .opt-val { min-width: 44px; text-align: right; font-size: 12px; color: rgba(255,255,255,.8); }
   #crosshair {
     position: absolute; top: 50%; left: 50%;
     transform: translate(-50%,-50%);
@@ -147,6 +209,38 @@
   #bomb-action .ba-label { font-size: 13px; letter-spacing: 1px; margin-bottom: 5px; }
   #bomb-action .ba-bar { height: 8px; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.25); border-radius: 4px; overflow: hidden; }
   #bomb-action .ba-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #e8a33d, #f0c878); }
+  /* Kill feed (top-right) + scoreboard (Tab) — Phase 6E */
+  #killfeed {
+    position: absolute; top: 64px; right: 16px; display: flex; flex-direction: column;
+    align-items: flex-end; gap: 4px; pointer-events: none;
+    font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px;
+  }
+  #killfeed .kf {
+    background: rgba(8,10,14,.6); border: 1px solid rgba(255,255,255,.12); border-radius: 5px;
+    padding: 3px 9px; color: #ddd; text-shadow: 0 1px 3px #000; white-space: nowrap;
+  }
+  #killfeed .kf .kf-ct { color: #78a8f0; font-weight: 700; }
+  #killfeed .kf .kf-t  { color: #e8a33d; font-weight: 700; }
+  #killfeed .kf .kf-w  { color: rgba(255,255,255,.6); margin: 0 5px; }
+  #scoreboard {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    display: none; pointer-events: none; width: min(92vw, 560px);
+    background: rgba(10,12,18,.82); border: 1px solid rgba(255,255,255,.1); border-radius: 12px;
+    backdrop-filter: blur(8px); box-shadow: 0 24px 70px rgba(0,0,0,.6);
+    font-family: 'Segoe UI', system-ui, sans-serif; color: #e8e8ea; padding: 16px 18px;
+  }
+  #scoreboard .sb-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+  #scoreboard .sb-title { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,.5); }
+  #scoreboard .sb-score { font-size: 22px; font-weight: 800; }
+  #scoreboard .sb-score b.t  { color: #e8a33d; } #scoreboard .sb-score b.ct { color: #78a8f0; }
+  #scoreboard .sb-team { margin-top: 10px; }
+  #scoreboard .sb-team-h { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; padding: 3px 8px; border-radius: 5px; display: inline-block; }
+  #scoreboard .sb-team-h.t  { background: rgba(232,163,61,.18); color: #e8a33d; }
+  #scoreboard .sb-team-h.ct { background: rgba(120,168,240,.18); color: #78a8f0; }
+  #scoreboard .sb-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 8px; border-bottom: 1px solid rgba(255,255,255,.05); }
+  #scoreboard .sb-row.me { background: rgba(255,255,255,.06); border-radius: 4px; }
+  #scoreboard .sb-row.dead { color: rgba(255,255,255,.4); }
+  #scoreboard .sb-kd { font-variant-numeric: tabular-nums; color: rgba(255,255,255,.75); }
   #ammo-display {
     font-size: 24px; font-weight: bold; letter-spacing: 3px;
     color: rgba(255,255,255,.95);
@@ -200,24 +294,46 @@
     <div id="title">CS<b>1.6</b></div>
     <div id="subtitle">browser clone</div>
     <div id="maplist">
-      <div class="map-item selected" data-map="de_dust2">de_dust2 <span>тяни — вращать</span></div>
+      <div class="ml-head">Карта</div>
+      <div class="map-item selected" data-map="de_dust2">de_dust2</div>
     </div>
     <div id="mp-status">○ Сервер недоступен — соло</div>
     <button id="btn-play" class="menu-btn">Начать игру</button>
     <button id="btn-restart" class="menu-btn secondary" style="display:none">Заново (респаун)</button>
     <div id="settings">
-      <label><input type="checkbox" id="opt-invert-y" checked> Инверсия мыши (Y)</label>
-      <label><input type="checkbox" id="opt-widescreen" checked> Широкоэкранный FOV</label>
-      <label><input type="checkbox" id="opt-right-hand" checked> Правая рука</label>
-      <label><input type="checkbox" id="opt-dynamic-crosshair"> Динамичный прицел</label>
-      <label><input type="checkbox" id="opt-enhanced-gore"> Улучшенный урон (кровь)</label>
-      <label><input type="checkbox" id="opt-show-hitboxes"> Показать хитбоксы (отладка)</label>
-      <label><input type="checkbox" id="opt-third-person"> Вид от третьего лица (V)</label>
-      <label><input type="checkbox" id="opt-fullscreen"> Полноэкранный режим (хоткеи Ctrl не закрывают вкладку)</label>
-      <label>Громкость <input type="range" id="opt-volume" min="0" max="100" value="70" style="flex:1; accent-color:#e8a33d;"></label>
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="game">Игра</button>
+        <button class="tab-btn" data-tab="video">Видео</button>
+        <button class="tab-btn" data-tab="debug">Отладка</button>
+      </div>
+      <div class="tab-panes">
+      <div class="tab-pane active" data-pane="game">
+        <label>Чувствительность <input type="range" id="opt-sens" min="1" max="100" value="18"><span class="opt-val" id="opt-sens-val">1.80</span></label>
+        <label><input type="checkbox" id="opt-invert-y" checked> Инверсия мыши (Y)</label>
+        <label><input type="checkbox" id="opt-right-hand" checked> Правая рука</label>
+        <label><input type="checkbox" id="opt-fullscreen"> Полноэкранный режим (хоткеи Ctrl не закрывают вкладку)</label>
+        <label>Громкость <input type="range" id="opt-volume" min="0" max="100" value="70"><span class="opt-val" id="opt-volume-val">70%</span></label>
+      </div>
+      <div class="tab-pane" data-pane="video">
+        <label><input type="checkbox" id="opt-widescreen" checked> Широкоэкранный FOV</label>
+        <label><input type="checkbox" id="opt-dynamic-crosshair"> Динамичный прицел</label>
+        <label><input type="checkbox" id="opt-enhanced-gore"> Улучшенный урон (кровь)</label>
+      </div>
+      <div class="tab-pane" data-pane="debug">
+        <label><input type="checkbox" id="opt-show-hitboxes"> Показать хитбоксы</label>
+        <label><input type="checkbox" id="opt-third-person"> Вид от третьего лица (V)</label>
+      </div>
+      </div>
     </div>
     <div id="hint">WASD — движение · Мышь — обзор · Space — прыжок · Shift — шаг · Ctrl — присед<br>
       1/2/3 — оружие · R — перезарядка · G — выбросить · ЛКМ/ПКМ — атака · V — 3-е лицо · ESC — пауза</div>
+  </div>
+  <div id="map-label"><div id="map-name">de_dust2</div><div id="map-hint">тяни — вращать</div></div>
+  <div id="backdrop-fade"></div>
+  <div id="showcase-ctrl">
+    <button id="sc-prev" class="sc-arrow" title="Предыдущий кадр">‹</button>
+    <span id="sc-name">карта</span>
+    <button id="sc-next" class="sc-arrow" title="Следующий кадр">›</button>
   </div>
 </div>
 <div id="gameload">
@@ -245,6 +361,8 @@
 <div id="round-hud"></div>
 <div id="round-banner"></div>
 <div id="bomb-action"></div>
+<div id="killfeed"></div>
+<div id="scoreboard"></div>
 
 <script type="importmap">
 {
@@ -285,6 +403,7 @@
     'src/rounds.js',
     'src/pickups.js',
     'src/net.js',
+    'src/menu-showcase.js',
     'src/load.js',
     'src/input.js',
     'src/autotest.js',

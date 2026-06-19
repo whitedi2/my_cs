@@ -103,6 +103,11 @@ function applyServerSelf(me) {
   }
   if (me.nades) for (const k of Object.keys(grenadeCounts)) grenadeCounts[k] = me.nades[k] || 0;
   if (typeof hasDefuseKit !== 'undefined') hasDefuseKit = !!me.dk;
+  // C4 (Phase 6D): the server owns who carries the bomb + plant progress; mirror for the HUD prompt.
+  if (typeof carryingC4 !== 'undefined') carryingC4 = !!me.c4;
+  if (typeof plantProg  !== 'undefined') plantProg  = me.plantProg || 0;
+  // Team balance (Phase 6E): the server may reassign us to the smaller team — follow it.
+  if (me.team && typeof playerTeam !== 'undefined' && me.team !== playerTeam) playerTeam = me.team;
 }
 
 function onServerDamage(hg, hp, died, by) {
@@ -381,11 +386,32 @@ let _pendTeam = null;
 
 function openTeamMenu() { teamStage = 'team'; closeBuyMenu(); _renderTeamMenu(); }
 
+// Team balance (Phase 6E): keep MP teams within 1 of each other. Counts come from the server
+// roster (mpRoster); solo is a free pick. Auto-select and a redirect both use this.
+function _teamCounts() {
+  const c = { t: 0, ct: 0 };
+  if (typeof mpRoster !== 'undefined') for (const r of mpRoster) if (c[r.team] !== undefined) c[r.team]++;
+  return c;
+}
+function _balancedTeam(want) {
+  if (typeof _netDriven === 'undefined' || !_netDriven) return want;     // solo: pick freely
+  const c = _teamCounts(), other = want === 't' ? 'ct' : 't';
+  return ((c[want] + 1) - c[other] >= 2) ? other : want;                 // would over-stack → smaller team
+}
+
 function teamMenuKey(n) {
   if (teamStage === 'team') {
-    if (n === 1) { _pendTeam = 't';  teamStage = 'class'; _renderTeamMenu(); }
-    else if (n === 2) { _pendTeam = 'ct'; teamStage = 'class'; _renderTeamMenu(); }
-    else if (n === 5) { _pendTeam = Math.random() < 0.5 ? 't' : 'ct'; _chooseClass(0); }
+    let want = null;
+    if (n === 1) want = 't';
+    else if (n === 2) want = 'ct';
+    else if (n === 5) { const c = _teamCounts(); want = (c.t <= c.ct) ? 't' : 'ct'; }   // auto → smaller team
+    if (!want) return;
+    const actual = _balancedTeam(want);
+    if (actual !== want && typeof _flashBuy === 'function')
+      _flashBuy(`Команда переполнена — вы за ${actual === 't' ? 'Террористов' : 'Контр-террористов'}`);
+    _pendTeam = actual;
+    if (n === 5) _chooseClass(0);                       // auto skips the model menu
+    else { teamStage = 'class'; _renderTeamMenu(); }
   } else if (teamStage === 'class') {
     const list = CLASSES[_pendTeam] || [];
     if (n >= 1 && n <= list.length) _chooseClass(n - 1);
@@ -414,9 +440,12 @@ function _renderTeamMenu() {
   const el = document.getElementById('teammenu');
   let html;
   if (teamStage === 'team') {
+    const mp = (typeof _netDriven !== 'undefined' && _netDriven);
+    const c = _teamCounts();
+    const cnt = tm => mp ? ` <span style="opacity:.45">(${c[tm]})</span>` : '';
     html = `<div class="tm-title">ВЫБОР КОМАНДЫ</div>` +
-      `<div class="tm-row"><span class="tm-k">1</span> Террористы</div>` +
-      `<div class="tm-row"><span class="tm-k">2</span> Контр-террористы</div>` +
+      `<div class="tm-row"><span class="tm-k">1</span> Террористы${cnt('t')}</div>` +
+      `<div class="tm-row"><span class="tm-k">2</span> Контр-террористы${cnt('ct')}</div>` +
       `<div class="tm-row"><span class="tm-k">5</span> Авто-выбор</div>`;
   } else {
     const list = CLASSES[_pendTeam] || [];

@@ -32,8 +32,11 @@ const _netModelCache = {};                // model name → loaded JSON (shared 
 const NET_INTERP_MS = 100;
 let _newestSvt = 0;                        // newest server time we've received
 let _renderSvt = 0;                        // server time we're currently rendering remotes at
+let _pingMs = null;                        // smoothed round-trip time (cmd send → ack), ms
+let _lastGs = null;                        // last gstate (so we can re-render the status with fresh ping)
 
 function _connected() { return _ws && _ws.readyState === 1 && _myId != null; }
+function netMyId() { return _myId; }   // our server id (to highlight ourselves on the scoreboard / kill feed)
 
 // Connect to the server. `join=false` connects just to read status / lobby (no hello, so
 // the server keeps us out of the match until we pick a team); `join=true` also sends our
@@ -62,15 +65,29 @@ function netConnect(join) {
 function _setMpStatus(state, gs) {
   const el = (typeof document !== 'undefined') && document.getElementById('mp-status');
   if (!el) return;
-  let txt, col;
+  if (gs) _lastGs = gs; else if (state !== 'connected') _lastGs = null;
+  gs = gs || _lastGs;
   if (state === 'connected') {
+    // Headline + a dim detail line: current map · player count · live ping.
+    const detail = [];
+    if (gs && gs.map) detail.push(`карта ${gs.map}`);
     const online = gs ? gs.online : null;
-    txt = online != null ? `● Сервер: онлайн (${online})` : '● Сервер: подключён';
-    col = '#6bd16b';
-  } else if (state === 'connecting') { txt = '○ Подключение к серверу…'; col = '#e8c34a'; }
-  else                               { txt = '○ Сервер недоступен — соло'; col = '#c98a8a'; }
-  if (gs && gs.map) txt += ` · карта: ${gs.map}`;
-  el.textContent = txt; el.style.color = col;
+    if (online != null) detail.push(`игроков: ${online}`);
+    if (_pingMs != null) detail.push(`пинг ${Math.round(_pingMs)} мс`);
+    el.style.color = '#6bd16b';
+    el.innerHTML = '● Сервер: онлайн' +
+      (detail.length ? `<div class="mp-detail">${detail.join(' · ')}</div>` : '');
+  } else {
+    el.style.color = (state === 'connecting') ? '#e8c34a' : '#c98a8a';
+    el.textContent = (state === 'connecting') ? '○ Подключение к серверу…' : '○ Сервер недоступен — соло';
+    if (state !== 'connecting') _pingMs = null;
+  }
+  // Map name is shown over the preview; list hidden when online.
+  if (typeof mpOnline !== 'undefined') {
+    mpOnline = (state === 'connected');
+    if (gs && gs.map) mpServerMap = gs.map;
+    if (typeof updateMenuChrome === 'function') updateMenuChrome();
+  }
 }
 
 // Tell the server our identity + spawn pose (join, team change, respawn). A teleport
@@ -88,6 +105,20 @@ function netHello() {
   }));
 }
 
+// App-level latency probe: send a timestamped ping ~1.5×/s while connected; the server
+// echoes it back as `pong` (works even before we join). Gives a live ping in the lobby,
+// where no usercmds flow yet. During gameplay, cmd→ack timing also refreshes _pingMs.
+function _onPong(m) {
+  if (!m || typeof m.ts !== 'number' || typeof performance === 'undefined') return;
+  const rtt = performance.now() - m.ts;
+  _pingMs = (_pingMs == null) ? rtt : _pingMs * 0.8 + rtt * 0.2;
+  if (typeof isLocked !== 'undefined' && !isLocked) _setMpStatus('connected');   // refresh lobby status
+}
+if (typeof setInterval !== 'undefined') setInterval(() => {
+  if (_ws && _ws.readyState === 1 && typeof performance !== 'undefined')
+    _ws.send(JSON.stringify({ t: 'ping', ts: performance.now() }));
+}, 700);
+
 function _onNetMsg(m) {
   switch (m.t) {
     case 'welcome': _myId = m.id; break;
@@ -96,6 +127,7 @@ function _onNetMsg(m) {
     case 'dmg':     _onDamage(m); break;
     case 'gstate':  _onGState(m); break;
     case 'bought':  _onBought(m); break;
+    case 'pong':    _onPong(m); break;
   }
 }
 
@@ -131,6 +163,7 @@ function _onGState(m) {
 // hurt/death feedback (game.js). For a remote → flinch, or play the death animation and
 // freeze the corpse. Revival (round respawn) comes from the snapshot `al` flag.
 function _onDamage(m) {
+  if (m.died && typeof pushKillFeed === 'function') pushKillFeed(m.by | 0, m.id, m.w);   // kill feed (6E)
   if (m.id === _myId) {
     if (typeof onServerDamage === 'function') onServerDamage(m.hg | 0, m.hp | 0, !!m.died, m.by | 0);
     return;
@@ -177,7 +210,17 @@ function netSendShot(o, d, weaponId, silenced) {
 // Apply an authoritative snapshot: track the server time, stash our own state for
 // reconciliation, and buffer every other player's state for interpolation.
 function _onSnapshot(m) {
-  if (m.ack != null && m.ack > _ackSeq) _ackSeq = m.ack;
+  if (m.ack != null && m.ack > _ackSeq) {
+    _ackSeq = m.ack;
+    // Round-trip estimate: time from sending the just-acked cmd to this snapshot.
+    const sent = _pending.find(p => p.seq === m.ack);
+    if (sent && sent.ts && typeof performance !== 'undefined') {
+      const rtt = performance.now() - sent.ts;
+      _pingMs = (_pingMs == null) ? rtt : _pingMs * 0.8 + rtt * 0.2;
+      // Refresh the menu status with the fresh ping (only while the menu is open).
+      if (typeof isLocked !== 'undefined' && !isLocked) _setMpStatus('connected');
+    }
+  }
   const svt = (typeof m.svt === 'number') ? m.svt : (_newestSvt + 50);   // fallback: assume 20 Hz
   if (svt > _newestSvt) _newestSvt = svt;
   for (const e of (m.players || [])) {
@@ -221,13 +264,14 @@ function netRecordCmd(cmd, dt, wpnMax) {
   const seq = ++_cmdSeq;
   const c = { forwardMove: cmd.forwardMove, sideMove: cmd.sideMove,
               jump: cmd.jump, duck: cmd.duck, walk: cmd.walk, yaw: cmd.yaw };
-  _pending.push({ seq, cmd: c, dt, wpnMax });
+  _pending.push({ seq, cmd: c, dt, wpnMax, ts: (typeof performance !== 'undefined') ? performance.now() : 0 });
   if (_pending.length > 256) _pending.shift();     // safety cap (very high latency)
   _ws.send(JSON.stringify({
     t: 'cmd', seq, dt,
     fm: c.forwardMove, sm: c.sideMove,
     jp: c.jump ? 1 : 0, dk: c.duck ? 1 : 0, wk: c.walk ? 1 : 0,
     y: c.yaw, ws: wpnMax,                 // ws = weapon run-speed cap (NOT the state machine)
+    u: (typeof keys !== 'undefined' && keys['KeyE']) ? 1 : 0,   // E held → plant/defuse intent (6D)
     w: (typeof curW === 'function' && curW()) ? curW().id : undefined,
     // Third-person presentation for our remote avatar on other clients: look pitch +
     // the weapon state machine (so they see us aim up/down, fire, reload). Authoritative

@@ -7,6 +7,7 @@
 // (player/weapon models) load at "Start" — see input.js.
 
 let mapReady = false;
+let mapRoot = null;             // the loaded map object (so the menu showcase can hide it)
 const $play = document.getElementById('btn-play');
 $play.disabled = true;
 $play.textContent = 'Загрузка карты…';
@@ -43,6 +44,7 @@ Promise.all([objPromise, hullPromise]).then(([obj, hull]) => {
     child.material = mat;
   });
   scene.add(obj);
+  mapRoot = obj;                                          // handle for the menu showcase (hide in void scene)
   frameMenuCamera(new THREE.Box3().setFromObject(obj));   // rotating menu backdrop
   _rebuildShellRayTargets();
 
@@ -52,5 +54,6 @@ Promise.all([objPromise, hullPromise]).then(([obj, hull]) => {
   mapReady = true;
   $play.disabled = false;
   $play.textContent = 'Начать игру';
+  if (typeof updateMenuChrome === 'function') updateMenuChrome();   // map name + Play/Connect label
 
 }).catch(err => { $play.textContent = 'Ошибка загрузки'; console.error(err); });

@@ -50,11 +50,13 @@ function drawCrosshair() {
 
   ctx.lineCap = 'square';
   for (const [x1, y1, x2, y2] of lines) {
-    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
-    ctx.lineWidth = 3;
+    // Dark outline for contrast on bright textures.
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+    ctx.lineWidth = 4;
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-    ctx.strokeStyle = 'rgba(255,240,120,0.90)';
-    ctx.lineWidth = 1;
+    // Bright core.
+    ctx.strokeStyle = 'rgba(255,243,100,0.95)';
+    ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
 }

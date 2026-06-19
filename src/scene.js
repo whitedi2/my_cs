@@ -68,7 +68,7 @@ function frameMenuCamera(box) {
   const fov = menuCamera.fov * Math.PI / 180;
   const halfV = Math.tan(fov / 2), halfH = halfV * aspect;
   const span = Math.max(s.x, s.z);                 // horizontal extent (rotates, so use max)
-  const dist = (span / 2) / Math.min(halfH, halfV) * 1.2 + s.y;
+  const dist = (span / 2) / Math.min(halfH, halfV) * 1.4 + s.y;   // margin so the map fits w/o touching edges
   const ce = Math.cos(menuElev), se = Math.sin(menuElev);
   menuCamera.position.set(
     c.x + dist * ce * Math.sin(menuAzimuth),

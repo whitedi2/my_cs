@@ -334,7 +334,10 @@ function _updateGaitYaw(rig, st, dt) {
 const _seqBaseSpeed = { walk: CONFIG.walkspeed, run: CONFIG.maxspeed, crouchrun: CONFIG.crouchspeed };
 
 // ── Upper-body aim/shoot/reload layer ───────────────────────────────────────
-const _AIM_SET = { m4: 'carbine', usp: 'onehanded', knife: 'knife' };
+const _AIM_SET = {
+  m4: 'carbine', ak47: 'carbine', galil: 'carbine', famas: 'carbine', aug: 'carbine', sg552: 'carbine',
+  usp: 'onehanded', knife: 'knife',
+};
 // In the model the −90 blend = aim up, +90 = aim down; our pitch is +up, so negate.
 let AIM_PITCH_SIGN = -1;   // flip to +1 if the torso pitches the wrong way vs look
 
