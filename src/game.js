@@ -472,6 +472,10 @@ function _balancedTeam(want) {
 
 function teamMenuKey(n) {
   if (teamStage === 'team') {
+    if (n === 0) {                                 // exit the menu — only if already on a team
+      if (typeof hasJoined !== 'undefined' && hasJoined) { teamStage = null; document.getElementById('teammenu').style.display = 'none'; }
+      return;
+    }
     if (n === 6) { _chooseSpectator(); return; }   // наблюдатель (без тела)
     let want = null;
     if (n === 1) want = 't';
@@ -543,7 +547,9 @@ function _renderTeamMenu() {
       `<div class="tm-row"><span class="tm-k">1</span> Террористы${cnt('t')}</div>` +
       `<div class="tm-row"><span class="tm-k">2</span> Контр-террористы${cnt('ct')}</div>` +
       `<div class="tm-row"><span class="tm-k">5</span> Авто-выбор</div>` +
-      `<div class="tm-row"><span class="tm-k">6</span> Наблюдатель</div>`;
+      `<div class="tm-row"><span class="tm-k">6</span> Наблюдатель</div>` +
+      ((typeof hasJoined !== 'undefined' && hasJoined)        // already on a team → allow bailing out
+        ? `<div class="tm-row tm-back"><span class="tm-k">0</span> Выход</div>` : '');
   } else {
     const list = CLASSES[_pendTeam] || [];
     html = `<div class="tm-title">ВЫБОР МОДЕЛИ — ${_pendTeam === 't' ? 'T' : 'CT'}</div>` +

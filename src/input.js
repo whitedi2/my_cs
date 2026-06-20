@@ -318,6 +318,9 @@ document.addEventListener('keydown', e => {
   if (e.code === 'KeyB') { openBuyMenu(); return; }
   if (e.code === 'KeyO' && typeof openEquipMenu === 'function') { openEquipMenu(); return; }  // equipment (grenades/armor/kit)
   if (e.code === 'KeyM' && typeof openTeamMenu === 'function') { openTeamMenu(); return; }   // switch team / spectate
+  // Quick ammo buy (CS binds): ',' = primary ammo, '.' = secondary ammo.
+  if (e.code === 'Comma'  && typeof buyAmmo === 'function') { buyAmmo('primary');   return; }
+  if (e.code === 'Period' && typeof buyAmmo === 'function') { buyAmmo('secondary'); return; }
   // Arrow keys orbit the third-person camera — keep them from scrolling the page.
   if (thirdPerson && e.code.startsWith('Arrow')) e.preventDefault();
   // Slot keys pick the OWNED weapon in that slot (1 primary, 2 secondary, 3 knife).

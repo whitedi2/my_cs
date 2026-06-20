@@ -35,7 +35,10 @@ function _aimRay() {
   const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   const from = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
-  const fwd  = [-Math.sin(yaw) * cp, Math.cos(yaw) * cp, -sp];   // fz = -sin(pitch): same as hitCheck
+  // fz = +sin(pitch): the real look direction (matches the camera + grenade throw, grenades.js).
+  // (hitCheck uses -sin(pitch), but that's only the rarely-used knife wall-check; bullets ray the
+  //  camera directly. Using -sp here flipped the laser dot AND the projectile vertically.)
+  const fwd  = [-Math.sin(yaw) * cp, Math.cos(yaw) * cp, sp];
   return { from, fwd };
 }
 
