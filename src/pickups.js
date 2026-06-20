@@ -73,6 +73,17 @@ function dropWeapon() {
   if (typeof ownedWeapons === 'undefined' || !gsPos) return;
   const wpn = curW();
   if (!wpn || wpn.type === 'melee' || !ownedWeapons.has(wpn.id)) return;
+  // Multiplayer: the server owns the drop (it places the gun + switches us). Only guns drop over
+  // the net; switch locally now for instant feedback (gstate.me.weapons confirms).
+  if (typeof _netDriven !== 'undefined' && _netDriven) {
+    if (wpn.type !== 'gun' || typeof netSendDrop !== 'function') return;
+    netSendDrop(wpn.id);
+    ownedWeapons.delete(wpn.id);
+    let n = WPNS.findIndex(w => w.id !== wpn.id && w.slot !== 'melee' && ownedWeapons.has(w.id));
+    if (n < 0) n = WPNS.findIndex(w => w.id === 'knife');
+    if (n >= 0) switchWeapon(n);
+    return;
+  }
   _spawnPickup(wpn.id, wpn.ammo, wpn.reserve);
   ownedWeapons.delete(wpn.id);
   // Drop is silent (as the user wants) — only picking a weapon up makes a sound.
@@ -125,5 +136,31 @@ function updatePickups(dt) {
       const dx = gsPos[0] - it.pos.x, dz = -gsPos[1] - it.pos.z;
       if (Math.hypot(dx, dz) < PICKUP_RADIUS) _pickUp(it, k);
     }
+  }
+}
+
+// ── Networked weapon drops (MP) ──────────────────────────────────────────────
+// The SERVER owns death-drops + walk-over pickup; the client just RENDERS the loose guns from
+// gstate (`drops`). The actual pickup is server-side — it grants the weapon, which lands back via
+// gstate.me.weapons (applyServerSelf deploys it). No local auto-pickup here (that's solo only).
+const _netDrops = new Map();   // server drop id → { root, wid }
+function setNetWeaponDrops(list) {
+  const seen = new Set();
+  for (const d of (list || [])) {
+    seen.add(d.id);
+    if (_netDrops.has(d.id)) continue;                  // static once dropped — build the mesh once
+    const e = { root: null, wid: d.wid };
+    _netDrops.set(d.id, e);
+    _withPData(d.wid, data => {
+      if (_netDrops.get(d.id) !== e || typeof scene === 'undefined') return;
+      e.root = _buildDropModel(data);
+      const halfH = e.root.userData.halfH || 4;
+      e.root.position.set(d.pos[0], d.pos[2] + halfH, -d.pos[1]);   // GoldSrc→three, rested on the floor
+      scene.add(e.root);
+    });
+  }
+  for (const [id, e] of _netDrops) if (!seen.has(id)) {  // picked up / round reset → remove
+    if (e.root && typeof scene !== 'undefined') scene.remove(e.root);
+    _netDrops.delete(id);
   }
 }

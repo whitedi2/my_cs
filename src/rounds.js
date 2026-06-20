@@ -32,6 +32,7 @@ let hasDefuseKit = false;
 let _netDriven = false;
 let scoreT = 0, scoreCT = 0;   // team score (server-authoritative in MP; 0 solo)
 let mpRoster = [];             // connected players for scoreboard/kill feed (from gstate.roster, 6E)
+let mpHlWeapons = false;       // server allows non-canon HL weapons (RPG/crossbow) — from gstate.hlWeapons
 let scoreboardOpen = false;    // Tab held → show the scoreboard
 const _killFeed = [];          // recent kills: { byTeam, byMe, vicTeam, vicMe, w, until }
 let serverMap = null;          // map name the server reports
@@ -63,6 +64,7 @@ function startRound(skipRespawn) {
 function _localRoundReset(skipRespawn) {
   plantProg = 0;
   _clearBomb();
+  if (typeof clearProjectiles === 'function') clearProjectiles();   // wipe rockets/bolts/laser
   if (!skipRespawn && typeof respawn === 'function') respawn();   // reset to a team spawn
   // Refill ammo of owned guns (CS tops you up each round); weapons persist.
   if (typeof WPNS !== 'undefined')
@@ -84,6 +86,7 @@ function applyServerRound(m) {
   serverMap = m.map;
   scoreT = m.scoreT | 0; scoreCT = m.scoreCT | 0;
   mpRoster = m.roster || [];
+  mpHlWeapons = !!m.hlWeapons;
   const prevRound = roundNum;
   roundPhase = (m.phase === 'warmup') ? 'idle' : m.phase;   // 'buy' | 'live' | 'over'
   roundNum   = m.round | 0;

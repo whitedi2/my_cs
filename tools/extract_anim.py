@@ -7,17 +7,27 @@ import struct, json, sys
 from pathlib import Path
 
 weapon_name = 'knife'
-for _arg in sys.argv[1:]:
-    if not _arg.startswith('-'):
-        _stem = Path(_arg).stem
+mdl_override = None   # full path to .mdl file (e.g. HL weapons in valve/, not cstrike/)
+_args = sys.argv[1:]
+i = 0
+while i < len(_args):
+    if _args[i] == '--mdl' and i + 1 < len(_args):
+        mdl_override = _args[i + 1]; i += 2
+    elif not _args[i].startswith('-'):
+        _stem = Path(_args[i]).stem
         weapon_name = _stem[2:] if _stem.startswith('v_') else _stem
-        break
+        i += 1
+    else:
+        i += 1
 
-try:
-    from config import CSTRIKE_PATH
-    MDL_PATH = Path(CSTRIKE_PATH) / "models" / f"v_{weapon_name}.mdl"
-except Exception:
-    MDL_PATH = Path(f"v_{weapon_name}.mdl")
+if mdl_override:
+    MDL_PATH = Path(mdl_override)
+else:
+    try:
+        from config import CSTRIKE_PATH
+        MDL_PATH = Path(CSTRIKE_PATH) / "models" / f"v_{weapon_name}.mdl"
+    except Exception:
+        MDL_PATH = Path(f"v_{weapon_name}.mdl")
 
 if not MDL_PATH.exists():
     sys.exit(f"MDL not found: {MDL_PATH}")

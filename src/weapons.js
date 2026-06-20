@@ -216,6 +216,53 @@ const WPNS = [
   ..._pistol('deagle',    'Desert Eagle', { damage: 54, rangeMod: 0.81,  ammo: 7,  reserve: 35,  reload: 2.2, fireInterval: 0.225, recoilKick: 0.08,  spread: 0.006, spreadGrow: 0.06, spreadMax: 0.10, fireSound: ['weapons/deagle-1.wav', 'weapons/deagle-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [2.6, -8.8, 1.4],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
   ..._pistol('p228',      'P228 Compact', { damage: 32, rangeMod: 0.8,   ammo: 13, reserve: 52,  reload: 2.7, fireInterval: 0.15,  recoilKick: 0.045, spread: 0.008, fireSound: ['weapons/p228-1.wav'], fire: ['shoot1', 'shoot2', 'shoot3'], muzzleBone: 20, muzzleOrg: [2.6, -6.8, 1.5],  ejectBone: 39, ejectOrg: [0, -2.0, 0] }),
   ..._pistol('fiveseven', 'Five-SeveN',   { damage: 20, rangeMod: 0.885, ammo: 20, reserve: 100, reload: 3.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.008, fireSound: ['weapons/fiveseven-1.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 41, muzzleOrg: [0, -6.0, 0],  ejectBone: 41, ejectOrg: [0, -2.5, 0] }),
+  // ── Half-Life weapons (NON-CANON, opt-in via the server's mp_hl_weapons flag) ──
+  // Ported from original HL GoldSrc (v_rpg / v_crossbow). `hl:true` marks them so they
+  // can be hidden when the flag is off; `projectile` makes WS.FIRE spawn a travelling
+  // rocket/bolt instead of a hitscan bullet (see updateWeapon FIRE branch + projectiles.js).
+  // Numbers from HLSDK (rpg.cpp / crossbow.cpp / skill.cfg); 🔹 = approximated for CS — see
+  // docs/DIFFERENCES.md. Price is non-canon (no CS value exists).
+  {
+    id: 'rpg', label: 'RPG', hl: true, leftHandModel: true,
+    jsonFile: 'models/v_rpg.json',
+    idleSeq: 'idle', drawSeq: 'draw1', reloadSeq: 'reload',
+    fireSeq: 'fire', fireSeqsUnsil: ['fire'],
+    silencer: false, autofire: false,
+    fireInterval: 1.5,            // 🔹 refire/reload gate after a rocket
+    fireSound: ['weapons/rocketfire1.wav'],
+    // Travelling rocket: ~100 blast dmg, radius-damage (HL plrDmgRPG=100). 🔹 constant speed.
+    projectile: { kind: 'rocket', model: 'models/v_rpgrocket.json',
+                  speed: 1000, damage: 100, radius: 250, flySound: 'weapons/rocket1.wav' },
+    pos: new THREE.Vector3(-0.04, -0.20, -0.75),
+    rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
+    scale: 0.12, type: 'gun',
+    ammo: 1, maxAmmo: 1, reserve: 4, reloadTime: 2.0,
+    maxSpeed: 250,
+    slot: 'primary',
+    root: null,
+  },
+  {
+    id: 'crossbow', label: 'Crossbow', hl: true, leftHandModel: true,
+    jsonFile: 'models/v_crossbow.json',
+    idleSeq: 'idle1', drawSeq: 'draw1', reloadSeq: 'reload',
+    fireSeq: 'fire1', fireSeqsUnsil: ['fire1'],
+    silencer: false, autofire: false,
+    fireInterval: 0.75,          // HLSDK crossbow refire
+    fireSound: ['weapons/xbow_fire1.wav'],
+    zoomFovs: [20],              // RMB toggles the 2× scope (reuses the AWP zoom path)
+    // Travelling bolt: sticks where it lands. HL MP bolt dmg = 10 (sk_plr_crossbow). 🔹
+    projectile: { kind: 'bolt', model: 'models/v_bolt.json', speed: 2000, damage: 10, stick: true,
+                  flySound: 'weapons/xbow_fly1.wav',
+                  hitWorld: ['weapons/xbow_hit1.wav', 'weapons/xbow_hit2.wav'],
+                  hitBody:  ['weapons/xbow_hitbod1.wav', 'weapons/xbow_hitbod2.wav'] },
+    pos: new THREE.Vector3(-0.04, -0.20, -0.75),
+    rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
+    scale: 0.12, type: 'gun',
+    ammo: 5, maxAmmo: 5, reserve: 50, reloadTime: 4.5,
+    maxSpeed: 240,
+    slot: 'primary',
+    root: null,
+  },
   {
     id: 'knife', label: 'KNIFE',
     jsonFile: 'models/v_knife.json',
@@ -915,6 +962,12 @@ function updateWeapon(dt) {
         // CHAN_WEAPON: each shot cuts the previous one so bursts/fast taps stay
         // crisp instead of overlapping into a drone (matches the engine).
         if (typeof playRandom === 'function') playRandom(_fireSnd, { volume: 1.0, channel: 'weapon' });
+        if (wpn.projectile) {
+          // HL projectile weapons (RPG/crossbow): launch a travelling rocket/bolt down the
+          // aim ray instead of an instant hitscan. No decal/flash/shell here — the rocket
+          // explodes (radius dmg) / the bolt sticks on impact (projectiles.js).
+          if (typeof _fireProjectile === 'function') _fireProjectile(wpn, dyaw, dpitch);
+        } else {
         const _hit = _spawnDecal('bullet', SHOT_RANGE, shotSpread, undefined, [dyaw, dpitch]);
         let _hitBody = false;
         if (typeof enemyTryShoot === 'function')                        // hit the target dummy?
@@ -933,8 +986,9 @@ function updateWeapon(dt) {
         }
         // Enhanced gore: stain the wall behind a hit body with a blood splat.
         if (_hitBody && typeof enhancedGore !== 'undefined' && enhancedGore) _spawnDecal('blood', SHOT_RANGE, 0);
+        }
         lastShotAge = 0;           // keep recoil in slow-decay (accumulate) mode through the burst
-        wpn._pendingFire = true;   // defer flash+eject until _muzzleLocal is current
+        if (!wpn.projectile) wpn._pendingFire = true;   // defer flash+eject until _muzzleLocal is current
         wpn._shotCount = sc + 1;
         const kb = KICKBACK[wpn.id];
         if (kb) {

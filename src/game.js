@@ -24,10 +24,10 @@ let _hurtT = -Infinity;        // wall-clock of the last damage tick (drives the
 // Enter the dead state once (idempotent per death): mark dead + start the death cam (pulls back
 // to third person to show our death animation, then spectates). hg = killing-blow hitgroup
 // (selects head/gut/random death sequence).
-function _enterDeath(hg) {
+function _enterDeath(hg, waiting) {
   if (playerDead) return;
   playerDead = true;
-  if (typeof _beginDeathCam === 'function') _beginDeathCam(hg | 0);
+  if (typeof _beginDeathCam === 'function') _beginDeathCam(hg | 0, !!waiting);
 }
 
 // Leave the dead state (server revived us). Ends the death cam (restores our view preference)
@@ -116,13 +116,31 @@ function applyServerSelf(me) {
   playerHealth = me.hp;
   playerArmor  = me.armor;
   playerHelmet = !!me.helmet;
-  if (!me.alive) _enterDeath();           // stamps the death-cam start on the false→true edge
-  else _exitDeath();                      // revived → drop the death-cam roll, re-anchor camera
+  if (!me.alive) {
+    // Only the FIRST transition to dead matters. A player who actually died already started a
+    // death anim (onServerDamage) — let it play out and auto-transition to spectate. We jump
+    // STRAIGHT to spectate only for someone who never had a corpse this round: a brand-new
+    // mid-round joiner (waiting + not already in the death cam).
+    if (!playerDead) _enterDeath(0, me.waiting);
+  } else _exitDeath();                     // revived → drop the death-cam roll, re-anchor camera
   // Economy (Phase 6C): the server owns money/inventory; mirror it.
   if (me.money != null) playerMoney = me.money;
   if (Array.isArray(me.weapons)) {
+    const _had = new Set(ownedWeapons);
     ownedWeapons.clear(); ownedWeapons.add('knife');
     me.weapons.forEach(w => ownedWeapons.add(w));
+    // Server granted a new PRIMARY we didn't have (a walk-over weapon pickup) → deploy it +
+    // pickup sound, like CS. (Buys are handled by _onBought, which adds them first, so no double.)
+    for (const w of ownedWeapons) {
+      if (_had.has(w) || w === 'knife') continue;
+      const wp = (typeof WPNS !== 'undefined') && WPNS.find(x => x.id === w);
+      if (wp && wp.slot === 'primary') {
+        const i = WPNS.findIndex(x => x.id === w);
+        if (i >= 0 && typeof switchWeapon === 'function') switchWeapon(i);
+        if (typeof playSound === 'function') playSound('items/gunpickup2.wav', { volume: 0.8 });
+        break;
+      }
+    }
   }
   if (me.nades) for (const k of Object.keys(grenadeCounts)) grenadeCounts[k] = me.nades[k] || 0;
   if (typeof hasDefuseKit !== 'undefined') hasDefuseKit = !!me.dk;
@@ -191,8 +209,11 @@ const BUY_CATALOG = [
     { ct: { name: 'Steyr AUG',       price: 3500, wid: 'aug' },   t: { name: 'SG-552 Commando', price: 3500, wid: 'sg552' } },
     { ct: { name: 'SG-550 Auto',     price: 4200 },               t: { name: 'G3/SG-1 Auto',    price: 5000 } },
   ] },
-  { name: 'Пулемёты', slots: [
+  { name: 'Пулемёты / тяжёлое', slots: [
     { both: { name: 'M249 Para',        price: 5750, wid: 'm249' } },
+    // HL weapons (non-canon) — only shown when enabled (mp_hl_weapons / solo setting).
+    { hl: true, both: { name: 'RPG (HL)',     price: 6000, wid: 'rpg' } },
+    { hl: true, both: { name: 'Арбалет (HL)', price: 2500, wid: 'crossbow' } },
   ] },
   { name: 'Боезапас (основной)',  ammo: 'primary'   },
   { name: 'Боезапас (пистолет)',  ammo: 'secondary' },
@@ -211,6 +232,22 @@ const BUY_CATALOG = [
 // null if the slot has nothing for this team (renders as "—" but keeps its number).
 function _slotItem(slot) {
   return (slot && (slot.both || slot[playerTeam])) || null;
+}
+
+// Are the non-canon HL weapons (RPG/crossbow) enabled? In MP the authoritative server
+// flag wins (mp_hl_weapons → mpHlWeapons, set from gstate in net.js); solo uses the
+// client setting (hlWeaponsEnabled, input.js). See [[hl-weapons-server-option]].
+function _hlOn() {
+  if (typeof _netDriven !== 'undefined' && _netDriven)
+    return typeof mpHlWeapons !== 'undefined' && !!mpHlWeapons;
+  return typeof hlWeaponsEnabled !== 'undefined' && !!hlWeaponsEnabled;
+}
+
+// A category's visible slots: HL-only slots are trailing, so dropping them when disabled
+// keeps every other slot's fixed number stable (render + key handling must use this).
+function _catSlots(cat) {
+  const s = cat.slots || [];
+  return _hlOn() ? s : s.filter(x => !x.hl);
 }
 
 // Selectable player classes per team (only converted models with full anim sets).
@@ -378,7 +415,7 @@ function buyMenuKey(n) {              // n: 0–9
     }
   } else {
     if (n === 0) { _buyCat = -1; _renderBuyMenu(); return; }
-    const slots = BUY_CATALOG[_buyCat].slots || [];
+    const slots = _catSlots(BUY_CATALOG[_buyCat]);
     if (n >= 1 && n <= slots.length) {                       // FIXED slot index (not renumbered)
       const it = _slotItem(slots[n - 1]);
       if (it) { buyItem(it); _renderBuyMenu(); }              // empty slot for this team → ignore
@@ -395,7 +432,7 @@ function _renderBuyMenu() {
     rows += `<div class="bm-row bm-back"><span class="bm-k">0</span> Закрыть</div>`;
   } else {
     const cat = BUY_CATALOG[_buyCat];
-    rows = (cat.slots || []).map((slot, i) => {
+    rows = _catSlots(cat).map((slot, i) => {
       const it = _slotItem(slot);
       if (!it) return `<div class="bm-row bm-na"><span class="bm-k">${i + 1}</span> —</div>`;  // empty slot, number kept
       const buyable = it.wid || it.equip;

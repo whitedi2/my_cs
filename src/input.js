@@ -150,6 +150,7 @@ let dynamicCrosshair = CONFIG.dynamicCrosshair ?? false;  // cl_dynamiccrosshair
 let enhancedGore     = CONFIG.enhancedGore ?? false;      // our procedural blood vs original sprites (off = original)
 let showHitboxes     = false;                             // debug: draw dummy hit-zone cylinders
 let fullscreenMode   = CONFIG.fullscreenMode ?? false;    // Start → fullscreen (enables Keyboard Lock vs Ctrl combos)
+let hlWeaponsEnabled = CONFIG.hlWeapons ?? false;         // non-canon HL weapons (RPG/crossbow) in solo; MP uses the server flag
 
 function updateFOV() {
   // Scoped (AWP): the zoom FOV is the horizontal FOV — derive vertical for the aspect.
@@ -185,6 +186,8 @@ document.getElementById('opt-widescreen').addEventListener('change', e => { wide
 document.getElementById('opt-right-hand').addEventListener('change', e => { rightHand = e.target.checked; updateVmCamera(); });
 document.getElementById('opt-dynamic-crosshair').addEventListener('change', e => { dynamicCrosshair = e.target.checked; });
 document.getElementById('opt-enhanced-gore').addEventListener('change', e => { enhancedGore = e.target.checked; });
+{ const _optHl = document.getElementById('opt-hl-weapons');
+  if (_optHl) _optHl.addEventListener('change', e => { hlWeaponsEnabled = e.target.checked; }); }
 document.getElementById('opt-show-hitboxes').addEventListener('change', e => { showHitboxes = e.target.checked; if (typeof setHitboxDebug === 'function') setHitboxDebug(showHitboxes); });
 document.getElementById('opt-third-person').addEventListener('change', e => { toggleThirdPerson(e.target.checked); });
 const _optFs = document.getElementById('opt-fullscreen');
@@ -474,6 +477,7 @@ function animate(t) {
     updatePlayerModel(dt);
     if (typeof updatePickups === 'function') updatePickups(dt);   // dropped-weapon physics + pickup
     if (typeof updateGrenades === 'function') updateGrenades(dt); // thrown nades: physics + detonation
+    if (typeof updateProjectiles === 'function') updateProjectiles(dt); // HL rocket/bolt + RPG laser dot
     updateEnemy(dt);
     if (typeof netUpdate === 'function') netUpdate(dt);       // multiplayer: send/recv + remote players
     if (typeof updateRound === 'function') updateRound(dt);   // match flow + C4 bomb
@@ -525,7 +529,10 @@ function animate(t) {
     // (_specEye) — there we render THEIR weapon's viewmodel (driven in updateDeathCam).
     if ((!thirdPerson || (typeof _specEye !== 'undefined' && _specEye)) && !isScoped()) {
       vmCamera.updateProjectionMatrix();
-      const shouldFlip = curW().id === 'knife' ? !rightHand : rightHand;
+      // Knife + the Half-Life viewmodels (RPG/crossbow) are LEFT-handed in their MDL, so they
+      // flip opposite to the right-handed CS viewmodels.
+      const _cw = curW();
+      const shouldFlip = (_cw.id === 'knife' || _cw.leftHandModel) ? !rightHand : rightHand;
       if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
       vmCamera.projectionMatrixInverse.copy(vmCamera.projectionMatrix).invert();
       _tickFlash();

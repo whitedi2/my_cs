@@ -115,6 +115,16 @@ VALVE_SOUNDS = ['items/weapondrop1.wav', 'items/gunpickup2.wav',
                 # distinct "zing" that isn't every shot and differs each time).
                 'weapons/ric1.wav', 'weapons/ric2.wav', 'weapons/ric3.wav', 'weapons/ric4.wav', 'weapons/ric5.wav']
 
+# Half-Life weapons (RPG, crossbow) — non-canon, opt-in via the server's mp_hl_weapons
+# flag. All sounds are code-driven in HL (no MDL 5004 events), and live in valve/sound/.
+#  • RPG: rocketfire1 (launch) + rocket1 (looping flight).
+#  • Crossbow: xbow_fire1 (shoot), xbow_reload1 (reload), xbow_fly1 (bolt in flight),
+#    xbow_hit1/2 (bolt hits world), xbow_hitbod1/2 (bolt hits a body).
+HL_SOUNDS = ['weapons/rocketfire1.wav', 'weapons/rocket1.wav',
+             'weapons/xbow_fire1.wav', 'weapons/xbow_reload1.wav', 'weapons/xbow_fly1.wav',
+             'weapons/xbow_hit1.wav', 'weapons/xbow_hit2.wav',
+             'weapons/xbow_hitbod1.wav', 'weapons/xbow_hitbod2.wav']
+
 
 TARGET_RATE = 22050
 
@@ -180,6 +190,7 @@ def main():
     # (source dir, relative path) pairs: most from cstrike/, drop+pickup from valve/.
     jobs = [(SND_SRC, rel) for rel in sorted(wanted)]
     jobs += [(VALVE_SND, rel) for rel in VALVE_SOUNDS]
+    jobs += [(VALVE_SND, rel) for rel in HL_SOUNDS]
     for srcdir, rel in jobs:
         src = srcdir / rel
         dst = OUT_DIR / rel

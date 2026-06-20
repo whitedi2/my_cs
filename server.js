@@ -26,6 +26,22 @@ const CONFIG = require('./config.js');
 
 const LAG_HISTORY_MS = 1000;   // how far back we keep position history for lag compensation
 
+// Non-canon Half-Life weapons (RPG, crossbow). The server is authoritative: it gates buying
+// AND tells clients to show them in the menu (gstate.hlWeapons → net.js mpHlWeapons).
+// 🔹 TEMP dev default: ON (we're actively building these) — set MP_HL_WEAPONS=0 to disable.
+// The intended shipping default is OFF (not CS canon). See [[hl-weapons-server-option]].
+const MP_HL_WEAPONS = process.env.MP_HL_WEAPONS !== '0' && process.env.MP_HL_WEAPONS !== 'false';
+
+// A FIRST connection may still spawn this many seconds into 'live' (buy time + a short grace),
+// so a player who connects right as the round goes live isn't forced to sit out the whole round.
+const MATCH_JOIN_GRACE_S = 10;
+
+// Authoritative HL projectiles (mirror src/projectiles.js / WPNS): speed + damage model.
+const PROJ_DEF = {
+  rpg:      { kind: 'rocket', speed: 1000, damage: 100, radius: 250 },
+  crossbow: { kind: 'bolt',   speed: 2000, damage: 10 },
+};
+
 // ── World (authoritative simulation) — pure, testable without the network ────
 const _hullPath = path.join(__dirname, 'maps', 'de_dust2_hull.json');
 let _hullData = null, _hull = null;
@@ -92,7 +108,66 @@ function _ensureBombCarrier(world) {
   if (ts.length) ts[Math.floor(Math.random() * ts.length)].carryingC4 = true;
 }
 
-function createWorld() { return { players: new Map(), match: match.matchCreate(), droppedC4: null }; }
+function createWorld() { return { players: new Map(), match: match.matchCreate(), droppedC4: null, projectiles: [], _projSeq: 0, droppedWeapons: [], _dropSeq: 0 }; }
+
+// CS: a killed player drops their PRIMARY weapon at the corpse for anyone to grab. Bots too —
+// they're ordinary world players, so this fires for them via the same dmgEvent death hook.
+function _dropDeadWeapon(world, pl) {
+  let primary = null;
+  for (const w of pl.weapons) {
+    const it = match.MATCH_BUY[w];
+    if (it && (it.kind || 'weapon') === 'weapon' && it.slot === 'primary') { primary = w; break; }
+  }
+  if (!primary) return;
+  pl.weapons.delete(primary);
+  const ammo = (pl.ammoByWid && pl.ammoByWid[primary]) || null;        // corpse's clip+reserve, if known
+  world.droppedWeapons.push({ id: ++world._dropSeq, wid: primary, pos: _bombFloorPos(pl.state), age: 0, ammo });
+}
+
+// Voluntary drop (G): drop the held gun in front of the player and switch to a remaining weapon.
+// Server-authoritative — clients send a 'drop' intent. Knife/grenades/C4 aren't droppable here.
+function worldDropWeapon(world, pl, wid) {
+  const it = match.MATCH_BUY[wid];
+  if (!it || (it.kind || 'weapon') !== 'weapon' || !it.slot) return;   // only buyable guns drop
+  if (!pl.weapons.has(wid)) return;
+  pl.weapons.delete(wid);
+  const f = [-Math.sin(pl.yaw), Math.cos(pl.yaw)];                      // toss a touch forward along yaw
+  const b = _bombFloorPos(pl.state);
+  const ammo = (pl.ammoByWid && pl.ammoByWid[wid]) || null;            // carry the held clip+reserve
+  world.droppedWeapons.push({ id: ++world._dropSeq, wid, pos: [b[0] + f[0] * 24, b[1] + f[1] * 24, b[2]], age: 0, ammo });
+  if (pl.weapon === wid) {                                              // deploy something else
+    let next = 'knife';
+    for (const w of pl.weapons) if (w !== 'knife') { next = w; break; }
+    pl.weapon = next;
+  }
+}
+
+// Walk-over auto-pickup (CS): a living player with a FREE primary slot, close to a dropped gun,
+// grabs it (the server grants it; the client deploys it off gstate.me.weapons). A fresh drop has a
+// short grace so you don't instantly re-grab the gun you just dropped (mirrors solo `noPickT`).
+function _tickWeaponDrops(world, dt) {
+  const picks = [];
+  for (let i = world.droppedWeapons.length - 1; i >= 0; i--) {
+    const dw = world.droppedWeapons[i];
+    dw.age = (dw.age || 0) + dt;
+    if (dw.age < 1.0) continue;                                         // pickup grace
+    for (const pl of world.players.values()) {
+      if (!pl.alive || !pl.joined) continue;
+      let hasPrimary = false;
+      for (const w of pl.weapons) { const it = match.MATCH_BUY[w]; if (it && it.slot === 'primary') { hasPrimary = true; break; } }
+      if (hasPrimary) continue;
+      const p = pl.state.pos, b = dw.pos;
+      if (Math.hypot(p[0] - b[0], p[1] - b[1], p[2] - b[2]) <= 56) {
+        pl.weapons.add(dw.wid); pl.weapon = dw.wid;
+        if (dw.ammo) (pl.ammoByWid || (pl.ammoByWid = {}))[dw.wid] = dw.ammo.slice();   // inherit the drop's ammo
+        picks.push({ pid: pl.id, wid: dw.wid, ammo: dw.ammo || null });   // tell the picker its clip+reserve
+        world.droppedWeapons.splice(i, 1);
+        break;
+      }
+    }
+  }
+  return picks;
+}
 
 function worldAddPlayer(world, id, opts = {}) {
   const team = opts.tm === 't' ? 't' : 'ct';
@@ -133,6 +208,8 @@ function worldRespawn(pl, opts = {}) {
   pl.nades = { hegrenade: 0, flashbang: 0, smokegrenade: 0 };
   pl.dk = false;
   pl.carryingC4 = false; pl.plantProg = 0;     // carrier is (re)assigned at round start
+  pl.sidelinedSwitchUsed = false;              // fielded now → reset the sideline team-switch allowance
+  pl.spawnedThisRound = true;                  // used the one in-play spawn for this round
   pl.kills = 0; pl.deaths = 0;                  // team change / fresh join resets the scoreline
   if (opts.tm) pl.team = opts.tm === 't' ? 't' : 'ct';
   if (opts.m)  pl.model = opts.m;
@@ -153,6 +230,9 @@ function worldApplyCmd(pl, c) {
   pl.lastCmdAt = Date.now();          // for the idle-tick: this player is actively sending input
   pl.yaw = c.y || 0;
   if (c.w) pl.weapon = c.w;
+  // Track the ACTIVE weapon's ammo so a drop (death / G) can carry the corpse's clip+reserve.
+  if (c.w) { (pl.ammoByWid || (pl.ammoByWid = {}))[c.w] = [c.cl | 0, c.rs | 0]; }
+  if (Array.isArray(c.lt) && c.lt.length === 3) pl.laserTarget = c.lt;     // RPG laser spot → live rocket homing
   // Presentation-only state we relay so other clients can render this player's
   // third-person avatar (look pitch + weapon state machine). Not used by the sim.
   pl.pitch = c.pi || 0;
@@ -222,6 +302,7 @@ function worldTickMatch(world, dt) {
   for (const pl of world.players.values()) roster.push({ team: pl.team, alive: pl.alive, joined: pl.joined });
   const ev = match.matchTick(world.match, roster, dt);          // phases / clock / C4 fuse → detonate
   if (ev.roundStart) {                                          // fresh round: respawn + revive + reassign C4
+    for (const pl of world.players.values()) pl.spawnedThisRound = false;   // new round → everyone may claim a spawn again
     // Apply deferred team/model changes (mid-round joins/switches) now, with a fresh loadout.
     for (const pl of world.players.values()) {
       if (!pl.pendingTeam) continue;
@@ -233,13 +314,16 @@ function worldTickMatch(world, dt) {
       pl.money = match.MATCH_START_MONEY; pl.armor = 0; pl.helmet = false; pl.dk = false;
       pl.nades = { hegrenade: 0, flashbang: 0, smokegrenade: 0 };
       pl.pendingTeam = pl.pendingModel = pl.pendingW = null;
+      pl.sidelinedSwitchUsed = false;                          // fresh round → the sideline switch allowance resets
     }
     _assignSpawns(world);                                       // authoritative distinct spawns (6E)
     world.droppedC4 = null;                                     // clear any loose bomb from last round
+    world.droppedWeapons.length = 0;                            // loose guns from last round are gone
     const ts = [];
     for (const pl of world.players.values()) {
       if (pl.spectator) continue;                               // spectators stay out of play
       match.matchRevive(pl);
+      pl.spawnedThisRound = !!pl.joined;                        // in-play players used their round spawn
       pl.carryingC4 = false; pl.plantProg = 0;
       if (pl.joined && pl.team === 't') ts.push(pl);
     }
@@ -386,6 +470,8 @@ function gameState(world, pl) {
       defuseNeed: ms.bomb._kit ? match.MATCH_DEFUSE_KIT : match.MATCH_DEFUSE_TIME,
     } : null,
     dropC4: world.droppedC4 ? world.droppedC4.pos : null,   // loose bomb on the ground (6D drop)
+    drops: world.droppedWeapons.map(d => ({ id: d.id, wid: d.wid, pos: d.pos })),   // dropped guns on the ground
+    hlWeapons: MP_HL_WEAPONS,   // server allows non-canon HL weapons (RPG/crossbow) in the buy menu
     roster: [],   // connected players for the scoreboard / kill feed (Phase 6E)
   };
   for (const p of world.players.values()) {
@@ -397,6 +483,9 @@ function gameState(world, pl) {
     hp: pl.hp, armor: pl.armor, helmet: !!pl.helmet, alive: !!pl.alive, team: pl.team,
     money: pl.money, weapons: [...pl.weapons], nades: pl.nades, dk: !!pl.dk,
     c4: !!pl.carryingC4, plantProg: pl.plantProg || 0,
+    // Sidelined until the next round (mid-round join / team change): the client should
+    // SPECTATE while waiting, not show a death cam (there may be no corpse of ours).
+    waiting: !pl.alive && !!pl.pendingTeam,
   };
   return gs;
 }
@@ -512,6 +601,101 @@ function worldProcessShot(world, shooterId, msg) {
     pen *= combat.COMBAT_PEN_MULT;
   }
   return out;
+}
+
+// ── Authoritative HL projectiles (RPG rocket / crossbow bolt) ────────────────
+// Clients send a 'proj' fire intent; the SERVER owns flight, collision and damage and streams
+// projectile positions in snapshots so everyone renders them. Mirrors src/projectiles.js.
+function worldSpawnProjectile(world, owner, msg) {
+  const pd = PROJ_DEF[String(msg.w || '')];
+  if (!pd) return;
+  const o = msg.o, d = msg.d;
+  if (!Array.isArray(o) || o.length !== 3 || !Array.isArray(d) || d.length !== 3) return;
+  const dl = Math.hypot(d[0], d[1], d[2]) || 1;
+  world.projectiles.push({
+    id: ++world._projSeq, kind: pd.kind, def: pd, wid: msg.w, owner,
+    pos: [o[0], o[1], o[2]],
+    vel: [d[0] / dl * pd.speed, d[1] / dl * pd.speed, d[2] / dl * pd.speed],
+    target: (pd.kind === 'rocket' && Array.isArray(msg.lt) && msg.lt.length === 3) ? msg.lt.slice() : null,
+    life: 0,
+  });
+}
+
+// Nearest living non-owner player whose hit box the projectile crosses this step.
+function _projNearestPlayerHit(world, pr, segLen) {
+  let best = null;
+  for (const [tid, tp] of world.players) {
+    if (tid === pr.owner || !tp.alive) continue;
+    const r = combat.combatRayHitPlayer(pr.pos, pr.vel, tp.state.pos, !!tp.state.phyDucked);
+    if (r && r.dist <= segLen && (!best || r.dist < best.dist)) best = { tid, tp, hg: r.hg, dist: r.dist };
+  }
+  return best;
+}
+
+// Rocket blast: linear-falloff radius damage with an LOS check (mirrors playerRadiusDamage).
+function _projRadiusDamage(world, pr, out) {
+  const def = pr.def;
+  for (const [tid, tp] of world.players) {
+    if (!tp.alive) continue;
+    const c = [tp.state.pos[0], tp.state.pos[1], tp.state.pos[2] + (tp.state.phyDucked ? 18 : 36)];
+    const dist = Math.hypot(c[0] - pr.pos[0], c[1] - pr.pos[1], c[2] - pr.pos[2]);
+    if (dist > def.radius) continue;
+    const tr = sim.simTraceMove(_hull, false, pr.pos, c);
+    if (tr.fraction < 0.7) continue;                          // wall mostly blocks the blast
+    const r = match.matchApplyDamage(tp, def.damage * (1 - dist / def.radius), 2);   // hg2 = covered (blast)
+    if (r.dealt > 0) out.push({ tid, hg: 2, owner: pr.owner, dealt: r.dealt, hp: tp.hp, died: r.died, w: pr.wid });
+  }
+}
+
+// Advance every projectile one tick; resolve impacts → damage events + bolt-stick events.
+function worldTickProjectiles(world, dt) {
+  const out = [], sticks = [];
+  for (let i = world.projectiles.length - 1; i >= 0; i--) {
+    const pr = world.projectiles[i];
+    pr.life += dt;
+    const speed = Math.hypot(pr.vel[0], pr.vel[1], pr.vel[2]) || 1;
+    const owner = world.players.get(pr.owner);
+    const tgt = (owner && owner.laserTarget) || pr.target;   // live laser spot (continuous), else fire-time
+    if (pr.kind === 'rocket' && tgt) {                        // laser-guided: steer toward the spot
+      const ds = [tgt[0] - pr.pos[0], tgt[1] - pr.pos[1], tgt[2] - pr.pos[2]];
+      const dl = Math.hypot(ds[0], ds[1], ds[2]) || 1;
+      const turn = Math.min(1, dt * 3.0);
+      let nx = pr.vel[0] / speed + (ds[0] / dl - pr.vel[0] / speed) * turn;
+      let ny = pr.vel[1] / speed + (ds[1] / dl - pr.vel[1] / speed) * turn;
+      let nz = pr.vel[2] / speed + (ds[2] / dl - pr.vel[2] / speed) * turn;
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      pr.vel = [nx / nl * speed, ny / nl * speed, nz / nl * speed];
+    } else if (pr.kind === 'bolt') {
+      pr.vel[2] -= CONFIG.gravity * 0.4 * dt;                 // light drop
+    }
+    const segLen = Math.hypot(pr.vel[0], pr.vel[1], pr.vel[2]) * dt;
+    const to = [pr.pos[0] + pr.vel[0] * dt, pr.pos[1] + pr.vel[1] * dt, pr.pos[2] + pr.vel[2] * dt];
+    const ph = _projNearestPlayerHit(world, pr, segLen);
+    const tr = sim.simTraceMove(_hull, false, pr.pos, to);
+    const worldHit = tr.fraction < 1 || tr.allsolid;
+    const worldDist = (worldHit && tr.fraction < 1) ? segLen * tr.fraction : Infinity;
+    if (ph && ph.dist <= worldDist) {                         // impact on the player box
+      pr.pos = [pr.pos[0] + pr.vel[0] / speed * ph.dist, pr.pos[1] + pr.vel[1] / speed * ph.dist, pr.pos[2] + pr.vel[2] / speed * ph.dist];
+    } else {
+      pr.pos = tr.end ? [...tr.end] : to;
+    }
+    let done = false;
+    if (pr.kind === 'rocket') {
+      if (ph || worldHit || pr.life > 6) { _projRadiusDamage(world, pr, out); done = true; }
+    } else {                                                  // bolt: stick on world, direct hit on a body
+      if (ph && ph.dist <= worldDist) {
+        const r = match.matchApplyDamage(ph.tp, pr.def.damage, ph.hg);
+        if (r.dealt > 0) out.push({ tid: ph.tid, hg: ph.hg, owner: pr.owner, dealt: r.dealt, hp: ph.tp.hp, died: r.died, w: pr.wid });
+        sticks.push({ pos: pr.pos.slice(), vel: pr.vel.slice(), owner: pr.owner });
+        done = true;
+      } else if (worldHit) {
+        sticks.push({ pos: pr.pos.slice(), vel: pr.vel.slice(), owner: pr.owner });   // embedded in the wall
+        done = true;
+      } else if (pr.life > 6) done = true;                    // ran out → just vanish (no stick)
+    }
+    if (done) world.projectiles.splice(i, 1);
+  }
+  return { dmg: out, sticks };
 }
 
 // ── Bots (simple server-side AI) ─────────────────────────────────────────────
@@ -640,7 +824,7 @@ function startServer(port) {
   // (only a different live player — fall/C4/world deaths credit no one).
   const dmgEvent = (vId, hg, by, dealt, hp, died, w) => {
     if (died) {
-      const v = world.players.get(vId); if (v) v.deaths++;
+      const v = world.players.get(vId); if (v) { v.deaths++; _dropDeadWeapon(world, v); }   // drop primary at the corpse
       const k = world.players.get(by);  if (k && by !== vId) k.kills++;
     }
     broadcast(JSON.stringify({ t: 'dmg', id: vId, hg, by, dealt, hp, died, w }));
@@ -725,25 +909,46 @@ function startServer(port) {
         for (const p of world.players.values()) { if (!p.joined || p.id === id) continue; if (p.team === 't') nt++; else nct++; }
         const cur = tm === 't' ? nt : nct, oth = tm === 't' ? nct : nt;
         if ((cur + 1) - oth >= 2) { tm = tm === 't' ? 'ct' : 't'; model = tm === 't' ? 'leet' : 'gign'; }
-        // Round-respawn discipline (CS): once you're in the match you only (re)spawn at a ROUND
-        // START. A brand-new first join is fielded immediately; but a RESPAWN after death or a TEAM
-        // CHANGE during an active round (buy/live) does NOT field you this round — you wait for the
-        // next one. A LIVE player switching teams counts as a suicide (death anim on all clients + a death).
-        const midRound = world.match.phase === 'buy' || world.match.phase === 'live';
-        const wasInMatch = pl.joined;                      // already part of the match (respawn / team change)
-        if (!midRound || !wasInMatch) {
-          // Warmup, between rounds, OR a brand-new first join → field them now.
-          worldRespawn(pl, { tm, m: model, w: msg.w });
+        // Round-respawn discipline (CS): you don't drop into a round already in progress — a
+        // respawn after death or a TEAM CHANGE always waits for the next round start. The one
+        // exception is JOINING FROM OUTSIDE PLAY (a first connection, or picking a team out of
+        // spectator) during buy time + a short grace into early live: that fields you right away,
+        // but only ONCE per round (`spawnedThisRound` blocks a spectator-toggle re-spawn loop).
+        const ph = world.match.phase;
+        const midRound = ph === 'buy' || ph === 'live';
+        const fromOutsidePlay = !pl.joined;                 // brand-new OR a spectator (joined=false) vs. respawn/team change
+        const earlyLive = ph === 'live' && (match.MATCH_ROUND_TIME - world.match.timer) < MATCH_JOIN_GRACE_S;
+        const canFirstSpawn = fromOutsidePlay && !pl.spawnedThisRound && (ph === 'buy' || earlyLive);
+        if (!midRound || canFirstSpawn) {
+          worldRespawn(pl, { tm, m: model, w: msg.w });   // warmup/'over', OR a first join into the spawn window
+        } else if (pl.joined && pl.alive && tm === pl.team) {
+          // Already alive in the match and re-picking the SAME team → no-op. Re-opening the team
+          // menu (e.g. to browse weapons) must NOT count as a team change — that suicided you.
+          if (model) pl.pendingModel = model;             // a class tweak applies next round, no death
         } else {
-          const wasLive = pl.alive;                        // a fielded, living player switching teams
-          pl.pendingTeam = tm; pl.pendingModel = model || null; pl.pendingW = msg.w || null;  // applied at next round start
-          pl.alive = false;
-          if (wasLive) {
-            pl.hp = 0;
-            dmgEvent(pl.id, 0, 0, 0, 0, true, 'world');   // team-change suicide: death anim + death tally
-            // keep current team/model for the corpse; the pending team applies next round
+          // Mid-round: you don't enter the round in progress — sidelined (spectating) until it
+          // ends. While sidelined you may switch teams ONCE; further switches are refused with a
+          // warning (prevents endless team-flipping). The allowance resets when you spawn.
+          const alreadyWaiting = !pl.alive && !!pl.pendingTeam;   // already sitting out, with a choice made
+          const curChoice = pl.pendingTeam || pl.team;            // team we're currently set to spawn as
+          if (pl.joined && tm === curChoice) {
+            if (model) pl.pendingModel = model;                   // re-pick the same team → no-op (class tweak only)
+          } else if (alreadyWaiting && pl.sidelinedSwitchUsed) {
+            const sk = sockets.get(id);                           // already used the one switch → refuse + warn
+            if (sk) _send(sk, JSON.stringify({ t: 'notice', msg: 'Сменить команду можно только раз — дождитесь следующего раунда' }));
           } else {
-            pl.team = tm; if (model) pl.model = model;     // dead player reselecting → show on the chosen team while waiting
+            const wasLive = pl.joined && pl.alive;                // a fielded, LIVING player actually changing teams
+            if (alreadyWaiting) pl.sidelinedSwitchUsed = true;    // spend the one allowed sideline switch
+            pl.joined = true;                                     // part of the match now → fielded at the next round start
+            pl.pendingTeam = tm; pl.pendingModel = model || null; pl.pendingW = msg.w || null;
+            pl.alive = false;
+            if (wasLive) {
+              pl.hp = 0;
+              dmgEvent(pl.id, 0, 0, 0, 0, true, 'world');         // team-change suicide: death anim + a death tally
+              // keep current team/model for the corpse; the pending team applies next round
+            } else {
+              pl.team = tm; if (model) pl.model = model;           // dead / brand-new player → show the chosen team while waiting
+            }
           }
         }
         _ensureBombCarrier(world);     // lone/new T mid-round still gets the C4 (not only at roundStart)
@@ -772,12 +977,20 @@ function startServer(port) {
         }
         break;
       }
+      case 'proj': {                                       // HL PROJECTILES: server-owned rocket / bolt
+        if (MP_HL_WEAPONS && pl.alive) worldSpawnProjectile(world, id, msg);
+        break;
+      }
+      case 'drop': {                                       // voluntary weapon drop (G)
+        if (pl.alive && pl.joined) worldDropWeapon(world, pl, String(msg.w || ''));
+        break;
+      }
       case 'buy': {                                        // server-validated purchase (Phase 6C)
         const sk = sockets.get(id);                        // _onMsg has no `socket` in scope — look it up
         if (!sk) break;
         if (world.match.phase !== 'buy') { _send(sk, JSON.stringify({ t: 'bought', ok: false, reason: 'Время закупки вышло' })); break; }
         if (!_inBuyZone(pl))             { _send(sk, JSON.stringify({ t: 'bought', ok: false, reason: 'Вы не в зоне закупки' })); break; }
-        const r = match.matchBuy(pl, String(msg.id || ''));
+        const r = match.matchBuy(pl, String(msg.id || ''), { hlWeapons: MP_HL_WEAPONS });
         _send(sk, JSON.stringify({ t: 'bought', ok: r.ok, reason: r.reason || '', id: r.id, kind: r.kind, money: pl.money }));
         break;
       }
@@ -820,10 +1033,24 @@ function startServer(port) {
     worldRecordHistory(world, _svt);          // lag-comp position history
     const ev = worldTickMatch(world, dt);     // round phases / timers / score / bomb
     if (ev.bombDmg) for (const h of ev.bombDmg) dmgEvent(h.tid, h.hg, 0, h.dealt, h.hp, h.died, 'c4');   // C4 blast
+    const projRes = worldTickProjectiles(world, dt);     // HL rocket/bolt flight + damage
+    for (const h of projRes.dmg) {
+      dmgEvent(h.tid, h.hg, h.owner, h.dealt, h.hp, h.died, h.w || 'rpg');
+      if (h.died) { const op = world.players.get(h.owner); if (op) _award(op, match.matchKillReward(h.w || 'rpg')); }
+    }
+    for (const s of projRes.sticks)                      // embed a stuck bolt on everyone's screen (owner predicts its own)
+      broadcast(JSON.stringify({ t: 'boltstick', p: s.pos.map(Math.round), v: s.vel.map(Math.round), o: s.owner }));
+    for (const pk of _tickWeaponDrops(world, dt)) {      // walk-over pickup + hand the picker its ammo
+      const sk = sockets.get(pk.pid);
+      if (sk && pk.ammo) _send(sk, JSON.stringify({ t: 'pickup', wid: pk.wid, cl: pk.ammo[0], rs: pk.ammo[1] }));
+    }
     const players = worldSnapshot(world);
+    const proj = world.projectiles.map(pr => ({ id: pr.id, k: pr.kind, o: pr.owner,
+      p: [Math.round(pr.pos[0]), Math.round(pr.pos[1]), Math.round(pr.pos[2])],
+      v: [Math.round(pr.vel[0]), Math.round(pr.vel[1]), Math.round(pr.vel[2])] }));
     for (const [cid, socket] of sockets) {
       const pl = world.players.get(cid);
-      _send(socket, JSON.stringify({ t: 'snap', ack: pl ? pl.lastSeq : 0, svt: _svt, players }));
+      _send(socket, JSON.stringify({ t: 'snap', ack: pl ? pl.lastSeq : 0, svt: _svt, players, proj }));
     }
     // Game state ~5×/s, plus immediately on any round transition. Per-recipient (carries
     // that player's own HP/armor/alive in `me`).

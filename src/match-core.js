@@ -47,6 +47,9 @@ const MATCH_BUY = {
   aug:      { price: 3500, team: 'ct',   slot: 'primary' },
   sg552:    { price: 3500, team: 't',    slot: 'primary' },
   m249:     { price: 5750, team: 'both', slot: 'primary' },
+  // Non-canon HL weapons — only buyable when the server's mp_hl_weapons flag is on (hl:true).
+  rpg:      { price: 6000, team: 'both', slot: 'primary', hl: true },
+  crossbow: { price: 2500, team: 'both', slot: 'primary', hl: true },
   flashbang:   { price: 200, team: 'both', kind: 'nade' },
   hegrenade:   { price: 300, team: 'both', kind: 'nade' },
   smokegrenade:{ price: 300, team: 'both', kind: 'nade' },
@@ -72,9 +75,10 @@ function _matchGive(pl, amount) { pl.money = Math.min(MATCH_MONEY_CAP, pl.money 
 // Validate + apply a buy to a player's economy (money/weapons/nades/armor/helmet/dk).
 // Mutates pl on success. Returns { ok, reason, id, kind }. Phase/zone are checked by the
 // caller (it has the match phase + the player's position vs buy zones).
-function matchBuy(pl, id) {
+function matchBuy(pl, id, opts) {
   const it = MATCH_BUY[id];
   if (!it) return { ok: false, reason: 'Недоступно' };
+  if (it.hl && !(opts && opts.hlWeapons)) return { ok: false, reason: 'Недоступно' };   // HL weapons gated by mp_hl_weapons
   if (it.team !== 'both' && it.team !== pl.team) return { ok: false, reason: 'Недоступно вашей команде' };
   const kind = it.kind || 'weapon';
 

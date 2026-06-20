@@ -159,6 +159,8 @@ const _GUN_FILES = {
   awp: 'models/p_awp.json',
   hegrenade: 'models/p_hegrenade.json', flashbang: 'models/p_flashbang.json',
   smokegrenade: 'models/p_smokegrenade.json',
+  // HL weapons (non-canon, gated by mp_hl_weapons) — third-person world models.
+  rpg: 'models/p_rpg.json', crossbow: 'models/p_crossbow.json',
 };
 
 // Parsed p_*.json cache, shared across every third-person rig (local player + remotes).
@@ -798,19 +800,27 @@ function cycleSpecCam() {
 
 // Enter the death cam: force 3rd person, pick our corpse's death sequence by hitgroup, and
 // freeze the corpse facing. Called from game.js _enterDeath on the alive→dead edge.
-function _beginDeathCam(hg) {
+function _beginDeathCam(hg, straightSpectate) {
   _thirdPersonPref = thirdPerson;
   thirdPerson = true;
   if (typeof resetScope === 'function') resetScope();          // no scope while dead/spectating
   orbitYaw   = (typeof yaw === 'number' && isFinite(yaw)) ? yaw : 0;
   orbitPitch = -0.15;
-  _specMode  = 'deathanim';
   _specStart = (typeof performance !== 'undefined') ? performance.now() : 0;
   _specTarget = null; _camFocus = null;
-  if (player) {
-    player._deathYaw = (typeof yaw === 'number') ? yaw : 0;     // corpse facing, frozen
-    player.deathSeq  = (typeof _pickDeathSeq === 'function') ? _pickDeathSeq(player, hg | 0) : null;
-    player.frame = 0;
+  if (straightSpectate) {
+    // Sidelined by a mid-round join / team change — no corpse of ours to watch, so go straight
+    // to spectating the living players (the "waiting for next round" observer view).
+    _specMode = 'spectate'; _specCam = 0;
+    if (player) player.deathSeq = null;
+    specCycle(0);
+  } else {
+    _specMode = 'deathanim';
+    if (player) {
+      player._deathYaw = (typeof yaw === 'number') ? yaw : 0;   // corpse facing, frozen
+      player.deathSeq  = (typeof _pickDeathSeq === 'function') ? _pickDeathSeq(player, hg | 0) : null;
+      player.frame = 0;
+    }
   }
 }
 

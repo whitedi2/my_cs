@@ -140,6 +140,14 @@ function _onNetMsg(m) {
     case 'gstate':  _onGState(m); break;
     case 'bought':  _onBought(m); break;
     case 'pong':    _onPong(m); break;
+    case 'notice':  if (typeof _flashBuy === 'function') _flashBuy(m.msg || ''); break;   // server-side warning toast
+    case 'pickup': {                                       // walk-over pickup → inherit the drop's ammo
+      if (typeof WPNS !== 'undefined') { const w = WPNS.find(x => x.id === m.wid); if (w) { w.ammo = m.cl | 0; w.reserve = m.rs | 0; } }
+      break;
+    }
+    case 'boltstick':                                      // a crossbow bolt embedded somewhere (skip our own — predicted locally)
+      if (m.o !== _myId && typeof netStuckBolt === 'function') netStuckBolt(m.p, m.v);
+      break;
   }
 }
 
@@ -168,6 +176,7 @@ function netSendBuy(id) {
 function _onGState(m) {
   _setMpStatus('connected', m);
   if (typeof applyServerRound === 'function') applyServerRound(m);
+  if (typeof setNetWeaponDrops === 'function') setNetWeaponDrops(m.drops);   // loose guns on the ground (MP)
   if (m.me && typeof applyServerSelf === 'function') applyServerSelf(m.me);
 }
 
@@ -219,6 +228,21 @@ function netSendShot(o, d, weaponId, silenced) {
   _ws.send(JSON.stringify({ t: 'shot', o, d, w: weaponId, s: silenced ? 1 : 0, svt: _renderSvt }));
 }
 
+// Shooter → server: fire an HL PROJECTILE (RPG rocket / crossbow bolt). The server owns the
+// flight, collision and damage and streams it back to everyone in snapshots (`proj`). `lt` =
+// the RPG laser spot (rocket homing target); null for the bolt.
+function netSendProjectile(o, d, weaponId, lt) {
+  if (!_connected()) return;
+  _ws.send(JSON.stringify({ t: 'proj', o, d, w: weaponId, lt: lt || null }));
+}
+
+// Client → server: voluntary weapon drop (G). The server drops it in the world + switches us to a
+// remaining weapon; the change reflects via gstate.me.weapons. No-op solo.
+function netSendDrop(weaponId) {
+  if (!_connected()) return;
+  _ws.send(JSON.stringify({ t: 'drop', w: weaponId }));
+}
+
 // Apply an authoritative snapshot: track the server time, stash our own state for
 // reconciliation, and buffer every other player's state for interpolation.
 function _onSnapshot(m) {
@@ -250,6 +274,9 @@ function _onSnapshot(m) {
       _onRemoteState(e, svt);
     }
   }
+  // Server-owned HL projectiles (rocket/bolt): render everyone's except our own (we show a
+  // local prediction for instant feedback). No-op if the build has no projectiles module.
+  if (typeof setNetProjectiles === 'function') setNetProjectiles(m.proj, _myId);
 }
 
 // Reconcile the local player: reset to the authoritative state and replay the cmds
@@ -288,6 +315,13 @@ function netRecordCmd(cmd, dt, wpnMax) {
     y: c.yaw, ws: wpnMax,                 // ws = weapon run-speed cap (NOT the state machine)
     u: (typeof keys !== 'undefined' && keys['KeyE']) ? 1 : 0,   // E held → plant/defuse intent (6D)
     w: (typeof curW === 'function' && curW()) ? curW().id : undefined,
+    cl: (typeof curW === 'function' && curW()) ? (curW().ammo | 0) : 0,    // active weapon clip (for drop ammo)
+    rs: (typeof curW === 'function' && curW()) ? (curW().reserve | 0) : 0, // active weapon reserve
+    // RPG laser spot (continuous rocket homing target) — only while holding the launcher.
+    lt: (typeof _rpgLaserPoint !== 'undefined' && _rpgLaserPoint
+         && typeof curW === 'function' && curW() && curW().id === 'rpg')
+      ? [Math.round(_rpgLaserPoint[0]), Math.round(_rpgLaserPoint[1]), Math.round(_rpgLaserPoint[2])] : undefined,
+
     // Third-person presentation for our remote avatar on other clients: look pitch +
     // the weapon state machine (so they see us aim up/down, fire, reload). Authoritative
     // movement ignores these; the server just relays them in the snapshot.
