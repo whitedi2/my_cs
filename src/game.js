@@ -347,7 +347,15 @@ function buyItem(item) {
 
 // Refill ammo for a slot (CS primary/secondary ammo categories buy one "fill").
 function buyAmmo(slot) {
-  if (typeof _netDriven !== 'undefined' && _netDriven) return _flashBuy('Докупка патронов — пока недоступна в сети');
+  if (typeof _netDriven !== 'undefined' && _netDriven) {
+    // MP: the server validates (zone / buy time / money) and deducts; the client refills the
+    // reserve when the `ammobought` reply lands (applyAmmoBought). Money syncs via gstate.me.
+    const w = WPNS.find(x => x.type === 'gun' && ownedWeapons.has(x.id) && x.slot === slot);
+    if (!w) return _flashBuy('Нет оружия для патронов');
+    if ((w.reserve ?? 0) >= (w._reserve0 ?? 0)) return _flashBuy('Патроны полны');
+    if (typeof netSendBuyAmmo === 'function') netSendBuyAmmo(slot);
+    return;
+  }
   if (typeof buyTimeOpen === 'function' && !buyTimeOpen()) return _flashBuy('Время закупки вышло');
   if (!inBuyZone()) return _flashBuy('Вы не в зоне закупки');
   const isGun = w => w.type === 'gun';
@@ -361,6 +369,15 @@ function buyAmmo(slot) {
   playerMoney -= price;
   w.reserve = w._reserve0 ?? w.reserve;
   _flashBuy(`Патроны: ${w.label}  −$${price}`);
+}
+
+// MP: the server confirmed (or rejected) an ammo purchase → refill that slot's reserve. Money is
+// server-owned and syncs via gstate.me; here we only top up the local reserve count.
+function applyAmmoBought(slot, ok, reason) {
+  if (!ok) return _flashBuy(reason || 'Патроны недоступны');
+  const w = WPNS.find(x => x.type === 'gun' && ownedWeapons.has(x.id) && x.slot === slot);
+  if (w) w.reserve = w._reserve0 ?? w.reserve;
+  _flashBuy(w ? `Патроны: ${w.label}` : 'Патроны куплены');
 }
 
 // Called by the weapon state machine when a throw animation finishes: consume one

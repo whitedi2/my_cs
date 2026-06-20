@@ -148,6 +148,9 @@ function _onNetMsg(m) {
     case 'boltstick':                                      // a crossbow bolt embedded somewhere (skip our own — predicted locally)
       if (m.o !== _myId && typeof netStuckBolt === 'function') netStuckBolt(m.p, m.v);
       break;
+    case 'ammobought':                                     // server validated an ammo buy → refill the reserve
+      if (typeof applyAmmoBought === 'function') applyAmmoBought(m.slot, !!m.ok, m.reason);
+      break;
   }
 }
 
@@ -241,6 +244,13 @@ function netSendProjectile(o, d, weaponId, lt) {
 function netSendDrop(weaponId) {
   if (!_connected()) return;
   _ws.send(JSON.stringify({ t: 'drop', w: weaponId }));
+}
+
+// Client → server: buy ammo for a slot ('primary' | 'secondary'). Server validates + deducts;
+// replies `ammobought` (we refill the reserve locally). No-op solo.
+function netSendBuyAmmo(slot) {
+  if (!_connected()) return;
+  _ws.send(JSON.stringify({ t: 'buyammo', slot }));
 }
 
 // Apply an authoritative snapshot: track the server time, stash our own state for

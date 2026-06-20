@@ -985,6 +985,25 @@ function startServer(port) {
         if (pl.alive && pl.joined) worldDropWeapon(world, pl, String(msg.w || ''));
         break;
       }
+      case 'buyammo': {                                    // refill a slot's ammo (',' primary / '.' secondary)
+        const sk = sockets.get(id);
+        if (!sk) break;
+        const slot = msg.slot === 'secondary' ? 'secondary' : 'primary';
+        const price = slot === 'secondary' ? 40 : 80;
+        let reason = '';
+        if (world.match.phase !== 'buy') reason = 'Время закупки вышло';
+        else if (!_inBuyZone(pl))        reason = 'Вы не в зоне закупки';
+        else {
+          let has = false;
+          for (const w of pl.weapons) { const it = match.MATCH_BUY[w]; if (it && it.slot === slot) { has = true; break; } }
+          if (!has)                    reason = 'Нет оружия для патронов';
+          else if (pl.money < price)   reason = 'Недостаточно денег';
+        }
+        if (reason) { _send(sk, JSON.stringify({ t: 'ammobought', ok: false, slot, reason })); break; }
+        pl.money -= price;
+        _send(sk, JSON.stringify({ t: 'ammobought', ok: true, slot, price }));
+        break;
+      }
       case 'buy': {                                        // server-validated purchase (Phase 6C)
         const sk = sockets.get(id);                        // _onMsg has no `socket` in scope — look it up
         if (!sk) break;
