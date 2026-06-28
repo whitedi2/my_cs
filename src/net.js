@@ -139,6 +139,8 @@ function _onNetMsg(m) {
     case 'dmg':     _onDamage(m); break;
     case 'gstate':  _onGState(m); break;
     case 'bought':  _onBought(m); break;
+    case 'boom':    _onBoom(m); break;
+    case 'gbounce': if (Array.isArray(m.pos) && typeof _bounceSoundAt === 'function') _bounceSoundAt(m.pos, m.w); break;
     case 'pong':    _onPong(m); break;
     case 'notice':  if (typeof _flashBuy === 'function') _flashBuy(m.msg || ''); break;   // server-side warning toast
     case 'pickup': {                                       // walk-over pickup → inherit the drop's ammo
@@ -158,7 +160,15 @@ function _onNetMsg(m) {
 // equip it locally (full ammo). Money/inventory state syncs via gstate.me.
 function _onBought(m) {
   if (typeof _flashBuy === 'function') _flashBuy(m.ok ? 'Куплено' : (m.reason || 'Не куплено'));
-  if (m.ok && m.kind === 'weapon' && m.id && typeof WPNS !== 'undefined') {
+  if (!m.ok || !m.id) return;
+  if (m.kind === 'nade' && typeof grenadeCounts !== 'undefined') {     // grenade count is client-owned
+    grenadeCounts[m.id] = (grenadeCounts[m.id] || 0) + 1;
+    if (typeof ownedWeapons !== 'undefined') ownedWeapons.add(m.id);
+    const idx = (typeof WPNS !== 'undefined') ? WPNS.findIndex(w => w.id === m.id) : -1;
+    if (idx >= 0 && typeof switchWeapon === 'function') switchWeapon(idx);
+    return;
+  }
+  if (m.kind === 'weapon' && typeof WPNS !== 'undefined') {
     if (typeof ownedWeapons !== 'undefined') ownedWeapons.add(m.id);   // optimistic; gstate.me confirms
     const idx = WPNS.findIndex(w => w.id === m.id);
     if (idx >= 0) {
@@ -167,6 +177,22 @@ function _onBought(m) {
       if (typeof switchWeapon === 'function') switchWeapon(idx);
     }
   }
+}
+
+// Client → server: a thrown grenade (origin + velocity in GoldSrc). The server owns its
+// flight + fuse + detonation and streams its position to everyone (snapshot `nades`).
+function netSendNadeThrow(o, d, w) {
+  if (!_connected()) return;
+  _ws.send(JSON.stringify({ t: 'nadethrow', o, d, w }));
+}
+
+// Server: a grenade detonated elsewhere → play its effect for us too (HE blast, flash
+// blind by our own view, or a smoke cloud). Damage already arrives via `dmg` events.
+function _onBoom(m) {
+  if (!Array.isArray(m.pos)) return;
+  if (m.w === 'hegrenade'    && typeof _heEffects === 'function') _heEffects(m.pos);
+  else if (m.w === 'flashbang'    && typeof _flashAt === 'function') _flashAt(m.pos);
+  else if (m.w === 'smokegrenade' && typeof _smokeAt === 'function') _smokeAt(m.pos);
 }
 
 // Client → server: a buy intent (the server validates money/phase/zone/team and grants).
@@ -275,6 +301,7 @@ function _onSnapshot(m) {
         pos: e.p.slice(), vel: (e.v || [0, 0, 0]).slice(),
         onGround: !!e.og, wasJump: !!e.wj, duckAmount: e.da || 0,
         phyDucked: !!e.dk, prevVelZ: e.pz || 0,
+        velMod: (e.vm != null ? e.vm : 1),     // bullet-tag slowdown, authoritative
       };
       _authDirty = true;
       // Revive on the snapshot edge (20 Hz) — faster than gstate (5 Hz) — so the death-cam
@@ -287,6 +314,7 @@ function _onSnapshot(m) {
   // Server-owned HL projectiles (rocket/bolt): render everyone's except our own (we show a
   // local prediction for instant feedback). No-op if the build has no projectiles module.
   if (typeof setNetProjectiles === 'function') setNetProjectiles(m.proj, _myId);
+  if (typeof setNetGrenades === 'function') setNetGrenades(m.nades, _myId);   // server-owned grenade arcs
 }
 
 // Reconcile the local player: reset to the authoritative state and replay the cmds
@@ -299,14 +327,14 @@ function netReconcile() {
   st.vel        = _authState.vel.slice();
   st.onGround   = _authState.onGround;  st.wasJump  = _authState.wasJump;
   st.duckAmount = _authState.duckAmount; st.phyDucked = _authState.phyDucked;
-  st.prevVelZ   = _authState.prevVelZ;
+  st.prevVelZ   = _authState.prevVelZ;    st.velMod   = _authState.velMod;
   while (_pending.length && _pending[0].seq <= _ackSeq) _pending.shift();   // drop acked
   for (const e of _pending) simPlayerMove(simHull, st, e.cmd, e.dt, { wpnMax: e.wpnMax });
   // Write the corrected prediction back into the shared player globals.
   gsPos = st.pos;             vel = st.vel;
   onGround = st.onGround;     wasJump = st.wasJump;
   duckAmount = st.duckAmount; phyDucked = st.phyDucked;
-  prevVelZ = st.prevVelZ;
+  prevVelZ = st.prevVelZ;     velMod = st.velMod;
 }
 
 // Buffer this frame's predicted cmd for reconciliation and send it to the server.
@@ -444,10 +472,31 @@ function netUpdate(dt) {
   if (_renderSvt === 0 || Math.abs(target - _renderSvt) > 250) _renderSvt = target;
   else { _renderSvt += dt * 1000; if (_renderSvt > target) _renderSvt = target; }
 
+  // Build the view frustum once so _updateRemote can skip the costly FK + CPU skinning
+  // for remotes that are off-screen — the main scaling win with many bots on screen.
+  if (typeof camera !== 'undefined') {
+    camera.updateMatrixWorld();
+    _netViewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    _netFrustum.setFromProjectionMatrix(_netViewProj);
+    _netCullReady = true;
+  }
+
   for (const inst of remotePlayers.values()) _updateRemote(inst, dt);
 }
 
 const _ZERO3 = [0, 0, 0];
+const _netFrustum = new THREE.Frustum();
+const _netViewProj = new THREE.Matrix4();
+const _netCullSphere = new THREE.Sphere(new THREE.Vector3(), 80);   // ~player bounding radius
+let _netCullReady = false;
+
+// Cheap visibility gate: true if the remote at three-space (tx,ty,tz) is in the view
+// frustum. Off-screen remotes get their pose deferred (placed, not skinned).
+function _remoteVisible(tx, ty, tz) {
+  if (!_netCullReady) return true;
+  _netCullSphere.center.set(tx, ty, tz);
+  return _netFrustum.intersectsSphere(_netCullSphere);
+}
 
 // Sample the remote's buffered snapshots at the interpolation time, then drive it
 // through the SAME third-person animation core as our local model (player.js
@@ -461,6 +510,16 @@ function _updateRemote(inst, dt) {
   inst.pitch = s.pitch || 0; inst.da = s.da || 0;       // for the spectator 1st-person / eye cam
   inst.ws = s.ws || 0; inst.wsT = s.wsT || 0;           // weapon state → spectator first-person viewmodel
   inst.vel = s.vel || _ZERO3; inst.og = !!s.og;         // movement → spectator viewmodel bob
+
+  // Off-screen cull: skip the expensive FK + CPU skinning for remotes outside the view.
+  // Place the root cheaply so it's where it should be the moment it re-enters view, and
+  // refresh the full pose only every ~0.4s so light/corpse aren't frozen for long.
+  const tx = s.pos[0], ty = s.pos[2] + 36, tz = -s.pos[1];
+  inst._cullT = (inst._cullT || 0) - dt;
+  if (!_remoteVisible(tx, ty, tz)) {
+    if (inst._cullT > 0) { if (inst.root) inst.root.position.set(tx, s.pos[2], tz); return; }
+    inst._cullT = 0.35 + Math.random() * 0.15;
+  }
 
   // Dead → play the death animation and freeze the corpse (no gait/aim/gun).
   if (inst.dead) { _updateRemoteDead(inst, dt); return; }

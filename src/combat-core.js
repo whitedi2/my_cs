@@ -101,11 +101,26 @@ function combatDamage(weaponId, dist, hg, silenced) {
   return dmg;
 }
 
+// Bullet "tagging" velocity modifier (GoldSrc CBasePlayer::TraceAttack → TakeDamageImpulse):
+// a hit drops the victim's velMod, which then recovers in sim-core (PreThink). "Large flinch"
+// guns set 0.65; everything else sets 0.5 — the STRONGER slowdown — so a Glock/USP/SMG tags
+// harder than a rifle. A leg hit or a ducking victim is always the small flinch (0.5) too.
+// Source: ReGameDLL CBasePlayer::ShouldDoLargeFlinch. (The original ALSO adds a knockback
+// impulse on the large-flinch path — not modelled here; see DIFFERENCES.) Our M4's id is 'm4'.
+const COMBAT_LARGE_FLINCH = new Set([
+  'scout', 'aug', 'sg550', 'galil', 'famas', 'awp', 'm3', 'm4', 'g3sg1', 'deagle', 'sg552', 'ak47',
+]);
+function combatVelMod(weaponId, hg, ducked) {
+  const leg = (hg === 6 || hg === 7);
+  const large = !ducked && !leg && COMBAT_LARGE_FLINCH.has(weaponId);
+  return large ? 0.65 : 0.5;
+}
+
 // Node-only export (browser sees the same names as globals).
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    combatRayHitPlayer, combatDamage,
+    combatRayHitPlayer, combatDamage, combatVelMod,
     COMBAT_WEAPON_DMG, COMBAT_HG_MULT, COMBAT_PEN_MULT,
-    COMBAT_BOX_STAND, COMBAT_BOX_DUCK, COMBAT_HW,
+    COMBAT_BOX_STAND, COMBAT_BOX_DUCK, COMBAT_HW, COMBAT_LARGE_FLINCH,
   };
 }

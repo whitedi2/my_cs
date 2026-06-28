@@ -19,6 +19,11 @@ let   _rpgLaserDot   = null;   // the red-dot sprite (lazily built)
 const _PROJ_MESH = {};         // id → built THREE.Group template (cloned per projectile)
 const _PROJ_FILES = { rocket: 'models/v_rpgrocket.json', bolt: 'models/v_bolt.json' };
 
+// Precise aim raycast for the RPG laser dot (against the VISUAL map mesh, like bullet decals).
+const _laserRaycaster = new THREE.Raycaster();
+const _laserRayOrigin = new THREE.Vector3();
+const _laserRayDir    = new THREE.Vector3();
+
 // Lazily fetch + build a projectile's world mesh template (reuses the grenade mesh builder).
 function _ensureProjMesh(kind, cb) {
   if (_PROJ_MESH[kind]) { cb(_PROJ_MESH[kind]); return; }
@@ -58,9 +63,18 @@ function _fireProjectile(wpn, dyaw, dpitch) {
   if (!gsPos || !wpn.projectile) return;
   const p = wpn.projectile;
   const { from, fwd } = _aimRay();
-  // Nudge the spawn out of the muzzle, but trace so firing point-blank into a wall doesn't
-  // spawn the projectile inside solid.
-  let pos = [from[0] + fwd[0] * 24, from[1] + fwd[1] * 24, from[2] + fwd[2] * 24];
+  // Original HL spawn (crossbow.cpp / rpg.cpp): from the gun position, offset
+  // forward*16 + right*8 + up*-8 — so it emerges from the lower gun area instead of dead
+  // centre. Velocity still follows the aim (fwd); only the origin is offset.
+  const rx = Math.cos(yaw), ry = Math.sin(yaw);
+  const right = [rx, ry, 0];                                   // view right (horizontal)
+  const up = [ry * fwd[2], -rx * fwd[2], rx * fwd[1] - ry * fwd[0]];   // view up = right × forward
+  let pos = [
+    from[0] + fwd[0] * 16 + right[0] * 8 - up[0] * 8,
+    from[1] + fwd[1] * 16 + right[1] * 8 - up[1] * 8,
+    from[2] + fwd[2] * 16 + right[2] * 8 - up[2] * 8,
+  ];
+  // Trace from the eye so firing point-blank into a wall doesn't spawn the projectile in solid.
   if (typeof _traceGren === 'function') {
     const tr0 = _traceGren(from, pos);
     if (tr0.fraction < 1) pos = [...tr0.end];
@@ -105,15 +119,23 @@ function updateProjectiles(dt) {
 
     if (pr.mesh) { pr.mesh.position.set(pr.pos[0], pr.pos[2], -pr.pos[1]); _orientMesh(pr.mesh, pr.vel); }
 
-    if (tr.fraction < 1 || tr.allsolid) {              // hit the world → impact
-      if (pr.kind === 'rocket') _detonateRocket(pr);
-      else                      _stickBolt(pr);
-      _killProjectile(pr, i);
-      continue;
-    }
-    if (pr.life >= pr.maxLife) {                       // ran out of fuel/time
-      if (pr.kind === 'rocket') _detonateRocket(pr);
-      _killProjectile(pr, i);
+    const worldHit = (tr.fraction < 1 || tr.allsolid);
+    if (pr.kind === 'rocket') {
+      // Laser-guided: detonate AT the aim point (the dot) — NOT on the wide duck-hull trace, which
+      // clips near ground/edges and blew the rocket up short. The laser point is the first VISUAL
+      // surface along the aim, so flying to it follows the crosshair exactly. (allsolid = safety;
+      // arming delay stops a muzzle blast.)
+      let reached = false;
+      if (_rpgLaserPoint) {
+        const dx = _rpgLaserPoint[0] - pr.pos[0], dy = _rpgLaserPoint[1] - pr.pos[1], dz = _rpgLaserPoint[2] - pr.pos[2];
+        reached = (dx * dx + dy * dy + dz * dz) < 24 * 24;
+      }
+      if (reached || (tr.allsolid && pr.life > 0.05) || pr.life >= pr.maxLife) {
+        _detonateRocket(pr); _killProjectile(pr, i); continue;
+      }
+    } else {                                           // bolt: stick on the first surface it meets
+      if (worldHit) { _stickBolt(pr); _killProjectile(pr, i); continue; }
+      if (pr.life >= pr.maxLife) { _killProjectile(pr, i); continue; }
     }
   }
   _updateStuckBolts(dt);
@@ -143,7 +165,9 @@ function _detonateRocket(pr) {
     const v = Math.max(0.3, _distVolume ? _distVolume(pr.pos, 1) : 1);
     playRandom(['weapons/explode3.wav', 'weapons/explode4.wav', 'weapons/explode5.wav'], { volume: v });
   }
-  // Radius damage (covers dummies + the player) — reuses the HE grenade blast model.
+  // Radius damage — covers dummies AND the shooter (you CAN splash yourself with a close blast,
+  // as in HL). The "arming" delay below stops a spurious detonation at the muzzle, so this only
+  // fires on a real impact. In MP playerRadiusDamage is a no-op (the server owns HP).
   if (typeof enemyRadiusDamage === 'function')  enemyRadiusDamage(pr.pos, def.damage || 100, def.radius || 250);
   if (typeof playerRadiusDamage === 'function') playerRadiusDamage(pr.pos, def.damage || 100, def.radius || 250);
 }
@@ -203,13 +227,24 @@ function _updateRpgLaser() {
     return;
   }
   const { from, fwd } = _aimRay();
-  const far = [from[0] + fwd[0] * 8192, from[1] + fwd[1] * 8192, from[2] + fwd[2] * 8192];
-  const tr = (typeof _traceGren === 'function') ? _traceGren(from, far) : { fraction: 1, end: far };
-  _rpgLaserPoint = [...tr.end];
+  // Precise aim point via the VISUAL map mesh (same as bullet decals). The duck-hull BSP trace
+  // (`_traceGren`) is ~16-18u wide and clips doorway/edge geometry, landing the dot on the wrong
+  // (near) surface — so raycast the visual geometry for a true point hit, like the crosshair.
+  let pt = null;
+  if (typeof _shellRayTargets !== 'undefined' && _shellRayTargets) {
+    _laserRayOrigin.set(from[0], from[2], -from[1]);                 // GoldSrc → Three
+    _laserRayDir.set(fwd[0], fwd[2], -fwd[1]).normalize();
+    _laserRaycaster.set(_laserRayOrigin, _laserRayDir);
+    _laserRaycaster.far = 8192;
+    const hits = _laserRaycaster.intersectObjects(_shellRayTargets, false);
+    if (hits.length) { const h = hits[0].point; pt = [h.x, -h.z, h.y]; }   // Three → GoldSrc
+  }
+  if (!pt) pt = [from[0] + fwd[0] * 8192, from[1] + fwd[1] * 8192, from[2] + fwd[2] * 8192];   // open sky → far
+  _rpgLaserPoint = pt;
   _ensureLaserDot();
   if (_rpgLaserDot) {
     _rpgLaserDot.visible = true;
-    _rpgLaserDot.position.set(_rpgLaserPoint[0], _rpgLaserPoint[2], -_rpgLaserPoint[1]);
+    _rpgLaserDot.position.set(pt[0], pt[2], -pt[1]);
   }
 }
 

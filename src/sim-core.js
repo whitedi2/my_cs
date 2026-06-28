@@ -121,6 +121,7 @@ function simMakeState(pos) {
     duckAmount: 0,
     phyDucked:  false,
     prevVelZ:   0,
+    velMod:     1,        // bullet "tagging" slowdown (1 = none); set on hit, recovers on ground
   };
 }
 
@@ -142,11 +143,16 @@ function simFriction(st, dt) {
   st.vel[0] *= scale; st.vel[1] *= scale;
 }
 
-function simAccel(st, wishDir, wishSpd, ac, dt) {
+// GoldSrc PM_Accelerate / PM_AirAccelerate. The 30u cap on air movement applies
+// ONLY to addspeed (how much velocity we may add toward wishdir); the accelspeed
+// magnitude uses the FULL uncapped wishspeed. accelSpd lets the air path pass the
+// uncapped value while capping `wishSpd` at 30 — without it air control is ~6x too
+// sluggish. Ground accel omits accelSpd (cap == magnitude, as in PM_Accelerate).
+function simAccel(st, wishDir, wishSpd, ac, dt, accelSpd) {
   const cur = st.vel[0]*wishDir[0] + st.vel[1]*wishDir[1] + st.vel[2]*wishDir[2];
   const add = wishSpd - cur;
   if (add <= 0) return;
-  const a = Math.min(ac * wishSpd * dt, add);
+  const a = Math.min(ac * (accelSpd !== undefined ? accelSpd : wishSpd) * dt, add);
   st.vel[0] += a*wishDir[0]; st.vel[1] += a*wishDir[1]; st.vel[2] += a*wishDir[2];
 }
 
@@ -196,7 +202,30 @@ function simSlideMove(hull, st, dt) {
 // params : { wpnMax } — active weapon's run-speed cap (defaults to SV.maxspeed).
 // Returns an events object { jumped, landed, fallVel } so the caller (server)
 // owns side effects like fall damage — the sim itself never applies HP changes.
+// Fixed-timestep wrapper. GoldSrc runs movement at a fixed engine tick, so airaccel
+// (whose per-step kick scales with dt — accel*wishspeed*dt) behaves identically at any
+// fps. We render at a variable dt, so we split each frame into fixed slices of at most
+// SIM_TICK and run the core per slice. Without this, a large/uneven render dt produces a
+// big one-frame velocity kick in the air → visible jitter when holding a movement key.
+// Client and server both call this with the same total dt, so the split is identical →
+// prediction stays in lockstep with the authoritative sim.
+const SIM_TICK = 0.01;   // 100 Hz movement sub-step (≈ fps_max 100 in the original)
 function simPlayerMove(hull, st, cmd, dt, params) {
+  const acc = { jumped: false, landed: false, fallVel: 0, stoodUp: false };
+  let left = dt;
+  // Guard against a runaway loop on a pathological dt; server already clamps to 0.1.
+  for (let i = 0; left > 1e-6 && i < 64; i++) {
+    const slice = Math.min(left, SIM_TICK);
+    const ev = simPlayerMoveStep(hull, st, cmd, slice, params);
+    if (ev.jumped)  acc.jumped  = true;
+    if (ev.stoodUp) acc.stoodUp = true;
+    if (ev.landed) { acc.landed = true; acc.fallVel = ev.fallVel; }
+    left -= slice;
+  }
+  return acc;
+}
+
+function simPlayerMoveStep(hull, st, cmd, dt, params) {
   const SV = SIM_SV;
   const ev = { jumped: false, landed: false, fallVel: 0, stoodUp: false };
   const wantDuck = !!cmd.duck;
@@ -253,6 +282,14 @@ function simPlayerMove(hull, st, cmd, dt, params) {
 
   // Ground / air logic.
   if (st.onGround) {
+    // Bullet "tagging": a recent hit dropped velMod below 1. Each ground think recover it
+    // toward 1 (+0.01 per 100 Hz step) and damp horizontal velocity by it — so getting shot
+    // slows you, strongest right after the hit, fading as you recover. Only on the ground and
+    // only while < 1, exactly like GoldSrc CBasePlayer::PreThink. Frozen in the air.
+    if (st.velMod < 1) {
+      st.velMod = Math.min(1, st.velMod + 0.01 * (dt / SIM_TICK));
+      st.vel[0] *= st.velMod; st.vel[1] *= st.velMod;
+    }
     st.vel[2] = 0;
     simFriction(st, dt);
     simAccel(st, wDir, wSpd, SV.accelerate, dt);
@@ -278,7 +315,7 @@ function simPlayerMove(hull, st, cmd, dt, params) {
     st.wasJump = jumpKey;
   } else {
     st.vel[2] -= SV.gravity * 0.5 * dt;            // first half-gravity (GoldSrc)
-    simAccel(st, wDir, Math.min(wSpd, 30), SV.airaccel, dt);
+    simAccel(st, wDir, Math.min(wSpd, 30), SV.airaccel, dt, wSpd);
     st.wasJump = true;
   }
 

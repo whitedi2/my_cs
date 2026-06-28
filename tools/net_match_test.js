@@ -145,9 +145,9 @@ const check = (name, cond, extra) => {
   check('rebuy full armor blocked', !r.ok && /Броня/.test(r.reason));
 
   const n = mk('t');
-  M.matchBuy(n, 'hegrenade');
   r = M.matchBuy(n, 'hegrenade');
-  check('HE grenade cap 1', !r.ok && /Максимум/.test(r.reason) && n.nades.hegrenade === 1);
+  check('HE buy charges money only (count is client-side)', r.ok && r.kind === 'nade' && n.money === 16000 - 300,
+        `ok=${r.ok} money=${n.money}`);
 
   check('knife kill rewards $1500', M.matchKillReward('knife') === 1500);
   check('gun kill rewards $300', M.matchKillReward('ak47') === 300);
@@ -253,6 +253,64 @@ const check = (name, cond, extra) => {
 
   t2.state.pos = w.droppedC4.pos.slice(); srv.worldTickMatch(w, 0.1);   // a live T walks over it
   check('nearby live T picks it up', t2.carryingC4 === true && w.droppedC4 === null);
+}
+
+// ── Friendly fire (reduced, not zero) ────────────────────────────────────────
+{
+  const a = { team: 'ct' }, b = { team: 'ct' }, e = { team: 't' };
+  check('teammate damage is reduced', M.matchFFMult(a, b) === M.MATCH_FF_MULT && M.MATCH_FF_MULT < 1 && M.MATCH_FF_MULT > 0,
+        `mult=${M.MATCH_FF_MULT}`);
+  check('enemy damage is full', M.matchFFMult(a, e) === 1);
+  check('self damage is full', M.matchFFMult(a, a) === 1);
+
+  const world = srv.createWorld();
+  srv.worldAddPlayer(world, 1, { tm: 'ct', p: [0, 0, 0] });
+  const mate = srv.worldAddPlayer(world, 2, { tm: 'ct', p: [0, 200, 0] });   // same team
+  mate.state.pos = [0, 200, 0];
+  const evs = srv.worldProcessShot(world, 1, { o: [0, 0, 14], d: [0, 1, 0], w: 'ak47', s: 0, svt: Infinity });
+  check('friendly bullet still hurts, but less', evs.length === 1 && evs[0].ff === true && evs[0].dealt > 5 && evs[0].dealt < 20,
+        evs[0] ? `dealt=${evs[0].dealt} ff=${evs[0].ff}` : 'no hit');
+  check('teammate took the reduced hit', mate.hp < 100 && mate.hp > 80, `hp=${mate.hp}`);
+}
+
+// ── HE grenade radius damage (server, FF-aware) ──────────────────────────────
+{
+  const world = srv.createWorld();
+  const thrower = srv.worldAddPlayer(world, 1, { tm: 't' });    // real spawn (open ground → clear LOS)
+  const foe     = srv.worldAddPlayer(world, 2, { tm: 'ct' });
+  const ally    = srv.worldAddPlayer(world, 3, { tm: 't' });
+  foe.state.pos  = [thrower.state.pos[0] + 24, thrower.state.pos[1], thrower.state.pos[2]];
+  ally.state.pos = [thrower.state.pos[0] - 24, thrower.state.pos[1], thrower.state.pos[2]];
+
+  const evs = srv.worldNadeDamage(world, thrower, thrower.state.pos.slice());
+  const foeE = evs.find(e => e.tid === 2), allyE = evs.find(e => e.tid === 3);
+  check('HE hits an enemy in range', !!foeE && foeE.dealt > 0 && foeE.ff === false, foeE ? `dealt=${foeE.dealt}` : 'no hit');
+  check('HE friendly-fire is reduced', !!allyE && allyE.ff === true && allyE.dealt < foeE.dealt,
+        allyE && foeE ? `ally=${allyE.dealt} foe=${foeE.dealt}` : 'missing');
+}
+
+// ── Server grenade flight + fuse detonation ──────────────────────────────────
+{
+  const world = srv.createWorld();
+  const a = srv.worldAddPlayer(world, 1, { tm: 't' });    // real spawn (open)
+  srv.worldSpawnGrenade(world, 1, { w: 'hegrenade', o: a.state.pos.slice(), d: [120, 0, 40] });
+  check('grenade spawned on the server', world.grenades.length === 1, `n=${world.grenades.length}`);
+
+  const start = world.grenades[0].pos.slice();
+  let lastPos = start.slice(), booms = [], bounces = [];
+  for (let t = 0; t < 40; t++) {                           // 2 s > 1.5 s fuse
+    if (world.grenades[0]) lastPos = world.grenades[0].pos.slice();
+    const r = srv.worldTickGrenades(world, 0.05);
+    booms.push(...r.booms); bounces.push(...r.bounces);
+  }
+  const moved = Math.hypot(lastPos[0] - start[0], lastPos[1] - start[1]);
+  check('grenade flew (server physics moved it)', moved > 10, `moved=${moved.toFixed(1)}`);
+  check('fuse detonated it (boom emitted, removed)',
+        world.grenades.length === 0 && booms.length === 1 && booms[0].w === 'hegrenade',
+        `grenades=${world.grenades.length} booms=${booms.length}`);
+  check('emitted a bounce sound event (heard by others)',
+        bounces.length >= 1 && bounces[0].owner === 1 && Array.isArray(bounces[0].pos),
+        `bounces=${bounces.length}`);
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);

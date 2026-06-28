@@ -72,6 +72,7 @@ server.on('listening', () => {
   const fire = setInterval(() => {
     if (aId == null || bId == null) return;
     clearInterval(fire);
+    wsSendText(a, JSON.stringify({ t: 'hello', tm: 't' }));   // opposite teams → full knife damage (no FF cut)
     wsSendText(a, JSON.stringify({ t: 'hit', target: bId, hg: 2, dmg: 30 }));
     setTimeout(() => {
       check('damage event broadcast', !!bDmg && !!aDmg);

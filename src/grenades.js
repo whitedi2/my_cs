@@ -130,7 +130,12 @@ function throwGrenade(wpn) {
   const vx = fwd[0] * flVel + (vel ? vel[0] : 0);
   const vy = fwd[1] * flVel + (vel ? vel[1] : 0);
   const vz = fwd[2] * flVel + (vel ? vel[2] : 0);
-  const g = { type, pos: src, vel: [vx, vy, vz], fuse: GRENADE_DEFS[type].fuse, mesh: null,
+  // Multiplayer: the SERVER owns the grenade's flight + detonation (so everyone sees the
+  // arc + gets the effect). Send the throw; the local grenade below stays as instant
+  // PREDICTION only — it never detonates (the server's `boom` does that for everyone).
+  const predicted = (typeof _netDriven !== 'undefined' && _netDriven);
+  if (predicted && typeof netSendNadeThrow === 'function') netSendNadeThrow(src.slice(), [vx, vy, vz], type);
+  const g = { type, pos: src, vel: [vx, vy, vz], fuse: GRENADE_DEFS[type].fuse, mesh: null, predicted,
               spin: [Math.random() * 6, Math.random() * 6, 0], resting: false, bounceT: 0, drop: 0 };
   _ensureWMesh(type, tmpl => {
     if (!tmpl || g._dead) return;
@@ -176,7 +181,7 @@ function updateGrenades(dt) {
       if (!g.resting) { g.mesh.rotation.x += g.spin[0] * dt; g.mesh.rotation.y += g.spin[1] * dt; }
     }
     if (g.fuse <= 0) {
-      _detonate(g);
+      if (!g.predicted) _detonate(g);   // solo: detonate here. MP: server detonates (boom) — this is just prediction.
       g._dead = true;
       if (g.mesh) scene.remove(g.mesh);
       _grenadesInAir.splice(i, 1);
@@ -221,17 +226,18 @@ function _moveGrenade(g, dt) {
 // Bounce sound. Canon (ggrenade.cpp / CS assets): the HE grenade has its own
 // metallic 'he_bounce-1.wav'; flash/smoke use the soft grenade_hit1-3 set. Pitch is
 // jittered (engine uses 98 + rand(0,15)) so repeated bounces don't sound identical.
-function _grenadeBounceSound(g) {
+function _grenadeBounceSound(g) { _bounceSoundAt(g.pos, g.type); }
+
+// Bounce sound at a world point — shared by the local prediction and the server
+// `gbounce` event (so a grenade's bounces are heard by everyone, not just the thrower).
+function _bounceSoundAt(pos, type) {
   if (typeof playSound !== 'function') return;
-  const v = _distVolume(g.pos, 0.55);
+  const v = _distVolume(pos, 0.55);
   if (v <= 0.02) return;
   const rate = (98 + Math.random() * 15) / 100;
-  if (g.type === 'hegrenade') {
-    playSound('weapons/he_bounce-1.wav', { volume: v, rate });
-  } else {
-    playRandom(['weapons/grenade_hit1.wav', 'weapons/grenade_hit2.wav', 'weapons/grenade_hit3.wav'],
-               { volume: v, rate });
-  }
+  if (type === 'hegrenade') playSound('weapons/he_bounce-1.wav', { volume: v, rate });
+  else playRandom(['weapons/grenade_hit1.wav', 'weapons/grenade_hit2.wav', 'weapons/grenade_hit3.wav'],
+                  { volume: v, rate });
 }
 
 // Crude distance attenuation for world sounds (no positional audio backend here).
@@ -248,19 +254,24 @@ function _detonate(g) {
   else                               _detonateSmoke(g);
 }
 
+// Solo only (in MP grenades are server-owned — see throwGrenade/_onBoom).
 function _detonateHE(g) {
+  _heEffects(g.pos);                                 // boom (sound + fireball)
   const def = GRENADE_DEFS.hegrenade;
-  // Canon GoldSrc grenade blast (ggrenade.cpp): the punchy explode3/4/5 boom plus a
-  // debris1-3 rubble tail. (cstrike's hegrenade-1/2.wav are byte-identical dupes — not
-  // the real explosion variants.)
+  if (typeof enemyRadiusDamage === 'function')  enemyRadiusDamage(g.pos, def.damage, def.radius);
+  if (typeof playerRadiusDamage === 'function') playerRadiusDamage(g.pos, def.damage, def.radius);
+}
+
+// HE explosion effects (canon GoldSrc boom: explode3/4/5 + debris1-3 tail, fireball
+// sprite). Shared by the local detonation and the server `boom` broadcast, so everyone
+// sees a grenade go off — not just the thrower.
+function _heEffects(pos) {
   if (typeof playRandom === 'function') {
-    const v = Math.max(0.3, _distVolume(g.pos, 1));
+    const v = Math.max(0.3, _distVolume(pos, 1));
     playRandom(['weapons/explode3.wav', 'weapons/explode4.wav', 'weapons/explode5.wav'], { volume: v });
     playRandom(['weapons/debris1.wav', 'weapons/debris2.wav', 'weapons/debris3.wav'], { volume: v * 0.55 });
   }
-  _spawnHEExplosion(g.pos);
-  if (typeof enemyRadiusDamage === 'function')  enemyRadiusDamage(g.pos, def.damage, def.radius);
-  if (typeof playerRadiusDamage === 'function') playerRadiusDamage(g.pos, def.damage, def.radius);
+  _spawnHEExplosion(pos);
 }
 
 // HE blast = original CS fireball sprite (sprites/zerogxplode.spr, the model index
@@ -312,18 +323,22 @@ function _updateHEExplosions(dt) {
 // Grenade SOUNDS are warmed from initAudio() (needs the audio context to exist).
 _getHEFrames();
 
-function _detonateFlash(g) {
+function _detonateFlash(g) { _flashAt(g.pos); }   // solo only (MP: server `boom` → _flashAt for all)
+
+// Flashbang effect at `pos` — sound + sprite + THIS viewer's blindness (distance + facing
+// + LOS, 🔹 simplified CS model). Shared by the local detonation and the server `boom`,
+// so a flash blinds everyone who can see it, not just the thrower.
+function _flashAt(pos) {
   if (typeof playRandom === 'function')
     playRandom(['weapons/flashbang-1.wav', 'weapons/flashbang-2.wav'],
-               { volume: Math.max(0.25, _distVolume(g.pos, 1)) });
-  _spawnExplosion(g.pos, true);
-  // Blind the player by distance + facing + line-of-sight (🔹 simplified CS model).
+               { volume: Math.max(0.25, _distVolume(pos, 1)) });
+  _spawnExplosion(pos, true);
   if (!gsPos) return;
   const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
   const eye = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
-  const dx = g.pos[0] - eye[0], dy = g.pos[1] - eye[1], dz = g.pos[2] - eye[2];
+  const dx = pos[0] - eye[0], dy = pos[1] - eye[1], dz = pos[2] - eye[2];
   const dist = Math.hypot(dx, dy, dz) || 1;
-  const tr = _traceGren(eye, g.pos);                     // point-ish LOS (small hull)
+  const tr = _traceGren(eye, pos);                       // point-ish LOS (small hull)
   if (tr.fraction < 0.8) return;                        // wall between you and the flash → no blind
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   const fwd = [-Math.sin(yaw) * cp, Math.cos(yaw) * cp, sp];   // +up matches throw/camera fwd
@@ -341,12 +356,13 @@ function _detonateFlash(g) {
   }
 }
 
-function _detonateSmoke(g) {
+function _detonateSmoke(g) { _smokeAt(g.pos); }   // solo only (MP: server `boom` → _smokeAt for all)
+
+// Smoke cloud at `pos` — sound + a cluster of soft billboards (original CS smoke puff
+// sprite). Shared by the local detonation and the server `boom`, so everyone sees it.
+function _smokeAt(pos) {
   if (typeof playSound === 'function')
-    playSound('weapons/sg_explode.wav', { volume: Math.max(0.25, _distVolume(g.pos, 1)) });
-  // A cluster of soft billboards forming an expanding, slowly-drifting cloud — built from
-  // the original CS smoke puff sprite. Each puff is randomly rotated and slightly tinted so
-  // the irregular blobs don't read as identical stamps.
+    playSound('weapons/sg_explode.wav', { volume: Math.max(0.25, _distVolume(pos, 1)) });
   const puffs = [];
   const N = 18, tex = _getSmokeTex();
   for (let i = 0; i < N; i++) {
@@ -361,7 +377,7 @@ function _detonateSmoke(g) {
     scene.add(s);
     puffs.push(s);
   }
-  _smokes.push({ pos: [g.pos[0], g.pos[1], g.pos[2] + 20], r: 12, maxR: 150,
+  _smokes.push({ pos: [pos[0], pos[1], pos[2] + 20], r: 12, maxR: 150,
                  age: 0, grow: 1.4, life: 15, fade: 2.5, puffs });
 }
 
@@ -421,9 +437,36 @@ function _updateBlind(dt) {
 }
 
 // Drop everything on respawn / state reset.
+// ── Networked grenades (MP) ──────────────────────────────────────────────────
+// Render the server's authoritative grenade arc for OTHER players (we predict our own).
+// Mirrors projectiles.js setNetProjectiles.
+const _netGren = new Map();   // server grenade id → { mesh, w }
+function setNetGrenades(list, myId) {
+  const seen = new Set();
+  for (const ng of (list || [])) {
+    if (ng.o === myId) continue;                       // our own → shown by the local prediction
+    seen.add(ng.id);
+    let e = _netGren.get(ng.id);
+    if (!e) {
+      e = { mesh: null, w: ng.w };
+      _netGren.set(ng.id, e);
+      _ensureWMesh(ng.w, tmpl => {
+        if (tmpl && _netGren.get(ng.id) === e && typeof scene !== 'undefined') { e.mesh = tmpl.clone(); scene.add(e.mesh); }
+      });
+    }
+    if (e.mesh && ng.p) e.mesh.position.set(ng.p[0], ng.p[2], -ng.p[1]);   // gs → three
+  }
+  for (const [id, e] of _netGren) if (!seen.has(id)) {   // server removed it (detonated) → drop the mesh
+    if (e.mesh && typeof scene !== 'undefined') scene.remove(e.mesh);
+    _netGren.delete(id);
+  }
+}
+
 function clearGrenades() {
   for (const g of _grenadesInAir) { g._dead = true; if (g.mesh) scene.remove(g.mesh); }
   _grenadesInAir.length = 0;
+  for (const [, e] of _netGren) if (e.mesh && typeof scene !== 'undefined') scene.remove(e.mesh);
+  _netGren.clear();
   for (const e of _explosions) scene.remove(e.sprite);
   _explosions.length = 0;
   for (const e of _heExplosions) { scene.remove(e.sprite); e.sprite.material.dispose(); }

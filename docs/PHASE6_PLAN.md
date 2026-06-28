@@ -25,7 +25,7 @@ CS: сервер задаёт карту, гоняет раунды, владе�
 | HP/броня/смерть/респаун | ❌ клиент (у жертвы) | `game.js`: `playerHealth/Armor/Helmet`, `playerTakeDamage`, `_playerDie`, `resetPlayerHealth`; `physics.js respawn` |
 | Деньги/закупка/инвентарь | ❌ клиент | `game.js`: `playerMoney`, `BUY_CATALOG`, `buyItem`, `ownedWeapons` |
 | Бомба C4 | ❌ клиент | `rounds.js`: `carryingC4`, `_plantBomb`/`_detonateBomb`, `bomb`, `_updatePlanting`/`_updatePlantedBomb`; константы `C4_TIME/PLANT_TIME/DEFUSE_TIME` |
-| Гранаты (урон) | ❌ клиент | `grenades.js`: `_detonateHE/_detonateFlash/_detonateSmoke` |
+| Гранаты (полёт + урон) | ✅ сервер | `worldTickGrenades`/`worldNadeDamage`; клиент шлёт `{t:'nadethrow'}`, сервер стримит дугу (`nades`) + детонирует; флеш/дым — эффект у всех через `boom` |
 | Урон от падения | ❌ клиент | `physics.js` (landing) → `playerTakeDamage` |
 | Карта | ❌ захардкожена с обеих сторон | `load.js` (obj), `server.js` (только hull) |
 

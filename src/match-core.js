@@ -66,9 +66,19 @@ const MATCH_DEFUSE_KIT   = 5;     // …with a defuse kit
 const MATCH_C4_DAMAGE    = 500;   // blast damage at the origin
 const MATCH_C4_RADIUS    = 700;   // blast radius (units)
 const MATCH_PLANT_REWARD = 800;   // money awarded for planting
+const MATCH_HE_DAMAGE    = 100;   // HE grenade blast (ReGameDLL pev->dmg) …
+const MATCH_HE_RADIUS    = 350;   // … radius = dmg×3.5 (CBaseMonster::RadiusDamage)
 
 // Per-kill reward (ReGameDLL: knife $1500, most guns $300). 🔹 Approx — flat $300 otherwise.
 function matchKillReward(weapon) { return weapon === 'knife' ? 1500 : 300; }
+
+// Friendly-fire: teammates take REDUCED damage (not zero). 🔹 Tunable; vanilla CS 1.6 is
+// 0 or full (mp_friendlyfire), we use a partial factor. Self-damage is always full.
+const MATCH_FF_MULT = 0.35;
+function matchFFMult(attacker, victim) {
+  if (!attacker || !victim || attacker === victim) return 1;     // self / unknown → full
+  return attacker.team === victim.team ? MATCH_FF_MULT : 1;
+}
 
 function _matchGive(pl, amount) { pl.money = Math.min(MATCH_MONEY_CAP, pl.money + amount); }
 
@@ -96,10 +106,11 @@ function matchBuy(pl, id, opts) {
     return { ok: true, id, kind };
   }
   if (kind === 'nade') {
-    if ((pl.nades[id] || 0) >= (MATCH_NADE_CAP[id] || 1)) return { ok: false, reason: 'Максимум' };
+    // Server charges money only; the LIVE grenade count is client-owned (so a thrown nade
+    // isn't restored by gstate). The client enforces the per-type cap before sending.
     if (pl.money < it.price) return { ok: false, reason: 'Недостаточно денег' };
-    pl.money -= it.price; pl.nades[id] = (pl.nades[id] || 0) + 1; pl.weapons.add(id);
-    return { ok: true, id, kind };
+    pl.money -= it.price;
+    return { ok: true, id, kind: 'nade' };
   }
   // weapon (primary/secondary): one per slot — buying drops the old one of that slot.
   if (pl.money < it.price) return { ok: false, reason: 'Недостаточно денег' };
@@ -263,10 +274,10 @@ function matchRevive(pl) { pl.hp = MATCH_MAX_HP; pl.alive = true; }
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     matchCreate, matchTick, matchApplyDamage, matchFallDamage, matchRevive,
-    matchBuy, matchKillReward, matchBombPlant, matchBombDefuse,
-    MATCH_BUY_TIME, MATCH_ROUND_TIME, MATCH_ROUND_END, MATCH_WARMUP_MIN, MATCH_MAX_HP,
+    matchBuy, matchKillReward, matchFFMult, matchBombPlant, matchBombDefuse,
+    MATCH_BUY_TIME, MATCH_ROUND_TIME, MATCH_ROUND_END, MATCH_WARMUP_MIN, MATCH_MAX_HP, MATCH_FF_MULT,
     MATCH_START_MONEY, MATCH_MONEY_CAP, MATCH_WIN_REWARD, MATCH_LOSS_REWARD, MATCH_BUY,
     MATCH_C4_TIME, MATCH_PLANT_TIME, MATCH_DEFUSE_TIME, MATCH_DEFUSE_KIT,
-    MATCH_C4_DAMAGE, MATCH_C4_RADIUS, MATCH_PLANT_REWARD,
+    MATCH_C4_DAMAGE, MATCH_C4_RADIUS, MATCH_PLANT_REWARD, MATCH_HE_DAMAGE, MATCH_HE_RADIUS,
   };
 }

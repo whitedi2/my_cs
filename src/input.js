@@ -173,6 +173,10 @@ function updateFOV() {
   camera.updateProjectionMatrix();
 }
 
+// HL viewmodels (rpg/crossbow) are un-modelled at the BACK; when held they render with this LOCKED
+// horizontal FOV (a touch closer than the 4:3 look) so a widescreen aspect can't widen the gun and
+// expose the rear gap. Applied per-frame in the render loop — every other (CS) gun is unchanged.
+const VM_HFOV = 2 * Math.atan(Math.tan(49 * Math.PI / 180 / 2) * (4 / 3)) * 0.9;
 function updateVmCamera() {
   vmCamera.aspect = innerWidth / innerHeight;
   vmCamera.updateProjectionMatrix();
@@ -531,10 +535,15 @@ function animate(t) {
     // Viewmodel: shown in first person, AND while spectating a player in first-person
     // (_specEye) — there we render THEIR weapon's viewmodel (driven in updateDeathCam).
     if ((!thirdPerson || (typeof _specEye !== 'undefined' && _specEye)) && !isScoped()) {
+      const _cw = curW();
+      // HL guns (rpg/crossbow): locked, slightly-closer horizontal FOV so the un-modelled back
+      // isn't exposed on widescreen. Every other gun keeps the standard 49° vertical FOV.
+      vmCamera.fov = (_cw && _cw.leftHandModel)
+        ? 2 * Math.atan(Math.tan(VM_HFOV / 2) / vmCamera.aspect) * (180 / Math.PI)
+        : 49;
       vmCamera.updateProjectionMatrix();
       // Knife + the Half-Life viewmodels (RPG/crossbow) are LEFT-handed in their MDL, so they
       // flip opposite to the right-handed CS viewmodels.
-      const _cw = curW();
       const shouldFlip = (_cw.id === 'knife' || _cw.leftHandModel) ? !rightHand : rightHand;
       if (shouldFlip) vmCamera.projectionMatrix.elements[0] *= -1;
       vmCamera.projectionMatrixInverse.copy(vmCamera.projectionMatrix).invert();

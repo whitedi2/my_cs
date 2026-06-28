@@ -41,8 +41,8 @@ const check = (name, cond, extra) => {
 // ── server lag-comp rewind ───────────────────────────────────────────────────
 {
   const world = srv.createWorld();
-  const shooter = srv.worldAddPlayer(world, 1, {});
-  const target  = srv.worldAddPlayer(world, 2, {});
+  const shooter = srv.worldAddPlayer(world, 1, { tm: 't' });    // opposite teams → full damage (no FF cut)
+  const target  = srv.worldAddPlayer(world, 2, { tm: 'ct' });
   shooter.state.pos = [0, 0, 0];
   target.state.pos  = [0, 200, 0];  target.state.phyDucked = false;
 

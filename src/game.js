@@ -127,8 +127,12 @@ function applyServerSelf(me) {
   if (me.money != null) playerMoney = me.money;
   if (Array.isArray(me.weapons)) {
     const _had = new Set(ownedWeapons);
+    // Grenades are CLIENT-owned (live count in grenadeCounts); the server only sells them
+    // (money). Preserve our held nades across this guns/pistols re-sync.
+    const _nades = ['hegrenade', 'flashbang', 'smokegrenade'].filter(n => (grenadeCounts[n] || 0) > 0);
     ownedWeapons.clear(); ownedWeapons.add('knife');
     me.weapons.forEach(w => ownedWeapons.add(w));
+    _nades.forEach(n => ownedWeapons.add(n));
     // Server granted a new PRIMARY we didn't have (a walk-over weapon pickup) → deploy it +
     // pickup sound, like CS. (Buys are handled by _onBought, which adds them first, so no double.)
     for (const w of ownedWeapons) {
@@ -142,7 +146,7 @@ function applyServerSelf(me) {
       }
     }
   }
-  if (me.nades) for (const k of Object.keys(grenadeCounts)) grenadeCounts[k] = me.nades[k] || 0;
+  // (grenade counts are client-owned — not synced from gstate)
   if (typeof hasDefuseKit !== 'undefined') hasDefuseKit = !!me.dk;
   // C4 (Phase 6D): the server owns who carries the bomb + plant progress; mirror for the HUD prompt.
   if (typeof carryingC4 !== 'undefined') carryingC4 = !!me.c4;
@@ -277,10 +281,10 @@ function buyItem(item) {
   // (reply comes back as a `bought` event). The local path below is solo only.
   if (typeof _netDriven !== 'undefined' && _netDriven) {
     const id = item.wid || item.equip;
-    // Grenades + defuse kit aren't server-modelled yet (throw/bomb are client-side, 6D);
-    // selling them in MP would desync counts/money, so block until then.
-    if (id === 'hegrenade' || id === 'flashbang' || id === 'smokegrenade' || id === 'defusekit')
-      return _flashBuy('Гранаты/дефуз-кит — пока недоступны в сети');
+    // Grenades: server charges money, the per-type cap is enforced here (count is client-owned).
+    if (id === 'hegrenade' || id === 'flashbang' || id === 'smokegrenade') {
+      if ((grenadeCounts[id] || 0) >= (GRENADE_MAX[id] || 1)) return _flashBuy(`Максимум ${item.name}`);
+    }
     if (id && typeof netSendBuy === 'function') netSendBuy(id);
     else _flashBuy('Нет модели — недоступно');
     return;

@@ -108,7 +108,7 @@ function _ensureBombCarrier(world) {
   if (ts.length) ts[Math.floor(Math.random() * ts.length)].carryingC4 = true;
 }
 
-function createWorld() { return { players: new Map(), match: match.matchCreate(), droppedC4: null, projectiles: [], _projSeq: 0, droppedWeapons: [], _dropSeq: 0 }; }
+function createWorld() { return { players: new Map(), match: match.matchCreate(), droppedC4: null, projectiles: [], _projSeq: 0, droppedWeapons: [], _dropSeq: 0, grenades: [], _grenSeq: 0 }; }
 
 // CS: a killed player drops their PRIMARY weapon at the corpse for anyone to grab. Bots too —
 // they're ordinary world players, so this fires for them via the same dmgEvent death hook.
@@ -281,7 +281,7 @@ function snapshotEntry(pl) {
     v: [s.vel[0], s.vel[1], s.vel[2]],
     y: pl.yaw,
     og: s.onGround ? 1 : 0, dk: s.phyDucked ? 1 : 0,
-    da: s.duckAmount, wj: s.wasJump ? 1 : 0, pz: s.prevVelZ,
+    da: s.duckAmount, wj: s.wasJump ? 1 : 0, pz: s.prevVelZ, vm: s.velMod,
     m: pl.model, tm: pl.team, w: pl.weapon, al: pl.alive ? 1 : 0,
     pi: pl.pitch || 0, wsv: pl.ws || 0, wsp: pl.wsT || 0,   // presentation: look pitch + weapon state
   };
@@ -454,6 +454,83 @@ function worldC4Damage(world, origin) {
   return out;
 }
 
+// HE grenade blast (Phase 6D, interim): the thrower's client reports the detonation
+// position; the server applies linear-falloff radius damage with an LOS check + friendly
+// fire. Returns dmg events for the caller. `owner` = the thrower (full self-damage).
+function worldNadeDamage(world, owner, origin) {
+  const out = [];
+  for (const tp of world.players.values()) {
+    if (!tp.alive) continue;
+    const c = [tp.state.pos[0], tp.state.pos[1], tp.state.pos[2] + (tp.state.phyDucked ? 18 : 36)];
+    const dist = Math.hypot(c[0] - origin[0], c[1] - origin[1], c[2] - origin[2]);
+    if (dist > match.MATCH_HE_RADIUS) continue;
+    if (_hull) { const tr = sim.simTraceMove(_hull, false, origin, c); if (tr.fraction < 0.7) continue; }
+    const base = match.MATCH_HE_DAMAGE * (1 - dist / match.MATCH_HE_RADIUS);
+    const r = match.matchApplyDamage(tp, base * match.matchFFMult(owner, tp), 2);   // hg2 covered (blast)
+    if (r.dealt > 0) out.push({ tid: tp.id, hg: 0, dealt: r.dealt, hp: tp.hp, died: r.died, ff: !!(owner && tp.team === owner.team && tp !== owner) });
+  }
+  return out;
+}
+
+// ── Authoritative grenade flight (Phase 6 polish) ────────────────────────────
+// Clients throw → 'nadethrow' intent; the SERVER owns flight (bounce + fuse) and streams
+// positions in snapshots so everyone sees the arc. On the fuse it detonates: HE applies
+// radius damage, all types broadcast a `boom` (effect). Mirrors grenades.js _moveGrenade.
+const GREN_GRAVITY = 0.55, GREN_ELAST = 0.5, GREN_FRICT = 0.7;
+
+function worldSpawnGrenade(world, owner, msg) {
+  const w = String(msg.w || '');
+  if (w !== 'hegrenade' && w !== 'flashbang' && w !== 'smokegrenade') return;
+  const o = msg.o, d = msg.d;
+  if (!Array.isArray(o) || o.length !== 3 || !Array.isArray(d) || d.length !== 3) return;
+  world.grenades.push({ id: ++world._grenSeq, w, owner, pos: [o[0], o[1], o[2]], vel: [d[0], d[1], d[2]], fuse: 1.5, resting: false, bounceT: 0 });
+}
+
+function _moveGrenadeServer(g, dt, bounces) {
+  if (!_hull) return;
+  g.vel[2] -= CONFIG.gravity * GREN_GRAVITY * dt;
+  let timeLeft = dt, hops = 0;
+  while (timeLeft > 1e-5 && hops < 4) {
+    const to = [g.pos[0] + g.vel[0] * timeLeft, g.pos[1] + g.vel[1] * timeLeft, g.pos[2] + g.vel[2] * timeLeft];
+    const tr = sim.simTraceMove(_hull, true, g.pos, to);   // smallest (duck) hull, like the client
+    if (tr.allsolid) { g.vel = [0, 0, 0]; g.resting = true; return; }
+    if (tr.fraction > 0) g.pos = [...tr.end];
+    if (tr.fraction >= 1 || !tr.plane) break;
+    const n = tr.plane;
+    const dot = g.vel[0] * n[0] + g.vel[1] * n[1] + g.vel[2] * n[2];
+    g.vel[0] = (g.vel[0] - (1 + GREN_ELAST) * dot * n[0]) * GREN_FRICT;
+    g.vel[1] = (g.vel[1] - (1 + GREN_ELAST) * dot * n[1]) * GREN_FRICT;
+    g.vel[2] = (g.vel[2] - (1 + GREN_ELAST) * dot * n[2]) * GREN_FRICT;
+    if (g.bounceT <= 0 && Math.hypot(g.vel[0], g.vel[1], g.vel[2]) > 80) {   // audible bounce (cooldown like the client)
+      bounces.push({ pos: g.pos.slice(), w: g.w, owner: g.owner });
+      g.bounceT = 0.12;
+    }
+    timeLeft -= timeLeft * tr.fraction;
+    hops++;
+  }
+  if (Math.hypot(g.vel[0], g.vel[1], g.vel[2]) < 30) g.resting = true;
+}
+
+// Advance grenades + detonate on fuse. Returns { dmg, booms:[{pos,w}], bounces:[{pos,w,owner}] }.
+function worldTickGrenades(world, dt) {
+  const dmg = [], booms = [], bounces = [];
+  for (let i = world.grenades.length - 1; i >= 0; i--) {
+    const g = world.grenades[i];
+    g.fuse -= dt;
+    if (g.bounceT > 0) g.bounceT -= dt;
+    if (!g.resting) _moveGrenadeServer(g, dt, bounces);
+    if (g.fuse <= 0) {
+      if (g.w === 'hegrenade') {
+        const owner = world.players.get(g.owner);
+        for (const h of worldNadeDamage(world, owner, g.pos)) { h.owner = g.owner; dmg.push(h); }
+      }
+      booms.push({ pos: g.pos.slice(), w: g.w });
+      world.grenades.splice(i, 1);
+    }
+  }
+  return { dmg, booms, bounces };
+}
+
 // Authoritative match state for a given recipient: shared bits (map/phase/timer/score/
 // online) + that player's own HP/armor/alive (`me`).
 function gameState(world, pl) {
@@ -481,7 +558,7 @@ function gameState(world, pl) {
   }
   if (pl) gs.me = {
     hp: pl.hp, armor: pl.armor, helmet: !!pl.helmet, alive: !!pl.alive, team: pl.team,
-    money: pl.money, weapons: [...pl.weapons], nades: pl.nades, dk: !!pl.dk,
+    money: pl.money, weapons: [...pl.weapons], dk: !!pl.dk,
     c4: !!pl.carryingC4, plantProg: pl.plantProg || 0,
     // Sidelined until the next round (mid-round join / team change): the client should
     // SPECTATE while waiting, not show a death cam (there may be no corpse of ours).
@@ -585,6 +662,7 @@ function worldProcessShot(world, shooterId, msg) {
   const o = msg && msg.o, d = msg && msg.d;
   if (!Array.isArray(o) || o.length !== 3 || !Array.isArray(d) || d.length !== 3) return out;
   const svt = (typeof msg.svt === 'number') ? msg.svt : Infinity;   // Infinity → latest (no rewind)
+  const sh = world.players.get(shooterId);
   const hits = [];
   for (const [tid, tp] of world.players) {
     if (tid === shooterId || !tp.alive) continue;
@@ -595,9 +673,13 @@ function worldProcessShot(world, shooterId, msg) {
   hits.sort((a, b) => a.dist - b.dist);
   let pen = 1;
   for (const h of hits) {
-    const dmg = combat.combatDamage(msg.w, h.dist, h.hg, !!msg.s) * pen;
+    const dmg = combat.combatDamage(msg.w, h.dist, h.hg, !!msg.s) * pen * match.matchFFMult(sh, h.tp);
     const r = match.matchApplyDamage(h.tp, dmg, h.hg);
-    if (r.dealt > 0) out.push({ tid: h.tid, hg: h.hg, dealt: r.dealt, hp: h.tp.hp, died: r.died });
+    // Tag the victim: a bullet connecting slows them (velMod), regardless of armor/FF — the
+    // sim damps + recovers it. Stance/weapon pick the strength (combatVelMod).
+    if (typeof combat.combatVelMod === 'function')
+      h.tp.state.velMod = combat.combatVelMod(msg.w, h.hg, !!h.tp.state.phyDucked);
+    if (r.dealt > 0) out.push({ tid: h.tid, hg: h.hg, dealt: r.dealt, hp: h.tp.hp, died: r.died, ff: sh && h.tp.team === sh.team });
     pen *= combat.COMBAT_PEN_MULT;
   }
   return out;
@@ -634,16 +716,16 @@ function _projNearestPlayerHit(world, pr, segLen) {
 
 // Rocket blast: linear-falloff radius damage with an LOS check (mirrors playerRadiusDamage).
 function _projRadiusDamage(world, pr, out) {
-  const def = pr.def;
+  const def = pr.def, op = world.players.get(pr.owner);
   for (const [tid, tp] of world.players) {
-    if (!tp.alive) continue;
+    if (!tp.alive) continue;                            // shooter CAN splash themselves (HL) — arming delay stops muzzle hits
     const c = [tp.state.pos[0], tp.state.pos[1], tp.state.pos[2] + (tp.state.phyDucked ? 18 : 36)];
     const dist = Math.hypot(c[0] - pr.pos[0], c[1] - pr.pos[1], c[2] - pr.pos[2]);
     if (dist > def.radius) continue;
     const tr = sim.simTraceMove(_hull, false, pr.pos, c);
     if (tr.fraction < 0.7) continue;                          // wall mostly blocks the blast
-    const r = match.matchApplyDamage(tp, def.damage * (1 - dist / def.radius), 2);   // hg2 = covered (blast)
-    if (r.dealt > 0) out.push({ tid, hg: 2, owner: pr.owner, dealt: r.dealt, hp: tp.hp, died: r.died, w: pr.wid });
+    const r = match.matchApplyDamage(tp, def.damage * (1 - dist / def.radius) * match.matchFFMult(op, tp), 2);   // hg2 = covered (blast)
+    if (r.dealt > 0) out.push({ tid, hg: 2, owner: pr.owner, dealt: r.dealt, hp: tp.hp, died: r.died, w: pr.wid, ff: !!(op && tp.team === op.team && tp !== op) });
   }
 }
 
@@ -681,11 +763,18 @@ function worldTickProjectiles(world, dt) {
     }
     let done = false;
     if (pr.kind === 'rocket') {
-      if (ph || worldHit || pr.life > 6) { _projRadiusDamage(world, pr, out); done = true; }
+      // Detonate AT the aim point (like the client) — not on the wide BSP hull, which clips near
+      // ground/edges. tgt is the first visual surface along the shooter's aim (client `lt`).
+      let reached = false;
+      if (tgt) { const dx = tgt[0] - pr.pos[0], dy = tgt[1] - pr.pos[1], dz = tgt[2] - pr.pos[2]; reached = (dx * dx + dy * dy + dz * dz) < 24 * 24; }
+      if (ph || reached || (tr.allsolid && pr.life > 0.05) || pr.life > 6) { _projRadiusDamage(world, pr, out); done = true; }
     } else {                                                  // bolt: stick on world, direct hit on a body
       if (ph && ph.dist <= worldDist) {
-        const r = match.matchApplyDamage(ph.tp, pr.def.damage, ph.hg);
-        if (r.dealt > 0) out.push({ tid: ph.tid, hg: ph.hg, owner: pr.owner, dealt: r.dealt, hp: ph.tp.hp, died: r.died, w: pr.wid });
+        const op = world.players.get(pr.owner);
+        const r = match.matchApplyDamage(ph.tp, pr.def.damage * match.matchFFMult(op, ph.tp), ph.hg);
+        if (typeof combat.combatVelMod === 'function')        // a direct bolt hit tags the victim (HE/rocket blast does NOT)
+          ph.tp.state.velMod = combat.combatVelMod(pr.wid, ph.hg, !!ph.tp.state.phyDucked);
+        if (r.dealt > 0) out.push({ tid: ph.tid, hg: ph.hg, owner: pr.owner, dealt: r.dealt, hp: ph.tp.hp, died: r.died, w: pr.wid, ff: !!(op && ph.tp.team === op.team) });
         sticks.push({ pos: pr.pos.slice(), vel: pr.vel.slice(), owner: pr.owner });
         done = true;
       } else if (worldHit) {
@@ -751,6 +840,14 @@ function _botAim(bot, enemy) {
   return { yaw: Math.atan2(-dx, dy), pitch: Math.atan2(dz, h), dir: [dx, dy, dz] };
 }
 
+// How far (0..1) the bot can travel along a candidate yaw before world geometry blocks it.
+// Traced at chest height so normal steps/curbs don't read as walls.
+function _botClearance(bot, yaw, dist) {
+  const c = _botCenter(bot);
+  const end = [c[0] - Math.sin(yaw) * dist, c[1] + Math.cos(yaw) * dist, c[2]];
+  return sim.simTraceMove(_hull, false, c, end).fraction;
+}
+
 // One AI tick: moves the bot through the shared sim and, when engaging, returns shot hits +
 // fall damage for the caller to broadcast (it owns dmgEvent). No-op for a dead bot.
 function worldBotTick(world, bot, dt) {
@@ -765,12 +862,33 @@ function worldBotTick(world, bot, dt) {
     const a = _botAim(bot, enemy);
     yaw = a.yaw; pitch = a.pitch; fm = 0;                  // hold position and shoot (simple)
   } else {
-    // Wander: big turn when blocked, small drift otherwise.
+    // Wander: when blocked, probe a wide fan with a LONG look-ahead and steer toward the
+    // genuinely most-open direction. The long probe is what stops circling in 3-walled
+    // pockets — a shallow side gap reads as blocked, so only the real exit (the one heading
+    // with lots of clear distance) wins, and the bot commits to leaving instead of tracing
+    // the pocket walls. Only a faint small-turn tiebreak, so openness dominates.
     ai.roamT -= dt;
+    const NEAR = 56, FAR = 240;
     const moved = Math.hypot(bot.state.pos[0]-ai.lastPos[0], bot.state.pos[1]-ai.lastPos[1]);
-    if (ai.roamT <= 0 || moved < 0.6) {
-      ai.yaw += (Math.random() * 2 - 1) * (moved < 0.6 ? 2.0 : 0.8);
-      ai.roamT = 1.0 + Math.random() * 2.5;
+    const blocked = _botClearance(bot, ai.yaw, NEAR) < 0.85 || moved < 0.6;
+    if (blocked) {
+      ai.stuck = (ai.stuck || 0) + 1;
+      let bestYaw = ai.yaw, bestScore = -Infinity;
+      for (const off of [0.4, -0.4, 0.9, -0.9, 1.5, -1.5, 2.2, -2.2, 2.9, -2.9, Math.PI]) {
+        const y = ai.yaw + off;
+        const score = _botClearance(bot, y, FAR) - Math.abs(off) * 0.02;
+        if (score > bestScore) { bestScore = score; bestYaw = y; }
+      }
+      ai.yaw = bestYaw;
+      // Commit to the chosen heading; commit harder the longer it's been wedged, so it
+      // clears the pocket before reconsidering (kills the round-and-round loop).
+      ai.roamT = (ai.stuck > 5 ? 2.5 : 1.0) + Math.random() * 1.2;
+    } else {
+      ai.stuck = 0;
+      if (ai.roamT <= 0) {
+        ai.yaw += (Math.random() * 2 - 1) * 0.4;        // gentle drift in the open
+        ai.roamT = 1.2 + Math.random() * 2.5;
+      }
     }
     yaw = ai.yaw;
   }
@@ -814,7 +932,7 @@ function startServer(port) {
 
   // Fill the server with bots (MP_BOTS, default 4 — split evenly between teams). They idle
   // until a human connects (the snapshot loop early-returns while no one is watching).
-  const BOT_COUNT = process.env.MP_BOTS != null ? Math.max(0, Number(process.env.MP_BOTS) | 0) : 4;
+  const BOT_COUNT = process.env.MP_BOTS != null ? Math.max(0, Number(process.env.MP_BOTS) | 0) : 20;
   for (let i = 0; i < BOT_COUNT; i++) spawnBot(world, i % 2 === 0 ? 'ct' : 't');
   if (BOT_COUNT) console.log(`[mp] spawned ${BOT_COUNT} bots`);
 
@@ -963,9 +1081,11 @@ function startServer(port) {
       case 'hit': {                                        // KNIFE: shooter-reported dmg, applied to server HP
         const tp = world.players.get(msg.target | 0);
         if (tp && (msg.target | 0) !== id && tp.alive) {
-          const r = match.matchApplyDamage(tp, msg.dmg | 0, msg.hg | 0);
+          const r = match.matchApplyDamage(tp, (msg.dmg | 0) * match.matchFFMult(pl, tp), msg.hg | 0);
+          if (typeof combat.combatVelMod === 'function')      // knife tags the victim too (small flinch → 0.5)
+            tp.state.velMod = combat.combatVelMod('knife', msg.hg | 0, !!tp.state.phyDucked);
           if (r.dealt > 0) dmgEvent(tp.id, msg.hg | 0, id, r.dealt, tp.hp, r.died, 'knife');
-          if (r.died) _award(pl, match.matchKillReward('knife'));
+          if (r.died && tp.team !== pl.team) _award(pl, match.matchKillReward('knife'));   // no reward for a team-kill
         }
         break;
       }
@@ -973,12 +1093,16 @@ function startServer(port) {
         const hits = worldProcessShot(world, id, msg);
         for (const h of hits) {
           dmgEvent(h.tid, h.hg, id, h.dealt, h.hp, h.died, msg.w);
-          if (h.died) _award(pl, match.matchKillReward(msg.w));
+          if (h.died && !h.ff) _award(pl, match.matchKillReward(msg.w));   // no reward for a team-kill
         }
         break;
       }
       case 'proj': {                                       // HL PROJECTILES: server-owned rocket / bolt
         if (MP_HL_WEAPONS && pl.alive) worldSpawnProjectile(world, id, msg);
+        break;
+      }
+      case 'nadethrow': {                                  // thrown grenade → server-owned flight + fuse
+        if (pl.alive) worldSpawnGrenade(world, id, msg);
         break;
       }
       case 'drop': {                                       // voluntary weapon drop (G)
@@ -1055,10 +1179,20 @@ function startServer(port) {
     const projRes = worldTickProjectiles(world, dt);     // HL rocket/bolt flight + damage
     for (const h of projRes.dmg) {
       dmgEvent(h.tid, h.hg, h.owner, h.dealt, h.hp, h.died, h.w || 'rpg');
-      if (h.died) { const op = world.players.get(h.owner); if (op) _award(op, match.matchKillReward(h.w || 'rpg')); }
+      if (h.died && !h.ff) { const op = world.players.get(h.owner); if (op) _award(op, match.matchKillReward(h.w || 'rpg')); }
     }
     for (const s of projRes.sticks)                      // embed a stuck bolt on everyone's screen (owner predicts its own)
       broadcast(JSON.stringify({ t: 'boltstick', p: s.pos.map(Math.round), v: s.vel.map(Math.round), o: s.owner }));
+    const grenRes = worldTickGrenades(world, dt);        // grenade flight + fuse → damage/detonation
+    for (const h of grenRes.dmg) {
+      dmgEvent(h.tid, h.hg, h.owner, h.dealt, h.hp, h.died, 'hegrenade');
+      if (h.died && !h.ff) { const op = world.players.get(h.owner); if (op) _award(op, match.matchKillReward('hegrenade')); }
+    }
+    for (const b of grenRes.booms) broadcast(JSON.stringify({ t: 'boom', pos: b.pos, w: b.w }));   // effect for everyone
+    for (const b of grenRes.bounces) {                   // bounce sound for others (the thrower hears its prediction)
+      const s = JSON.stringify({ t: 'gbounce', pos: b.pos, w: b.w });
+      for (const [cid, sk] of sockets) if (cid !== b.owner) _send(sk, s);
+    }
     for (const pk of _tickWeaponDrops(world, dt)) {      // walk-over pickup + hand the picker its ammo
       const sk = sockets.get(pk.pid);
       if (sk && pk.ammo) _send(sk, JSON.stringify({ t: 'pickup', wid: pk.wid, cl: pk.ammo[0], rs: pk.ammo[1] }));
@@ -1067,9 +1201,11 @@ function startServer(port) {
     const proj = world.projectiles.map(pr => ({ id: pr.id, k: pr.kind, o: pr.owner,
       p: [Math.round(pr.pos[0]), Math.round(pr.pos[1]), Math.round(pr.pos[2])],
       v: [Math.round(pr.vel[0]), Math.round(pr.vel[1]), Math.round(pr.vel[2])] }));
+    const nades = world.grenades.map(g => ({ id: g.id, w: g.w, o: g.owner,
+      p: [Math.round(g.pos[0]), Math.round(g.pos[1]), Math.round(g.pos[2])] }));
     for (const [cid, socket] of sockets) {
       const pl = world.players.get(cid);
-      _send(socket, JSON.stringify({ t: 'snap', ack: pl ? pl.lastSeq : 0, svt: _svt, players, proj }));
+      _send(socket, JSON.stringify({ t: 'snap', ack: pl ? pl.lastSeq : 0, svt: _svt, players, proj, nades }));
     }
     // Game state ~5×/s, plus immediately on any round transition. Per-recipient (carries
     // that player's own HP/armor/alive in `me`).
@@ -1132,7 +1268,7 @@ if (require.main === module) {
 
 module.exports = {
   createWorld, worldAddPlayer, worldRespawn, worldApplyCmd, worldSnapshot,
-  snapshotEntry, resolveCollisions, worldRecordHistory, worldProcessShot,
-  worldTickMatch, gameState, startServer,
+  snapshotEntry, resolveCollisions, worldRecordHistory, worldProcessShot, worldNadeDamage,
+  worldSpawnGrenade, worldTickGrenades, worldTickMatch, gameState, startServer,
   spawnBot, worldBotTick,
 };

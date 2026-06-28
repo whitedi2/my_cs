@@ -105,6 +105,7 @@ let lastShotAge = 999;       // seconds since last shot — gates recoil accumul
 let xhairGap     = 0;        // crosshair expansion from FIRING (px): always shown, slow contract
 let xhairMoveGap = 0;        // crosshair expansion from MOVEMENT (px): gated by cl_dynamiccrosshair
 let prevVelZ   = 0;          // z-velocity from previous frame (for landing detection)
+let velMod     = 1;          // bullet-tag slowdown (1 = none); server-authoritative, predicted locally
 let gHullHeadStand, gHullHeadDuck;
 let simHull = null;          // sim-core hull wrapper (shared movement core) — built in initPhysics
 let localSt = null;          // reusable sim-core state object for the local player
@@ -302,14 +303,14 @@ function playerMove(dt) {
   localSt.pos = gsPos;             localSt.vel = vel;
   localSt.onGround = onGround;     localSt.wasJump = wasJump;
   localSt.duckAmount = duckAmount; localSt.phyDucked = phyDucked;
-  localSt.prevVelZ = prevVelZ;
+  localSt.prevVelZ = prevVelZ;     localSt.velMod = velMod;
 
   const ev = simPlayerMove(simHull, localSt, cmd, dt, { wpnMax });
 
   gsPos = localSt.pos;             vel = localSt.vel;
   onGround = localSt.onGround;     wasJump = localSt.wasJump;
   duckAmount = localSt.duckAmount; phyDucked = localSt.phyDucked;
-  prevVelZ = localSt.prevVelZ;
+  prevVelZ = localSt.prevVelZ;     velMod = localSt.velMod;
   // The +19 stand-up teleport already accounts for the crouch view offset — snap it
   // so the camera doesn't dip (sim-core reports the teleport via ev.stoodUp).
   if (ev.stoodUp) duckViewOfs = 0;
