@@ -283,6 +283,57 @@ function _playStep(def, fvol) {
   playSound(`player/${def.base}${v}.wav`, { volume: fvol });
 }
 
+// ── Remote-player (bot) world sounds ─────────────────────────────────────────
+// Other players' sounds are heard from THEIR position — 2D playback (no panning, like
+// everything else here) but attenuated by distance to the local player. Only the
+// "outward" sounds are emitted for remotes (footsteps, landing, gunfire, knife deploy);
+// reload / silencer / gun deploy are first-person-only in the original, so net.js
+// doesn't call these for them.
+// Distance attenuation from the LISTENER (the camera anchor yawObj — valid even while
+// spectating/dead, unlike gsPos which is null then). posGs is GoldSrc; convert to Three
+// to match yawObj. Linear falloff to silence at `range`.
+function _worldVol(posGs, base, range) {
+  const ears = (typeof yawObj !== 'undefined' && yawObj) ? yawObj.position : null;
+  if (!ears || !posGs) return base * 0.4;                 // no listener → quiet, never full
+  const dx = posGs[0] - ears.x, dy = posGs[2] - ears.y, dz = -posGs[1] - ears.z;   // gs→three
+  const d = Math.hypot(dx, dy, dz);
+  return Math.max(0, Math.min(1, 1 - d / (range || 1300))) * base;
+}
+
+// Floor step-sound set at an arbitrary GoldSrc position (for a remote's feet).
+const _rFootOrigin = new THREE.Vector3();
+function _floorStepDefAt(posGs) {
+  let ch = 'C';
+  if (_shellRayTargets && posGs) {
+    _rFootOrigin.set(posGs[0], posGs[2] + 10, -posGs[1]);
+    _footRay.set(_rFootOrigin, _footDir); _footRay.far = 200;
+    const hits = _footRay.intersectObjects(_shellRayTargets, false);
+    if (hits.length) {
+      const name = (hits[0].object.material && hits[0].object.material.name) || '';
+      ch = _materials[name.toUpperCase().slice(0, 12)] || 'C';
+    }
+  }
+  return _STEP_DEFS[ch] || _STEP_DEFS.C;
+}
+
+function playRemoteStep(posGs, running) {
+  const def = _floorStepDefAt(posGs);
+  const vol = _worldVol(posGs, def.vol[running ? 1 : 0], 1100);   // footsteps fade fast
+  if (vol > 0.02) _playStep(def, vol);
+}
+
+// A remote's gunfire at their position (cut per-remote so their own burst stays crisp).
+function playRemoteFire(list, posGs, chan) {
+  const vol = _worldVol(posGs, 1.0, 2600);                        // gunfire carries farther
+  if (vol > 0.02) playRandom(list, { volume: vol, channel: chan });
+}
+
+// A remote one-shot at their position (landing step, knife deploy).
+function playRemoteSound(rel, posGs, base) {
+  const vol = _worldVol(posGs, base != null ? base : 1.0, 1300);
+  if (vol > 0.02) (Array.isArray(rel) ? playRandom(rel, { volume: vol }) : playSound(rel, { volume: vol }));
+}
+
 // Per-frame: running footsteps on the ground + a footstep on landing. Call from the
 // main loop after playerMove.
 //

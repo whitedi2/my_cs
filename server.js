@@ -284,6 +284,7 @@ function snapshotEntry(pl) {
     da: s.duckAmount, wj: s.wasJump ? 1 : 0, pz: s.prevVelZ, vm: s.velMod,
     m: pl.model, tm: pl.team, w: pl.weapon, al: pl.alive ? 1 : 0,
     pi: pl.pitch || 0, wsv: pl.ws || 0, wsp: pl.wsT || 0,   // presentation: look pitch + weapon state
+    fc: pl.shots || 0,                                     // gunfire counter (clients play the shot sound on a bump)
   };
 }
 
@@ -663,6 +664,7 @@ function worldProcessShot(world, shooterId, msg) {
   if (!Array.isArray(o) || o.length !== 3 || !Array.isArray(d) || d.length !== 3) return out;
   const svt = (typeof msg.svt === 'number') ? msg.svt : Infinity;   // Infinity → latest (no rewind)
   const sh = world.players.get(shooterId);
+  if (sh) sh.shots = (sh.shots | 0) + 1;   // gunfire counter → clients play the shot sound (see snapshot `fc`)
   const hits = [];
   for (const [tid, tp] of world.players) {
     if (tid === shooterId || !tp.alive) continue;

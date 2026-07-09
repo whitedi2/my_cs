@@ -269,17 +269,24 @@ function _sampleSeqQ(seq, phase, qArr, tArr) {
 // then exactly counter-rotated → it stays at the root's yaw. The root yaw IS the
 // aim, so the torso can never drift off the aim no matter what the legs do.
 const _twistMat = new THREE.Matrix4();
-function _fkQ(bones, q, t, twistRad, twistMap) {
-  const R = [], T = [];
-  for (let i = 0; i < bones.length; i++) {
-    const mat = new THREE.Matrix4().makeRotationFromQuaternion(q[i]);
-    const tr = new THREE.Vector3(t[i][0], t[i][1], t[i][2]);
+// `out` (optional): a reusable {R:[Matrix4], T:[Vector3]} scratch. Passing one avoids a
+// Matrix4+Vector3 allocation per bone every frame (a big GC source with many models).
+function _fkQ(bones, q, t, twistRad, twistMap, out) {
+  const n = bones.length;
+  const R = out ? out.R : new Array(n);
+  const T = out ? out.T : new Array(n);
+  for (let i = 0; i < n; i++) {
+    let mat = R[i], tr = T[i];
+    if (!mat) { mat = new THREE.Matrix4(); R[i] = mat; }
+    if (!tr)  { tr  = new THREE.Vector3(); T[i] = tr; }
+    mat.makeRotationFromQuaternion(q[i]);
+    tr.set(t[i][0], t[i][1], t[i][2]);
     const par = bones[i].parent;
     if (par >= 0 && R[par]) { mat.premultiply(R[par]); tr.applyMatrix4(R[par]).add(T[par]); }
     if (twistRad && twistMap) { const m = twistMap.get(i); if (m) mat.premultiply(_twistMat.makeRotationZ(twistRad * m)); }
-    R.push(mat); T.push(tr);
   }
-  return { R, T };
+  if (R.length > n) { R.length = n; T.length = n; }
+  return out || { R, T };
 }
 
 // ── Gait yaw (GoldSrc StudioProcessGait) ────────────────────────────────────
@@ -556,7 +563,8 @@ function animateThirdPerson(rig, st, dt) {
       _tF[b][2] = _tS[b][2] + (_tC[b][2] - _tS[b][2]) * d;
     }
   }
-  const cur = _fkQ(rig.bones, _qF, _tF, legTwist, rig.twistMap);
+  if (!rig._fkOut) rig._fkOut = { R: [], T: [] };
+  const cur = _fkQ(rig.bones, _qF, _tF, legTwist, rig.twistMap, rig._fkOut);
 
   _skinRig(rig.meshes, rig.originalPositions, rig.boneIndices, rig.bones, cur, rig.bindWorld);
 
@@ -606,13 +614,23 @@ function _ejectShellThirdPerson(wpn) {
 
 // Skin a rig's vertices: v_new = R_cur · R_bind⁻¹ · (v − t_bind) + t_cur (GoldSrc
 // space), with the Three↔GoldSrc axis swap. Shared by the player and the gun.
+// Reusable skinning-matrix scratch (grown as needed). _skinRig runs one model fully
+// before the next, so a single global pool is safe and avoids ~3 allocations per bone
+// per model per frame (the old code cloned matrices — a major GC source with many models).
+const _skinMpool = [], _skinTpool = [];
 function _skinRig(meshes, origPositions, boneIndices, bones, cur, bind) {
-  const skinM = [], skinT = [];
-  for (let b = 0; b < bones.length; b++) {
-    const M = cur.R[b].clone().multiply(bind.R[b].clone().transpose());
-    const t = bind.T[b].clone().applyMatrix4(M);
-    t.subVectors(cur.T[b], t);
-    skinM.push(M); skinT.push(t);
+  const nb = bones.length;
+  // The bind pose's inverse rotation (transpose) never changes — cache it once per rig
+  // instead of recomputing every frame.
+  if (!bind._Rinv || bind._Rinv.length !== nb) {
+    bind._Rinv = [];
+    for (let b = 0; b < nb; b++) bind._Rinv[b] = bind.R[b].clone().transpose();
+  }
+  for (let b = _skinMpool.length; b < nb; b++) { _skinMpool.push(new THREE.Matrix4()); _skinTpool.push(new THREE.Vector3()); }
+  for (let b = 0; b < nb; b++) {
+    const M = _skinMpool[b].copy(cur.R[b]).multiply(bind._Rinv[b]);   // cur.R · bind.Rᵀ
+    _skinTpool[b].copy(bind.T[b]).applyMatrix4(M);
+    _skinTpool[b].subVectors(cur.T[b], _skinTpool[b]);
   }
   meshes.forEach((mesh, idx) => {
     const origPos = origPositions[idx], boneIdxArr = boneIndices[idx];
@@ -621,12 +639,12 @@ function _skinRig(meshes, origPositions, boneIndices, bones, cur, bind) {
     const posArr = posAttr.array;
     for (let i = 0; i < origPos.length; i += 3) {
       const b = boneIdxArr[i / 3];
-      if (b === undefined || !skinM[b]) {
+      if (b === undefined || b >= nb) {
         posArr[i] = origPos[i]; posArr[i+1] = origPos[i+1]; posArr[i+2] = origPos[i+2];
         continue;
       }
       _plSkinTmp.set(origPos[i], -origPos[i+2], origPos[i+1]);   // Three → GoldSrc
-      _plSkinTmp.applyMatrix4(skinM[b]).add(skinT[b]);
+      _plSkinTmp.applyMatrix4(_skinMpool[b]).add(_skinTpool[b]);
       posArr[i]   =  _plSkinTmp.x;                                // GoldSrc → Three
       posArr[i+1] =  _plSkinTmp.z;
       posArr[i+2] = -_plSkinTmp.y;
@@ -665,7 +683,8 @@ function _updateWeaponAttachment(rig, st, plQ, plT) {
       _gt[i][0] = bf[0]; _gt[i][1] = bf[1]; _gt[i][2] = bf[2];
     }
   }
-  const cur = _fkQ(gun.bones, _gq, _gt);
+  if (!gun._fkOut) gun._fkOut = { R: [], T: [] };
+  const cur = _fkQ(gun.bones, _gq, _gt, 0, null, gun._fkOut);
   _skinRig(gun.meshes, gun.originalPositions, gun.boneIndices, gun.bones, cur, gun.bindWorld);
 
   // Cache the muzzle ('flash' bone) world position for the third-person flash.
@@ -693,25 +712,34 @@ const _lightOrigin = new THREE.Vector3();
 const _lightRay = new THREE.Raycaster();
 function _updateModelLight(rig, st, dt) {
   if (!st.pos || !_shellRayTargets) return;
-  _lightOrigin.set(st.pos[0], st.pos[2] + 16, -st.pos[1]);
-  _lightRay.set(_lightOrigin, _DOWN);
-  _lightRay.far = 4096;
-  const hits = _lightRay.intersectObjects(_shellRayTargets, false);
-  let r = 1, g = 1, b = 1;
-  const hit = hits.length ? hits[0] : null;
-  if (hit && hit.face) {
-    const col = hit.object.geometry.getAttribute('color');
-    if (col) {
-      const f = hit.face;
-      r = (col.getX(f.a) + col.getX(f.b) + col.getX(f.c)) / 3;
-      g = (col.getY(f.a) + col.getY(f.b) + col.getY(f.c)) / 3;
-      b = (col.getZ(f.a) + col.getZ(f.b) + col.getZ(f.c)) / 3;
+  // Re-sample the baked floor light only a few times a second (it changes slowly and is
+  // smoothed anyway) — raycasting the whole map per model every frame is the expensive
+  // bit with many players. Cache the last sample and just keep easing toward it.
+  rig._lightT = (rig._lightT || 0) - dt;
+  if (rig._lightT <= 0 || rig._lightSample === undefined) {
+    rig._lightT = 0.15 + Math.random() * 0.1;   // ~6–8 Hz, desynced across models
+    _lightOrigin.set(st.pos[0], st.pos[2] + 16, -st.pos[1]);
+    _lightRay.set(_lightOrigin, _DOWN);
+    _lightRay.far = 4096;
+    const hits = _lightRay.intersectObjects(_shellRayTargets, false);
+    let r = 1, g = 1, b = 1;
+    const hit = hits.length ? hits[0] : null;
+    if (hit && hit.face) {
+      const col = hit.object.geometry.getAttribute('color');
+      if (col) {
+        const f = hit.face;
+        r = (col.getX(f.a) + col.getX(f.b) + col.getX(f.c)) / 3;
+        g = (col.getY(f.a) + col.getY(f.b) + col.getY(f.c)) / 3;
+        b = (col.getZ(f.a) + col.getZ(f.b) + col.getZ(f.c)) / 3;
+      }
     }
+    rig._lightSample = [r, g, b];
   }
+  const [sr, sg, sb] = rig._lightSample;
   const k = 1 - Math.exp(-8 * dt);
-  rig.lightCol.r += (r - rig.lightCol.r) * k;
-  rig.lightCol.g += (g - rig.lightCol.g) * k;
-  rig.lightCol.b += (b - rig.lightCol.b) * k;
+  rig.lightCol.r += (sr - rig.lightCol.r) * k;
+  rig.lightCol.g += (sg - rig.lightCol.g) * k;
+  rig.lightCol.b += (sb - rig.lightCol.b) * k;
   for (const m of rig.meshes) m.material.color.copy(rig.lightCol);
   const gun = rig.gunRigs[st.weaponId];
   if (gun) for (const m of gun.meshes) m.material.color.copy(rig.lightCol);

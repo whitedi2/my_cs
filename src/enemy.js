@@ -72,11 +72,17 @@ function loadEnemy() {
     const bindWorld = computeBoneWorlds(data.bones, bind.frames[0], null, 0);
     const idleN = seqMap['idle1']?.frames.length || 1;
     for (let i = 0; i < ENEMY_COUNT; i++) {
-      const rig = _buildRig(data.meshes);
-      scene.add(rig.root);
       const inst = _makeEnemyInstance();
-      inst.root = rig.root; inst.meshes = rig.meshes;
-      inst.originalPositions = rig.originalPositions; inst.boneIndices = rig.boneIndices;
+      if (USE_GPU_SKIN) {
+        const sk = _buildEnemySkinned(data);
+        inst.root = new THREE.Group();               // position/facing anchor (not rendered)
+        inst.meshes = sk.meshes; inst.skinBones = sk.bones; inst.skeleton = sk.skeleton;
+      } else {
+        const rig = _buildRig(data.meshes);
+        scene.add(rig.root);
+        inst.root = rig.root; inst.meshes = rig.meshes;
+        inst.originalPositions = rig.originalPositions; inst.boneIndices = rig.boneIndices;
+      }
       inst.bones = data.bones; inst.seqMap = seqMap; inst.flinch = flinch; inst.bindWorld = bindWorld;
       inst.hitboxData = data.hitboxes || [];
       inst.helmet = (i === 1);                        // middle dummy wears kevlar + helmet (the rest: kevlar only)
@@ -126,6 +132,11 @@ function _placeEnemy(inst, i) {
   // space (bmin/bmax); we compose its world matrix from the live bone transform so it
   // follows the animated pose. Standard body hitgroups 1–7 only (see header note).
   inst.root.updateMatrixWorld(true);
+  if (inst.skinBones) {   // GPU: place the skeleton at this spot so the bind hitboxes land right
+    const bindF = (inst.seqMap[inst.curSeq] || inst.seqMap['idle1']).frames[0];
+    _setEnemyBonesGPU(inst, bindF, null, 0);
+    inst.meshes[0].updateMatrixWorld(true);
+  }
   _buildInstanceHitboxes(inst);
   _updateHitboxes(inst, inst.bindWorld);   // initial boxes (idle bind pose)
   inst.health = ENEMY_HEALTH; inst.armor = ENEMY_ARMOR;
@@ -165,12 +176,21 @@ const _boneMat = new THREE.Matrix4();
 // bone matrices already computed for skinning. Root is static after placement.
 function _updateHitboxes(inst, bw) {
   if (!inst.hboxes) return;
-  const rootM = inst.root.matrixWorld;
-  for (const h of inst.hboxes) {
-    const Rb = bw.R[h.bone], Tb = bw.T[h.bone];
-    if (!Rb) continue;
-    _boneMat.copy(Rb); _boneMat.setPosition(Tb.x, Tb.y, Tb.z);
-    h.M.copy(rootM).multiply(_GS2THREE).multiply(_boneMat);
+  if (inst.skinBones) {
+    // GPU path: the bone's world matrix already maps its GoldSrc-local frame to Three
+    // world (placement + swap are baked into the skeleton), so the box uses it directly.
+    for (const h of inst.hboxes) {
+      const wm = inst.skinBones[h.bone] && inst.skinBones[h.bone].matrixWorld;
+      if (wm) h.M.copy(wm);
+    }
+  } else {
+    const rootM = inst.root.matrixWorld;
+    for (const h of inst.hboxes) {
+      const Rb = bw.R[h.bone], Tb = bw.T[h.bone];
+      if (!Rb) continue;
+      _boneMat.copy(Rb); _boneMat.setPosition(Tb.x, Tb.y, Tb.z);
+      h.M.copy(rootM).multiply(_GS2THREE).multiply(_boneMat);
+    }
   }
   if ((typeof showHitboxes !== 'undefined') && showHitboxes && inst.debugMeshes)
     for (let i = 0; i < inst.hboxes.length; i++) {
@@ -252,8 +272,130 @@ function _lerpPose(a, b, w) {
 }
 
 // ── Per-frame: advance every dummy ──────────────────────────────────────────
+// ── GPU skinning (THREE.SkinnedMesh) ─────────────────────────────────────────
+// The GPU does the vertex transform in the shader (bones as uniforms) — no per-frame
+// CPU vertex loop and no vertex-buffer re-upload, so many models stay cheap (like the
+// original engine). Per frame we only set each bone's local transform. Kept behind a
+// flag with the CPU path as fallback while it's verified visually.
+//   Setup that avoids the classic double-transform pitfall: the SkinnedMesh sits at the
+//   scene origin (identity) and ALL placement — world position, facing yaw, and the
+//   GoldSrc(Z-up)→Three(Y-up) swap — is baked into the ROOT bone each frame. Child bones
+//   carry only their raw GoldSrc local pose, so bone.matrixWorld maps a GoldSrc-local
+//   point straight to Three world (hitboxes just read it).
+let USE_GPU_SKIN = true;   // ← set to false to fall back to CPU skinning
+const _Y_AXIS = new THREE.Vector3(0, 1, 0);
+const _qSwap  = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+const _skTmpV = new THREE.Vector3();
+const _skQA = new THREE.Quaternion(), _skQB = new THREE.Quaternion(), _skQYaw = new THREE.Quaternion();
+
+// Shared skinned geometry per model (positions/normals as stored = Three space, +
+// per-vertex skinIndex/weight for 1-bone GoldSrc rigid skinning). Cached on the data.
+function _skinnedGeos(data) {
+  if (data._skinGeos) return data._skinGeos;
+  data._skinGeos = data.meshes.map(m => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(m.positions), 3));
+    geo.setAttribute('normal',   new THREE.Float32BufferAttribute(m.normals, 3));
+    geo.setAttribute('uv',       new THREE.Float32BufferAttribute(m.uvs, 2));
+    const n = m.positions.length / 3;
+    const si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) { si[i * 4] = m.boneIndices[i] || 0; sw[i * 4] = 1; }   // 1 bone, weight 1
+    geo.setAttribute('skinIndex',  new THREE.Uint16BufferAttribute(si, 4));
+    geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+    geo.setIndex(m.indices);
+    geo.computeBoundingSphere();
+    return { geo, texFile: m.texFile };
+  });
+  return data._skinGeos;
+}
+
+function _buildEnemySkinned(data) {
+  const geos = _skinnedGeos(data);
+  const bones = data.bones.map(() => new THREE.Bone());
+  const bindSeq = data.sequences.find(s => s.name === (data.bindSeq || 'idle1')) || data.sequences[0];
+  const bindFrame = bindSeq.frames[0];
+  // Bind pose at ORIGIN (no world placement): root gets only the GoldSrc→Three swap so
+  // the skeleton binds upright in Three space; children get their raw local pose.
+  data.bones.forEach((bd, i) => {
+    const f = bindFrame[i];
+    if (bd.parent < 0) {
+      bones[i].position.set(f[0], f[1], f[2]).applyQuaternion(_qSwap);
+      boneEulerQuat(f[3], f[4], f[5], bones[i].quaternion); bones[i].quaternion.premultiply(_qSwap);
+    } else {
+      bones[i].position.set(f[0], f[1], f[2]);
+      boneEulerQuat(f[3], f[4], f[5], bones[i].quaternion);
+      bones[bd.parent].add(bones[i]);
+    }
+  });
+  const meshes = geos.map(g => {
+    const mat = new THREE.MeshLambertMaterial({ map: _plTexLoader.load(g.texFile), side: THREE.DoubleSide });
+    const sm = new THREE.SkinnedMesh(g.geo, mat);
+    sm.frustumCulled = false; sm.userData.noHitscan = true;
+    scene.add(sm);                       // at origin; placement lives in the root bone
+    return sm;
+  });
+  meshes[0].add(bones[0]);               // skeleton root under the first mesh
+  for (let i = 1; i < bones.length; i++) if (data.bones[i].parent < 0) meshes[0].add(bones[i]);
+  meshes[0].updateMatrixWorld(true);
+  const skeleton = new THREE.Skeleton(bones);
+  meshes.forEach(sm => sm.bind(skeleton));
+  return { bones, skeleton, meshes, bindFrame };
+}
+
+// Set every bone from a blended pose (frameA→frameB by t). The root bone additionally
+// carries the swap + this instance's world position/facing so the mesh can stay at origin.
+function _setEnemyBonesGPU(inst, fA, fB, t) {
+  const bones = inst.skinBones, defs = inst.bones;
+  const yaw = inst.root.rotation.y, wp = inst.root.position;
+  _skQYaw.setFromAxisAngle(_Y_AXIS, yaw);
+  for (let i = 0; i < bones.length; i++) {
+    const a = fA[i], b = (fB && t > 0) ? fB[i] : null;
+    let px, py, pz;
+    if (b) {
+      px = a[0] + (b[0] - a[0]) * t; py = a[1] + (b[1] - a[1]) * t; pz = a[2] + (b[2] - a[2]) * t;
+      boneEulerQuat(a[3], a[4], a[5], _skQA); boneEulerQuat(b[3], b[4], b[5], _skQB); _skQA.slerp(_skQB, t);
+    } else {
+      px = a[0]; py = a[1]; pz = a[2]; boneEulerQuat(a[3], a[4], a[5], _skQA);
+    }
+    const bone = bones[i];
+    if (defs[i].parent < 0) {
+      _skTmpV.set(px, py, pz).applyQuaternion(_qSwap).applyAxisAngle(_Y_AXIS, yaw);
+      bone.position.set(wp.x + _skTmpV.x, wp.y + _skTmpV.y, wp.z + _skTmpV.z);
+      bone.quaternion.copy(_skQA).premultiply(_qSwap).premultiply(_skQYaw);
+    } else {
+      bone.position.set(px, py, pz); bone.quaternion.copy(_skQA);
+    }
+  }
+}
+
+// CPU skinning is the per-frame cost, so only skin models the camera can actually see:
+// cull offscreen ones (frustum) and skin distant ones at half rate. A model that isn't
+// updated just holds its last pose — invisible while offscreen, negligible while far.
+const _enemyFrustum = new THREE.Frustum();
+const _enemyFrustMat = new THREE.Matrix4();
+const _enemyCullSphere = new THREE.Sphere(new THREE.Vector3(), 80);
+const _FAR_SKIN2 = 1600 * 1600;   // beyond this (squared), skin every other frame
+let _enemyTick = 0;
 function updateEnemy(dt) {
-  for (const inst of enemies) _updateEnemyInstance(inst, dt);
+  _enemyTick++;
+  const cam = (typeof camera !== 'undefined') ? camera : null;
+  if (!cam) { for (const inst of enemies) _updateEnemyInstance(inst, dt); return; }
+  cam.updateMatrixWorld();
+  _enemyFrustMat.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+  _enemyFrustum.setFromProjectionMatrix(_enemyFrustMat);
+  for (let i = 0; i < enemies.length; i++) {
+    const inst = enemies[i];
+    if (!inst.root || !inst.meshes) continue;
+    _enemyCullSphere.center.copy(inst.root.position); _enemyCullSphere.radius = 80;
+    const visible = _enemyFrustum.intersectsSphere(_enemyCullSphere);
+    for (const m of inst.meshes) m.visible = visible;   // cull the DRAW too (offscreen → not rendered/skinned)
+    if (!visible) continue;                              // offscreen → don't skin either
+    const dx = inst.root.position.x - cam.position.x,
+          dy = inst.root.position.y - cam.position.y,
+          dz = inst.root.position.z - cam.position.z;
+    if (dx * dx + dy * dy + dz * dz > _FAR_SKIN2 && ((_enemyTick + i) & 1)) continue;   // far → half rate
+    _updateEnemyInstance(inst, dt);
+  }
 }
 
 function _updateEnemyInstance(inst, dt) {
@@ -262,7 +404,7 @@ function _updateEnemyInstance(inst, dt) {
   if (!seq?.frames.length) return;
   const fps = seq.fps > 0 ? seq.fps : 30;
   const N = seq.frames.length;
-  let cur;
+  let fA, fB, t;   // the animated pose is lerp(fA, fB, t) (fB null → just fA)
 
   if (inst.state === 'idle') {
     inst.frame = (inst.frame + dt * fps) % N;
@@ -270,33 +412,39 @@ function _updateEnemyInstance(inst, dt) {
     const frac = inst.frame - Math.floor(inst.frame);
     const next = (i + 1) % N;
     const fl = inst.flinchT > 0 && inst.flinch ? inst.flinch[inst.flinchSeq] : null;
-    if (fl) {
+    if (fl) {                      // blend idle ↔ flinch by the flinch weight
       inst.flinchT -= dt;
       const ffps = fl.fps > 0 ? fl.fps : 30, fN = fl.frames.length;
       inst.flinchFrame = Math.min(inst.flinchFrame + dt * ffps, fN - 1);
       const fi = Math.floor(inst.flinchFrame), ffrac = inst.flinchFrame - fi;
       const fnext = Math.min(fi + 1, fN - 1);
-      const idleFrame = _lerpPose(seq.frames[i], seq.frames[next], frac);
-      const flFrame   = _lerpPose(fl.frames[fi], fl.frames[fnext], ffrac);
-      const w = Math.max(0, inst.flinchT / inst.flinchDur);
-      cur = computeBoneWorlds(inst.bones, idleFrame, flFrame, w);
+      fA = _lerpPose(seq.frames[i], seq.frames[next], frac);
+      fB = _lerpPose(fl.frames[fi], fl.frames[fnext], ffrac);
+      t  = Math.max(0, inst.flinchT / inst.flinchDur);
     } else {
       inst.flinchT = 0;
-      const poseB = frac > 0.001 ? seq.frames[next] : null;
-      cur = computeBoneWorlds(inst.bones, seq.frames[i], poseB, frac);
+      fA = seq.frames[i]; fB = frac > 0.001 ? seq.frames[next] : null; t = frac;
     }
-  } else {                       // dead: play once, hold last frame, then respawn
+  } else {                         // dead: play once, hold last frame, then respawn
     inst.frame = Math.min(inst.frame + dt * fps, N - 1);
     inst.deadTime += dt;
     if (inst.deadTime > DEATH_HOLD) { _enemyRespawn(inst); return; }
     const i = Math.floor(inst.frame) % N;
     const frac = inst.frame - Math.floor(inst.frame);
     const next = Math.min(i + 1, N - 1);
-    const poseB = (frac > 0.001 && next > i) ? seq.frames[next] : null;
-    cur = computeBoneWorlds(inst.bones, seq.frames[i], poseB, frac);
+    fA = seq.frames[i]; fB = (frac > 0.001 && next > i) ? seq.frames[next] : null; t = frac;
   }
-  _skinRig(inst.meshes, inst.originalPositions, inst.boneIndices, inst.bones, cur, inst.bindWorld);
-  _updateHitboxes(inst, cur);      // hitboxes follow the live pose
+
+  if (inst.skinBones) {            // GPU: just set the bones, the shader skins
+    _setEnemyBonesGPU(inst, fA, fB, t);
+    inst.meshes[0].updateMatrixWorld(true);   // make bone matrices current for hitboxes
+    _updateHitboxes(inst, null);
+  } else {                         // CPU: compute bone worlds + rewrite vertices
+    if (!inst._boneOut) inst._boneOut = { R: [], T: [] };
+    const cur = computeBoneWorlds(inst.bones, fA, fB, t, inst._boneOut);
+    _skinRig(inst.meshes, inst.originalPositions, inst.boneIndices, inst.bones, cur, inst.bindWorld);
+    _updateHitboxes(inst, cur);
+  }
 }
 
 function _enemyRespawn(inst) {

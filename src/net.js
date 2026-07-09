@@ -392,6 +392,12 @@ function _onRemoteState(e, svt) {
   if (e.w) inst.weapon = e.w;
   if (e.tm) inst.team = e.tm;                 // for the spectator HUD label
   if (e.al && inst.dead) inst.dead = false;   // server revived them (round respawn) → clear corpse
+  // Gunfire: the shot counter bumped since the last snapshot → play the weapon's fire
+  // sound at their position (attenuated). e.p is the shot-time position. Skip corpses.
+  if (e.fc != null) {
+    if (inst._fc != null && e.fc > inst._fc && !inst.dead) _playRemoteFire(inst, e.p);
+    inst._fc = e.fc;
+  }
   inst.buf.push({
     svt,
     pos: e.p.slice(), yaw: e.y || 0, pitch: e.pi || 0,
@@ -511,6 +517,8 @@ function _updateRemote(inst, dt) {
   inst.ws = s.ws || 0; inst.wsT = s.wsT || 0;           // weapon state → spectator first-person viewmodel
   inst.vel = s.vel || _ZERO3; inst.og = !!s.og;         // movement → spectator viewmodel bob
 
+  updateRemoteSounds(inst, s, dt);                       // footsteps/landing/knife-deploy (heard even off-screen)
+
   // Off-screen cull: skip the expensive FK + CPU skinning for remotes outside the view.
   // Place the root cheaply so it's where it should be the moment it re-enters view, and
   // refresh the full pose only every ~0.4s so light/corpse aren't frozen for long.
@@ -531,6 +539,43 @@ function _updateRemote(inst, dt) {
       weaponId: inst.weapon, weaponType: _weaponTypeOf(inst.weapon),
       ws: s.ws || 0, wsT: s.wsT || 0,
     }, dt);
+}
+
+// Other players' "outward" sounds, heard from their position (2D + distance-attenuated,
+// via audio.js helpers). Emitted: footsteps (running), landing, gunfire (on the shot
+// counter `fc`), and the knife's deploy. NOT emitted (first-person-only in the original):
+// reload, silencer attach/detach, gun deploy.
+// A remote's gunfire at their position (unsilenced sample — remotes don't send silencer state).
+function _playRemoteFire(inst, posGs) {
+  const w = (typeof WPNS !== 'undefined') && WPNS.find(x => x.id === inst.weapon);
+  const list = w && (w.fireSound || w.fireSoundSil);
+  if (list && typeof playRemoteFire === 'function') playRemoteFire(list, posGs, 'rfire' + inst.id);
+}
+
+const _LAND_MIN = 196;   // ≈ 0.8×jumpvel — a real jump/fall lands a step (matches the player)
+function updateRemoteSounds(inst, s, dt) {
+  if (inst.dead) { inst._stepT = 0; inst._wasOg = true; inst._peakFall = 0; return; }
+  const pos = s.pos, vz = (s.vel && s.vel[2]) || 0;
+  const spd = s.vel ? Math.hypot(s.vel[0], s.vel[1]) : 0;
+  const ducking = (s.da || 0) > 0.5;
+
+  // Footsteps: only running on the ground (walk/crouch are silent, as for the local player).
+  inst._stepT = (inst._stepT || 0) - dt;
+  if (s.og && spd >= 120 && !ducking) {
+    if (inst._stepT <= 0) { playRemoteStep(pos, true); inst._stepT = 0.3; }
+  } else inst._stepT = 0;
+
+  // Landing: on touchdown after a genuine drop, one footstep (PM_CheckFalling).
+  if (s.og && inst._wasOg === false && (inst._peakFall || 0) >= _LAND_MIN) playRemoteStep(pos, true);
+  inst._peakFall = s.og ? 0 : Math.max(inst._peakFall || 0, -vz);
+  inst._wasOg = s.og;
+
+  // Knife deploy is the only weapon-switch sound heard by others.
+  if (inst.ws === WS.DRAW && inst._prevWs !== WS.DRAW && inst.weapon === 'knife') {
+    const kw = (typeof WPNS !== 'undefined') && WPNS.find(x => x.id === 'knife');
+    if (kw && kw.deploySound) playRemoteSound(kw.deploySound, pos, 0.8);
+  }
+  inst._prevWs = inst.ws;
 }
 
 // Play a remote's death sequence (once, hold the last frame) and freeze the corpse on

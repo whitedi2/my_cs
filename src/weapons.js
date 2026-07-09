@@ -1146,9 +1146,13 @@ function _seqActiveLen(seq) {
   return n;
 }
 
-function computeBoneWorlds(bones, poseA, poseB, t) {
-  const R = [], T = [];
+// `out` (optional): a reusable {R:[Matrix4], T:[Vector3]} scratch. Passing one avoids
+// allocating a Matrix4+Vector3 per bone every frame (huge GC savings with many models).
+// Omit it only for the bind pose, which is stored and must be a fresh object.
+function computeBoneWorlds(bones, poseA, poseB, t, out) {
   const n = poseA.length;
+  const R = out ? out.R : new Array(n);
+  const T = out ? out.T : new Array(n);
   for (let i = 0; i < n; i++) {
     const a = poseA[i];
     let tx, ty, tz;
@@ -1167,17 +1171,19 @@ function computeBoneWorlds(bones, poseA, poseB, t) {
       tx = a[0]; ty = a[1]; tz = a[2];
       q = boneEulerQuat(a[3], a[4], a[5], _qBoneA);
     }
-    const mat   = new THREE.Matrix4().makeRotationFromQuaternion(q);
-    const trans = new THREE.Vector3(tx, ty, tz);
+    let mat = R[i], trans = T[i];
+    if (!mat)   { mat   = new THREE.Matrix4(); R[i] = mat; }
+    if (!trans) { trans = new THREE.Vector3(); T[i] = trans; }
+    mat.makeRotationFromQuaternion(q);
+    trans.set(tx, ty, tz);
     const par = bones[i].parent;
     if (par >= 0 && R[par]) {
       mat.premultiply(R[par]);
       trans.applyMatrix4(R[par]).add(T[par]);
     }
-    R.push(mat);
-    T.push(trans);
   }
-  return { R, T };
+  if (R.length > n) { R.length = n; T.length = n; }   // if the scratch was bigger, trim
+  return out || { R, T };
 }
 
 const _skinVtmp = new THREE.Vector3();
