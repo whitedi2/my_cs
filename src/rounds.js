@@ -66,9 +66,14 @@ function _localRoundReset(skipRespawn) {
   _clearBomb();
   if (typeof clearProjectiles === 'function') clearProjectiles();   // wipe rockets/bolts/laser
   if (!skipRespawn && typeof respawn === 'function') respawn();   // reset to a team spawn
-  // Refill ammo of owned guns (CS tops you up each round); weapons persist.
-  if (typeof WPNS !== 'undefined')
-    WPNS.forEach(w => { if (w.type === 'gun' && ownedWeapons.has(w.id)) { w.ammo = w.maxAmmo; w.reserve = w._reserve0 ?? w.reserve; } });
+  // CS: a SURVIVOR carries weapons and whatever ammo is left into the next round (no top-up —
+  // ammo is bought). A player who DIED respawns with the default sidearm (GiveDefaultItems).
+  if (typeof _diedThisRound !== 'undefined' && _diedThisRound && typeof giveDefaultLoadout === 'function') {
+    const pistol = giveDefaultLoadout(playerTeam);
+    const i = WPNS.findIndex(w => w.id === pistol);
+    if (i >= 0 && typeof switchWeapon === 'function') switchWeapon(i);
+  }
+  if (typeof _diedThisRound !== 'undefined') _diedThisRound = false;
   // Reset the practice dummies for the new round.
   if (typeof enemies !== 'undefined') enemies.forEach(e => { if (typeof _enemyRespawn === 'function') _enemyRespawn(e); });
   // Refill HP (armor/helmet persist) and clear the dead state.

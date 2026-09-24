@@ -173,7 +173,7 @@ function _onBought(m) {
     const idx = WPNS.findIndex(w => w.id === m.id);
     if (idx >= 0) {
       const w = WPNS[idx];
-      if (w.maxAmmo) { w.ammo = w.maxAmmo; w.reserve = w._reserve0 != null ? w._reserve0 : w.reserve; }
+      if (w.maxAmmo) { w.ammo = w.maxAmmo; w.reserve = 0; }   // CS: bought = full magazine, no spare ammo
       if (typeof switchWeapon === 'function') switchWeapon(idx);
     }
   }

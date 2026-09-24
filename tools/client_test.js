@@ -76,7 +76,7 @@ const SCENARIO_DUR = {   // must mirror the SCENARIOS table in src/autotest.js
   fire: 2.5, dryfire: 9.0, reload: 5.0, switch: 4.0, silencer: 4.0,
   knife: 2.2, knife_mix: 3.0, fall: 1.5,
   awp: 4.6, awp_speed: 3.4, awp_reload: 4.8,
-  nade: 2.4,
+  nade: 2.4, ammo: 0.9,
 };
 function unescapeHtml(s) {
   return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
@@ -363,6 +363,18 @@ const ASSERTS = {
     check('it comes to rest before going off', s.some(x => x.nade && x.nade.rest));
     check('detonates 1.5 s after the throw (fuse)', gone && Math.abs((gone.t - thrownAt) - 1.5) <= 0.041,
           gone ? `after ${(gone.t - thrownAt).toFixed(3)}s` : 'never');
+  },
+  // Ammo economy (ReGameDLL BuyGunAmmo): one calibre pack per press, clamped to the carry max,
+  // full price even for a partial pack, refused when full. Solo path (client-side money).
+  ammo(o, check) {
+    const s = o.samples, at = t => lastW(s, x => x.t <= t) || s[0];
+    const m4 = t => at(t).rsv.m4, usp = t => at(t).rsv.usp, $ = t => at(t).money;
+    check('starts empty with $1000', m4(0.05) === 0 && $(0.05) === 1000, `m4=${m4(0.05)} $${$(0.05)}`);
+    check('1st pack: +30 5.56 for $60', m4(0.15) === 30 && $(0.15) === 940, `m4=${m4(0.15)} $${$(0.15)}`);
+    check('3 packs: 90 (max) for $180', m4(0.35) === 90 && $(0.35) === 820, `m4=${m4(0.35)} $${$(0.35)}`);
+    check('4th press when full: refused, no charge', m4(0.45) === 90 && $(0.45) === 820, `m4=${m4(0.45)} $${$(0.45)}`);
+    check('USP 90 → 100: partial pack, full $25', usp(0.55) === 100 && $(0.55) === 795, `usp=${usp(0.55)} $${$(0.55)}`);
+    check('USP full: refused', usp(0.85) === 100 && $(0.85) === 795, `$${$(0.85)}`);
   },
   awp_speed(o, check) {
     const s = o.samples;

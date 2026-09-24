@@ -1096,16 +1096,16 @@ function startServer(port) {
         const sk = sockets.get(id);
         if (!sk) break;
         const slot = msg.slot === 'secondary' ? 'secondary' : 'primary';
-        const price = slot === 'secondary' ? 40 : 80;
+        // One pack of that gun's calibre per request (ReGameDLL BuyGunAmmo, combatAmmoPack).
+        // The client owns the reserve count and only asks when it isn't full.
+        let pack = null;
+        for (const w of pl.weapons) { const it = match.MATCH_BUY[w]; if (it && it.slot === slot && combat.combatAmmoPack(w)) { pack = combat.combatAmmoPack(w); break; } }
+        const price = pack ? pack.price : 0;
         let reason = '';
         if (world.match.phase !== 'buy') reason = 'Время закупки вышло';
         else if (!_inBuyZone(pl))        reason = 'Вы не в зоне закупки';
-        else {
-          let has = false;
-          for (const w of pl.weapons) { const it = match.MATCH_BUY[w]; if (it && it.slot === slot) { has = true; break; } }
-          if (!has)                    reason = 'Нет оружия для патронов';
-          else if (pl.money < price)   reason = 'Недостаточно денег';
-        }
+        else if (!pack)                  reason = 'Нет оружия для патронов';
+        else if (pl.money < price)       reason = 'Недостаточно денег';
         if (reason) { _send(sk, JSON.stringify({ t: 'ammobought', ok: false, slot, reason })); break; }
         pl.money -= price;
         _send(sk, JSON.stringify({ t: 'ammobought', ok: true, slot, price }));

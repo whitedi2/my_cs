@@ -7,6 +7,9 @@
 // CS 1.6. Step A owns ONLY the round flow + score; HP/economy/bomb come in 6B–6D, so
 // here a round ends by the clock (CT) or by elimination (one team wiped).
 
+// Shared buy rules (armour price, ammo packs) live in combat-core — loaded on both sides.
+const _combat = require('./combat-core.js');
+
 const MATCH_BUY_TIME   = 15;    // s of buy time at round start (mp_buytime-ish)
 const MATCH_ROUND_TIME = 115;   // 1:55 main round clock
 const MATCH_ROUND_END  = 5;     // banner before the next round
@@ -93,11 +96,14 @@ function matchBuy(pl, id, opts) {
   const kind = it.kind || 'weapon';
 
   if (kind === 'armor' || kind === 'helm') {
+    // CS BuyItem pricing (combatArmorPrice): full vest → the +helmet item costs just the helmet
+    // (350); helmet kept but vest worn → 650; re-buying what you already have is refused.
     const wantHelm = kind === 'helm';
-    if (pl.armor >= MATCH_MAX_AP && (!wantHelm || pl.helmet)) return { ok: false, reason: 'Броня уже есть' };
-    if (pl.money < it.price) return { ok: false, reason: 'Недостаточно денег' };
-    pl.money -= it.price; pl.armor = MATCH_MAX_AP; if (wantHelm) pl.helmet = true;
-    return { ok: true, id, kind };
+    const price = _combat.combatArmorPrice(wantHelm, pl.armor, pl.helmet);
+    if (price === null) return { ok: false, reason: 'Броня уже есть' };
+    if (pl.money < price) return { ok: false, reason: 'Недостаточно денег' };
+    pl.money -= price; pl.armor = MATCH_MAX_AP; if (wantHelm) pl.helmet = true;
+    return { ok: true, id, kind, price };
   }
   if (kind === 'dk') {
     if (pl.dk) return { ok: false, reason: 'Дефуз-кит уже есть' };

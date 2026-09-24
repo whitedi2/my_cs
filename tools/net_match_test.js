@@ -145,6 +145,26 @@ const check = (name, cond, extra) => {
   check('kevlar+helm → armor 100 + helmet, −1000', k.armor === 100 && k.helmet === true && k.money === 1000);
   r = M.matchBuy(k, 'kevlar');
   check('rebuy full armor blocked', !r.ok && /Броня/.test(r.reason));
+  r = M.matchBuy(k, 'kevlarhelm');
+  check('rebuy vest+helm with both → blocked', !r.ok && /Броня/.test(r.reason));
+
+  // ReGameDLL BuyItem pricing for the +helmet item.
+  const h = mk('ct'); h.money = 1000; h.armor = 100; h.helmet = false;
+  r = M.matchBuy(h, 'kevlarhelm');
+  check('full vest, no helmet → helmet only for 350', r.ok && h.helmet && h.money === 650, `money=${h.money}`);
+  const v = mk('t'); v.money = 1000; v.armor = 40; v.helmet = true;
+  r = M.matchBuy(v, 'kevlarhelm');
+  check('helmet kept, vest worn → 650 refills the vest', r.ok && v.armor === 100 && v.money === 350, `money=${v.money}`);
+
+  // Ammo packs per calibre (weapontype.h *_PRICE / *_BUY / MAX_AMMO_*), shared with the client.
+  const C = require('../src/combat-core.js');
+  const pk = id => { const p = C.combatAmmoPack(id); return p && `${p.price}/${p.buy}/${p.max}`; };
+  check('ammo: M4 5.56 pack $60 ×30, max 90', pk('m4') === '60/30/90', pk('m4'));
+  check('ammo: AK 7.62 pack $80 ×30, max 90', pk('ak47') === '80/30/90', pk('ak47'));
+  check('ammo: AWP .338 pack $125 ×10, max 30', pk('awp') === '125/10/30', pk('awp'));
+  check('ammo: USP .45 pack $25 ×12, max 100', pk('usp') === '25/12/100', pk('usp'));
+  check('ammo: Glock 9mm pack $20 ×30, max 120', pk('glock18') === '20/30/120', pk('glock18'));
+  check('spawn sidearm reserve: USP 24, Glock 40', C.COMBAT_SPAWN_RESERVE.usp === 24 && C.COMBAT_SPAWN_RESERVE.glock18 === 40);
 
   const n = mk('t');
   r = M.matchBuy(n, 'hegrenade');

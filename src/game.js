@@ -19,6 +19,18 @@ let playerHealth = PLAYER_MAX_HP;
 let playerArmor  = 0;
 let playerHelmet = false;
 let playerDead   = false;
+let _diedThisRound = false;   // set on death, consumed at the next round start
+
+// Default loadout (CBasePlayer::GiveDefaultItems): knife + the team sidearm with a full
+// magazine and two spare magazines (USP 12/24, Glock 20/40). Used on joining a team and when
+// a player who died spawns into the next round.
+function giveDefaultLoadout(team) {
+  const pistol = team === 't' ? 'glock18' : 'usp';
+  ownedWeapons.clear(); ownedWeapons.add('knife'); ownedWeapons.add(pistol);
+  const w = WPNS.find(x => x.id === pistol);
+  if (w) { w.ammo = w.maxAmmo; w.reserve = COMBAT_SPAWN_RESERVE[pistol] ?? 0; }
+  return pistol;
+}
 let _hurtT = -Infinity;        // wall-clock of the last damage tick (drives the red flash)
 
 // Enter the dead state once (idempotent per death): mark dead + start the death cam (pulls back
@@ -27,6 +39,7 @@ let _hurtT = -Infinity;        // wall-clock of the last damage tick (drives the
 function _enterDeath(hg, waiting) {
   if (playerDead) return;
   playerDead = true;
+  _diedThisRound = true;   // → the next round start hands out the default sidearm (rounds.js)
   if (typeof _beginDeathCam === 'function') _beginDeathCam(hg | 0, !!waiting);
 }
 
@@ -172,7 +185,6 @@ function onServerDamage(hg, hp, died, by) {
 const grenadeCounts = { hegrenade: 0, flashbang: 0, smokegrenade: 0 };
 const GRENADE_MAX   = { hegrenade: 1, flashbang: 2, smokegrenade: 1 };
 
-WPNS.forEach(w => { w._reserve0 = w.reserve; });  // remember full reserve for buy refills
 
 // ── CS 1.6 buy catalog ──────────────────────────────────────────────────────
 // FIXED slots, exactly like the real menu: each category is a list of numbered slots,
@@ -192,8 +204,8 @@ const BUY_CATALOG = [
     { both: { name: 'Glock-18',         price: 400, wid: 'glock18' } },
     { both: { name: 'Desert Eagle',     price: 650, wid: 'deagle' } },
     { both: { name: 'P228 Compact',     price: 600, wid: 'p228' } },
-    { both: { name: 'Dual Berettas',    price: 800 } },                  // Elites — both, no model yet
-    { ct:   { name: 'Five-SeveN',       price: 750, wid: 'fiveseven' } }, // CT only
+    // slot 5 (BuyPistol): Five-SeveN for CT, Dual Elites for T — each team-exclusive
+    { ct: { name: 'Five-SeveN', price: 750, wid: 'fiveseven' }, t: { name: 'Dual Berettas', price: 800 } },   // Elites: no model yet
   ] },
   { name: 'Дробовики', slots: [
     { both: { name: 'M3 Super 90',      price: 1700 } },
@@ -292,18 +304,18 @@ function buyItem(item) {
   if (typeof buyTimeOpen === 'function' && !buyTimeOpen()) return _flashBuy('Время закупки вышло');
   if (item.teams && !item.teams.includes(playerTeam)) return _flashBuy('Недоступно вашей команде');
   if (!inBuyZone())     return _flashBuy('Вы не в зоне закупки');
-  // Kevlar / kevlar+helmet — set armor (and helmet). CS: re-buying full armor is blocked;
-  // the +helmet item still sells you just the helmet if you already have full vest.
+  // Kevlar / kevlar+helmet — CS pricing (combatArmorPrice): full vest → +helmet costs just the
+  // helmet (350); helmet kept but vest worn down → 650; re-buying what you have is refused.
   if (item.equip === 'kevlar' || item.equip === 'kevlarhelm') {
     const wantHelm = item.equip === 'kevlarhelm';
-    const haveFullArmor = playerArmor >= PLAYER_MAX_AP;
-    if (haveFullArmor && (!wantHelm || playerHelmet)) return _flashBuy('Броня уже есть');
-    if (playerMoney < item.price) return _flashBuy('Недостаточно денег');
-    playerMoney -= item.price;
+    const price = combatArmorPrice(wantHelm, playerArmor, playerHelmet);
+    if (price === null) return _flashBuy('Броня уже есть');
+    if (playerMoney < price) return _flashBuy('Недостаточно денег');
+    playerMoney -= price;
     playerArmor = PLAYER_MAX_AP;
     if (wantHelm) playerHelmet = true;
     if (typeof playSound === 'function') playSound('items/gunpickup2.wav', { volume: 0.8 });
-    return _flashBuy(`Куплено: ${item.name}  −$${item.price}`);
+    return _flashBuy(`Куплено: ${item.name}  −$${price}`);
   }
   // Defuse kit (CT) — sets the faster-defuse flag used by the bomb code.
   if (item.equip === 'defusekit') {
@@ -344,44 +356,46 @@ function buyItem(item) {
       }
     }
   ownedWeapons.add(item.wid);
-  if (w.maxAmmo) { w.ammo = w.maxAmmo; w.reserve = w._reserve0 ?? w.reserve; }   // full on (re)buy
+  if (w.maxAmmo) { w.ammo = w.maxAmmo; w.reserve = 0; }   // CS: a bought gun = full magazine, no spare ammo
   switchWeapon(idx);
   _flashBuy(`Куплено: ${item.name}  −$${item.price}`);
 }
 
-// Refill ammo for a slot (CS primary/secondary ammo categories buy one "fill").
+// Buy ammo for a slot (',' primary / '.' secondary, CS buyammo1/buyammo2): ONE pack of the
+// gun's calibre per press (combatAmmoPack — ReGameDLL BuyGunAmmo): `buy` rounds for `price`,
+// clamped to the calibre's carry max; refused when the reserve is already full.
+function _ammoGunInSlot(slot) {
+  return WPNS.find(x => x.type === 'gun' && x.slot === slot && ownedWeapons.has(x.id) && combatAmmoPack(x.id));
+}
 function buyAmmo(slot) {
+  const w = _ammoGunInSlot(slot);
+  if (!w) return _flashBuy('Нет оружия для патронов');
+  const pack = combatAmmoPack(w.id);
+  if ((w.reserve ?? 0) >= pack.max) return _flashBuy('Патроны полны');
   if (typeof _netDriven !== 'undefined' && _netDriven) {
-    // MP: the server validates (zone / buy time / money) and deducts; the client refills the
-    // reserve when the `ammobought` reply lands (applyAmmoBought). Money syncs via gstate.me.
-    const w = WPNS.find(x => x.type === 'gun' && ownedWeapons.has(x.id) && x.slot === slot);
-    if (!w) return _flashBuy('Нет оружия для патронов');
-    if ((w.reserve ?? 0) >= (w._reserve0 ?? 0)) return _flashBuy('Патроны полны');
+    // MP: the server validates (zone / buy time / money) and deducts the pack price; the client
+    // adds the rounds when the `ammobought` reply lands (applyAmmoBought). Money syncs via gstate.me.
     if (typeof netSendBuyAmmo === 'function') netSendBuyAmmo(slot);
     return;
   }
   if (typeof buyTimeOpen === 'function' && !buyTimeOpen()) return _flashBuy('Время закупки вышло');
   if (!inBuyZone()) return _flashBuy('Вы не в зоне закупки');
-  const isGun = w => w.type === 'gun';
-  const cand = WPNS.filter(w => isGun(w) && ownedWeapons.has(w.id) &&
-    (slot === 'secondary' ? w.id === 'usp' : w.id !== 'usp'));
-  const w = cand[0];
-  if (!w) return _flashBuy('Нет оружия для патронов');
-  const price = slot === 'secondary' ? 40 : 80;
-  if (playerMoney < price) return _flashBuy('Недостаточно денег');
-  if ((w.reserve ?? 0) >= (w._reserve0 ?? 0)) return _flashBuy('Патроны полны');
-  playerMoney -= price;
-  w.reserve = w._reserve0 ?? w.reserve;
-  _flashBuy(`Патроны: ${w.label}  −$${price}`);
+  if (playerMoney < pack.price) return _flashBuy('Недостаточно денег');
+  playerMoney -= pack.price;
+  w.reserve = Math.min(pack.max, (w.reserve ?? 0) + pack.buy);
+  if (typeof playSound === 'function') playSound('items/9mmclip1.wav', { volume: 0.8 });
+  _flashBuy(`Патроны: ${w.label} +${pack.buy}  −$${pack.price}`);
 }
 
-// MP: the server confirmed (or rejected) an ammo purchase → refill that slot's reserve. Money is
-// server-owned and syncs via gstate.me; here we only top up the local reserve count.
+// MP: the server confirmed (or rejected) an ammo purchase → add that pack to the slot's reserve.
+// Money is server-owned and syncs via gstate.me; here we only top up the local reserve count.
 function applyAmmoBought(slot, ok, reason) {
   if (!ok) return _flashBuy(reason || 'Патроны недоступны');
-  const w = WPNS.find(x => x.type === 'gun' && ownedWeapons.has(x.id) && x.slot === slot);
-  if (w) w.reserve = w._reserve0 ?? w.reserve;
-  _flashBuy(w ? `Патроны: ${w.label}` : 'Патроны куплены');
+  const w = _ammoGunInSlot(slot);
+  if (!w) return;
+  const pack = combatAmmoPack(w.id);
+  w.reserve = Math.min(pack.max, (w.reserve ?? 0) + pack.buy);
+  if (typeof playSound === 'function') playSound('items/9mmclip1.wav', { volume: 0.8 });
 }
 
 // Called by the weapon state machine when a throw animation finishes: consume one
@@ -538,12 +552,12 @@ function _chooseClass(i) {
     // just set local prefs + loadout for when the server actually spawns us. alive/position/HP all
     // arrive via gstate/snapshots (applyServerSelf → death cam while we wait, then revive).
     playerTeam = _pendTeam;
-    ownedWeapons.clear(); ownedWeapons.add('knife'); ownedWeapons.add(pistol);
+    giveDefaultLoadout(_pendTeam);
     switchWeapon(WPNS.findIndex(w => w.id === pistol));
   } else {
     // SOLO: spawn immediately (no server to defer to).
     setTeam(_pendTeam);
-    ownedWeapons.clear(); ownedWeapons.add('knife'); ownedWeapons.add(pistol);
+    giveDefaultLoadout(_pendTeam);
     playerMoney = START_MONEY;
     playerArmor = 0; playerHelmet = false; resetPlayerHealth();
     switchWeapon(WPNS.findIndex(w => w.id === pistol));

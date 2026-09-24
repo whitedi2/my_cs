@@ -70,6 +70,14 @@
     ] },
     // HE thrown level (spawn angle faces open space): (90+10)·6 = 600 u/s at 10° up, fuse 1.5 s
     nade:      { wpn: 'hegrenade', nades: { hegrenade: 1 }, dur: 2.4, tl: [[0.0, { lmb: true }], [0.2, { lmb: false }]] },
+    // ammo packs (',' primary / '.' secondary) — ReGameDLL BuyGunAmmo, one calibre pack per press
+    ammo:      { wpn: 'm4', phase: 'buy', money: 1000, dur: 0.9, tl: [
+      [0.0, { setReserve: { m4: 0, usp: 90 } }],
+      [0.1, { tap: 'Comma' }], [0.2, { tap: 'Comma' }], [0.3, { tap: 'Comma' }],
+      [0.4, { tap: 'Comma' }],                            // full (90) → refused, no charge
+      [0.5, { tap: 'Period' }],                           // USP 90 → 100 (+10 of a 12 pack, full $25)
+      [0.6, { tap: 'Period' }],                           // full → refused
+    ] },
     awp_speed: { wpn: 'awp', dur: 3.4, tl: [
       [0.0, { hold: ['KeyW'] }], [1.1, { hold: [] }],   // unscoped: cap 210
       [1.6, { rmb: true }], [1.62, { rmb: false }],     // scope in
@@ -141,6 +149,8 @@
 
     if (sc && sc.nades && typeof grenadeCounts !== 'undefined')
       for (const [k, n] of Object.entries(sc.nades)) { grenadeCounts[k] = n; ownedWeapons.add(k); }
+    if (sc && sc.phase && typeof roundPhase !== 'undefined') roundPhase = sc.phase;   // e.g. 'buy' so purchases are open
+    if (sc && sc.money != null && typeof playerMoney !== 'undefined') playerMoney = sc.money;
     const wid = q.get('wpn') || (sc && sc.wpn);
     if (wid) { ownedWeapons.add(wid); const i = WPNS.findIndex(w => w.id === wid); if (i >= 0) switchWeapon(i); }
 
@@ -212,6 +222,7 @@
       if (a.look)  { yaw = a.look[0] * Math.PI / 180; pitch = a.look[1] * Math.PI / 180; }
       if (a.mouse) { pendingYaw += a.mouse[0] * Math.PI / 180; pendingPitch += a.mouse[1] * Math.PI / 180; }
       // lift: teleport straight up by N units at rest (a scripted drop; the pump then simulates the fall)
+      if (a.setReserve) for (const [id, n] of Object.entries(a.setReserve)) { const g = WPNS.find(x => x.id === id); if (g) g.reserve = n; }
       if (a.lift)  { gsPos = [gsPos[0], gsPos[1], gsPos[2] + a.lift]; vel = [0, 0, a.vz || 0]; onGround = false; }
     }
 
@@ -240,6 +251,9 @@
         spr: (w && w._lastSpread != null) ? r(w._lastSpread) : null,       // last shot's cone
         seq: (w && w.anim) ? (w.anim._evSeqName || null) : null,          // view-model sequence playing
         // first live grenade (solo: the real one; its fuse runs in updateGrenades)
+        money: (typeof playerMoney !== 'undefined') ? playerMoney : null,
+        rsv: (typeof WPNS !== 'undefined' && typeof ownedWeapons !== 'undefined')
+          ? Object.fromEntries(WPNS.filter(x => x.type === 'gun' && ownedWeapons.has(x.id)).map(x => [x.id, x.reserve])) : null,
         nades: (typeof _grenadesInAir !== 'undefined') ? _grenadesInAir.length : 0,
         nade: (typeof _grenadesInAir !== 'undefined' && _grenadesInAir[0])
           ? { pos: _grenadesInAir[0].pos.map(r), vel: _grenadesInAir[0].vel.map(r), rest: !!_grenadesInAir[0].resting,

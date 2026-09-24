@@ -116,11 +116,53 @@ function combatVelMod(weaponId, hg, ducked) {
   return large ? 0.65 : 0.5;
 }
 
+// ── Ammo economy (ReGameDLL weapontype.h / weapontype.cpp) ──────────────────────
+// One purchase (',' / '.', or the ammo menu) buys ONE pack of the gun's calibre: `buy`
+// rounds for `price`, clamped to the `max` a player can carry (full price even when only
+// part of the pack fits; refused when already full — BuyGunAmmo). Shared by the client
+// (solo) and the server (MP validation), so both charge the same.
+const COMBAT_AMMO = {
+  '338magnum':  { price: 125, buy: 10, max: 30 },
+  '357sig':     { price: 50,  buy: 13, max: 52 },
+  '45acp':      { price: 25,  buy: 12, max: 100 },
+  '50ae':       { price: 40,  buy: 7,  max: 35 },
+  '556nato':    { price: 60,  buy: 30, max: 90 },
+  '556natobox': { price: 60,  buy: 30, max: 200 },
+  '57mm':       { price: 50,  buy: 50, max: 100 },
+  '762nato':    { price: 80,  buy: 30, max: 90 },
+  '9mm':        { price: 20,  buy: 30, max: 120 },
+};
+const COMBAT_WEAPON_CALIBER = {
+  usp: '45acp', glock18: '9mm', deagle: '50ae', p228: '357sig', fiveseven: '57mm',
+  mp5: '9mm', tmp: '9mm', mac10: '45acp', ump45: '45acp', p90: '57mm',
+  famas: '556nato', galil: '556nato', m4: '556nato', aug: '556nato', sg552: '556nato',
+  ak47: '762nato', awp: '338magnum', m249: '556natobox',
+};
+// Spawn sidearm backpack ammo (CBasePlayer::GiveDefaultItems, CS 1.6): USP 12 + 24, Glock 20 + 40.
+// A BOUGHT gun comes with a full magazine and no reserve at all.
+const COMBAT_SPAWN_RESERVE = { usp: 24, glock18: 40 };
+// Armour purchase (ReGameDLL BuyItem, MENU_SLOT_ITEM_VEST / _VESTHELM). Returns the price to
+// charge, or null when the purchase is refused (already have it). armor: 0..100, helmet: bool.
+//   vest:      full armour → refused; else 650.
+//   vest+helm: full armour → helmet 350 (refused if the helmet is there too);
+//              not full   → 650 if the helmet is already there, else 1000.
+function combatArmorPrice(wantHelm, armor, helmet) {
+  const full = armor >= 100;
+  if (!wantHelm) return full ? null : 650;
+  if (full) return helmet ? null : 350;
+  return helmet ? 650 : 1000;
+}
+function combatAmmoPack(weaponId) {
+  const c = COMBAT_WEAPON_CALIBER[weaponId];
+  return c ? COMBAT_AMMO[c] : null;
+}
+
 // Node-only export (browser sees the same names as globals).
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     combatRayHitPlayer, combatDamage, combatVelMod,
     COMBAT_WEAPON_DMG, COMBAT_HG_MULT, COMBAT_PEN_MULT,
     COMBAT_BOX_STAND, COMBAT_BOX_DUCK, COMBAT_HW, COMBAT_LARGE_FLINCH,
+    COMBAT_AMMO, COMBAT_WEAPON_CALIBER, COMBAT_SPAWN_RESERVE, combatAmmoPack, combatArmorPrice,
   };
 }
