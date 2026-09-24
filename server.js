@@ -333,10 +333,10 @@ function worldTickMatch(world, dt) {
   }
   worldTickBomb(world, dt, ev);                                 // plant / defuse (geometry) — may end the round
   if (ev.bombDetonate) ev.bombDmg = worldC4Damage(world, ev.bombDetonate.pos);   // blast → dmg events
-  if (ev.roundEnd) {                                            // round reward (win/loss bonus)
-    const win = ev.roundEnd.winner;
+  if (ev.roundEnd) {                                            // team payouts (win by kind + loss-bonus streak)
+    const pay = ev.roundEnd.money || { t: 0, ct: 0 };
     for (const pl of world.players.values()) if (pl.joined)
-      pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + (pl.team === win ? match.MATCH_WIN_REWARD : match.MATCH_LOSS_REWARD));
+      pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + (pay[pl.team] || 0));
   }
   return ev;
 }
@@ -415,7 +415,6 @@ function worldTickBomb(world, dt, ev) {
         if (pl.plantProg >= match.MATCH_PLANT_TIME) {
           pl.plantProg = 0; pl.carryingC4 = false;
           match.matchBombPlant(ms, _bombFloorPos(pl.state), site.site);
-          pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + match.MATCH_PLANT_REWARD);
           ev.bombPlanted = true;     // force an immediate gstate so the bomb/sound appear at once
           break;
         }
@@ -933,7 +932,7 @@ function startServer(port) {
     }
     broadcast(JSON.stringify({ t: 'dmg', id: vId, hg, by, dealt, hp, died, w }));
   };
-  const _award = (pl, amount) => { pl.money = Math.min(match.MATCH_MONEY_CAP, pl.money + amount); };
+  const _award = (pl, amount) => { pl.money = Math.max(0, Math.min(match.MATCH_MONEY_CAP, pl.money + amount)); };
 
   const server = http.createServer((req, res) => { res.writeHead(426); res.end('WebSocket only'); });
 
@@ -1072,7 +1071,7 @@ function startServer(port) {
           if (typeof combat.combatVelMod === 'function')      // knife tags the victim too (small flinch → 0.5)
             tp.state.velMod = combat.combatVelMod('knife', msg.hg | 0, !!tp.state.phyDucked);
           if (r.dealt > 0) dmgEvent(tp.id, msg.hg | 0, id, r.dealt, tp.hp, r.died, 'knife');
-          if (r.died && tp.team !== pl.team) _award(pl, match.matchKillReward('knife'));   // no reward for a team-kill
+          if (r.died) _award(pl, match.matchKillReward('knife', tp.team === pl.team));   // +300, or −3300 for a teammate
         }
         break;
       }
@@ -1081,7 +1080,7 @@ function startServer(port) {
         const hits = worldProcessShot(world, id, msg);
         for (const h of hits) {
           dmgEvent(h.tid, h.hg, id, h.dealt, h.hp, h.died, msg.w);
-          if (h.died && !h.ff) _award(pl, match.matchKillReward(msg.w));   // no reward for a team-kill
+          if (h.died) _award(pl, match.matchKillReward(msg.w, h.ff));   // +300, or −3300 for a teammate
         }
         break;
       }
@@ -1148,7 +1147,7 @@ function startServer(port) {
       if (r.fall) dmgEvent(pl.id, 0, pl.id, r.fall.dealt, pl.hp, r.fall.died, 'fall');
       if (r.hits) for (const h of r.hits) {
         dmgEvent(h.tid, h.hg, pl.id, h.dealt, h.hp, h.died, pl.weapon);
-        if (h.died) _award(pl, match.matchKillReward(pl.weapon));
+        if (h.died) _award(pl, match.matchKillReward(pl.weapon, h.ff));   // +300, or −3300 for a teammate
       }
     }
     // Idle players (menu open / paused input — no usercmds flowing) keep being simulated so
@@ -1169,14 +1168,14 @@ function startServer(port) {
     const projRes = worldTickProjectiles(world, dt);     // HL rocket/bolt flight + damage
     for (const h of projRes.dmg) {
       dmgEvent(h.tid, h.hg, h.owner, h.dealt, h.hp, h.died, h.w || 'rpg');
-      if (h.died && !h.ff) { const op = world.players.get(h.owner); if (op) _award(op, match.matchKillReward(h.w || 'rpg')); }
+      if (h.died) { const op = world.players.get(h.owner); if (op && op !== world.players.get(h.tid)) _award(op, match.matchKillReward(h.w || 'rpg', h.ff)); }
     }
     for (const s of projRes.sticks)                      // embed a stuck bolt on everyone's screen (owner predicts its own)
       broadcast(JSON.stringify({ t: 'boltstick', p: s.pos.map(Math.round), v: s.vel.map(Math.round), o: s.owner }));
     const grenRes = worldTickGrenades(world, dt);        // grenade flight + fuse → damage/detonation
     for (const h of grenRes.dmg) {
       dmgEvent(h.tid, h.hg, h.owner, h.dealt, h.hp, h.died, 'hegrenade');
-      if (h.died && !h.ff) { const op = world.players.get(h.owner); if (op) _award(op, match.matchKillReward('hegrenade')); }
+      if (h.died) { const op = world.players.get(h.owner); if (op && op !== world.players.get(h.tid)) _award(op, match.matchKillReward('hegrenade', h.ff)); }
     }
     for (const b of grenRes.booms) broadcast(JSON.stringify({ t: 'boom', pos: b.pos, w: b.w }));   // effect for everyone
     for (const b of grenRes.bounces) {                   // bounce sound for others (the thrower hears its prediction)

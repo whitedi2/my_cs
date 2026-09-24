@@ -157,6 +157,38 @@ function combatAmmoPack(weaponId) {
   return c ? COMBAT_AMMO[c] : null;
 }
 
+// ── Round money (ReGameDLL gamerules.h REWARD_* + multiplay_gamerules.cpp) ─────────────────
+// Team payouts at round end on a bomb map (de_dust2):
+//   bomb exploded (Target_Bombed)   T  3500
+//   bomb defused  (Target_Defused)  CT 3250, and the LOSING Ts still get 800 for the plant
+//   elimination   (Round_Ts/Round_Cts on a bomb map) winner 3250
+//   time ran out  (Target_Saved)    CT 3250
+// The losing team gets the loss bonus: 1400 to start; from the 2nd straight loss +500 per loss
+// while it is below 3000 (so it tops out at 3400, as in 1.6); a team that breaks its own losing
+// streak resets it to 1500. ONE bonus value shared by both teams, as in the original.
+// Kills: +300 per enemy (any weapon), −3300 for a teammate (PAYBACK_FOR_KILLED_TEAMMATES).
+const COMBAT_REWARD = {
+  explode: 3500, defuse: 3250, elim: 3250, time: 3250,
+  plantedLost: 800, killEnemy: 300, killTeammate: -3300,
+  lossDefault: 1400, lossMin: 1500, lossMax: 3000, lossAdd: 500,
+};
+function combatEconomyNew() { return { lossBonus: COMBAT_REWARD.lossDefault, tLosses: 0, ctLosses: 0 }; }
+// eco: combatEconomyNew() state (mutated). winner 't'|'ct'; kind 'explode'|'defuse'|'elim'|'time'.
+// Returns the per-player payout for each team: { t, ct }.
+function combatRoundMoney(eco, winner, kind) {
+  const R = COMBAT_REWARD;
+  if (winner === 't') { if (eco.tLosses > 1) eco.lossBonus = R.lossMin; eco.tLosses = 0; eco.ctLosses++; }
+  else                { if (eco.ctLosses > 1) eco.lossBonus = R.lossMin; eco.ctLosses = 0; eco.tLosses++; }
+  if (eco.tLosses > 1 && eco.lossBonus < R.lossMax)       eco.lossBonus += R.lossAdd;
+  else if (eco.ctLosses > 1 && eco.lossBonus < R.lossMax) eco.lossBonus += R.lossAdd;
+  const out = { t: 0, ct: 0 };
+  out[winner] += R[kind] || 0;
+  out[winner === 't' ? 'ct' : 't'] += eco.lossBonus;
+  if (kind === 'defuse') out.t += R.plantedLost;
+  return out;
+}
+function combatKillReward(teamKill) { return teamKill ? COMBAT_REWARD.killTeammate : COMBAT_REWARD.killEnemy; }
+
 // Node-only export (browser sees the same names as globals).
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
@@ -164,5 +196,6 @@ if (typeof module !== 'undefined' && module.exports) {
     COMBAT_WEAPON_DMG, COMBAT_HG_MULT, COMBAT_PEN_MULT,
     COMBAT_BOX_STAND, COMBAT_BOX_DUCK, COMBAT_HW, COMBAT_LARGE_FLINCH,
     COMBAT_AMMO, COMBAT_WEAPON_CALIBER, COMBAT_SPAWN_RESERVE, combatAmmoPack, combatArmorPrice,
+    COMBAT_REWARD, combatEconomyNew, combatRoundMoney, combatKillReward,
   };
 }

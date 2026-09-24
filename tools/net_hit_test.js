@@ -75,6 +75,10 @@ server.on('listening', () => {
     clearInterval(fire);
     wsSendText(a, JSON.stringify({ t: 'hello', tm: 't' }));   // opposite teams → full knife damage (no FF cut)
     // The round opens with the freeze: attacks are refused (CS m_bCanShoot = false)…
+    // (wait until the server reports the freeze — before that it's warmup, where hits land)
+    const waitFreeze = setInterval(() => {
+    if (phase !== 'buy') return;
+    clearInterval(waitFreeze);
     wsSendText(a, JSON.stringify({ t: 'hit', target: bId, hg: 2, dmg: 30 }));
     setTimeout(() => {
       check('freeze time: the knife hit is refused', !bDmg && !aDmg, bDmg ? `hp=${bDmg.hp}` : '');
@@ -97,6 +101,7 @@ server.on('listening', () => {
         }, 150);
       }, 20);
     }, 150);
+    }, 20);
   }, 10);
 });
 server.on('error', (e) => { console.error('server error', e); process.exit(1); });

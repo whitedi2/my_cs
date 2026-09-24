@@ -20,7 +20,8 @@ const DEFUSE_TIME   = 10;    // hold E on the bomb to defuse (no kit)
 const DEFUSE_KIT    = 5;     // with a defuse kit
 const ROUND_END     = 5;     // banner before the next round
 const C4_DAMAGE     = 500, C4_RADIUS = 700;
-const PLANT_REWARD  = 800, WIN_REWARD = 3250, LOSS_REWARD = 1400;
+// Round money: combatRoundMoney (combat-core) — the same rules the server applies.
+let _soloEco = null;
 
 let roundPhase = 'idle';     // 'idle' (no match) | 'buy' | 'live' | 'over'
 let roundTimer = ROUND_TIME; // counts down during 'live'
@@ -50,6 +51,7 @@ let bomb = null;             // { pos:[gs], site, timer, beepT, beepIv, defuse, 
 // Called by game.js _chooseClass once the player picks a team/class.
 function startMatch() {
   roundNum = 0;
+  _soloEco = combatEconomyNew();   // fresh match → fresh loss-bonus streak
   hasDefuseKit = false;
   _clearBomb();
   startRound(true);                                    // _chooseClass already spawned the player
@@ -279,15 +281,15 @@ function onNetRoundReset() {
   if (hasJoined && typeof startMatch === 'function') startMatch();
 }
 
-function endRound(winner, msg) {
+function endRound(winner, msg, kind) {
   if (roundPhase === 'over') return;
   roundPhase = 'over';
   endTimer = ROUND_END;
   endMsg = msg;
   endColor = winner === 't' ? '#e8a33d' : '#78a8f0';
-  const won = (winner === playerTeam);
   if (typeof playerMoney !== 'undefined') {
-    playerMoney = Math.min(16000, playerMoney + (won ? WIN_REWARD : LOSS_REWARD));
+    const pay = combatRoundMoney(_soloEco || (_soloEco = combatEconomyNew()), winner, kind || 'elim');
+    playerMoney = Math.min(16000, playerMoney + (pay[playerTeam] || 0));
   }
   carryingC4 = false; plantProg = 0;
   if (bomb) { bomb.defuse = 0; bomb.live = false; }   // keep the model visible on the banner, stop ticking
@@ -311,7 +313,6 @@ function _plantBomb(site) {
   carryingC4 = false;
   _buildBombMesh();
   if (typeof playSound === 'function') playSound('weapons/c4_plant.wav', { volume: 0.9 });
-  if (typeof playerMoney !== 'undefined') playerMoney = Math.min(16000, playerMoney + PLANT_REWARD);
   _banner(`Бомба заложена на точке ${bomb.site.toUpperCase()}`, '#e8a33d', 1.6);
 }
 
@@ -347,7 +348,7 @@ function _detonateBomb() {
   if (typeof enemyRadiusDamage === 'function')  enemyRadiusDamage(pos, C4_DAMAGE, C4_RADIUS);
   if (typeof playerRadiusDamage === 'function') playerRadiusDamage(pos, C4_DAMAGE, C4_RADIUS);
   _clearBomb();
-  endRound('t', 'Бомба взорвана — победа Террористов');
+  endRound('t', 'Бомба взорвана — победа Террористов', 'explode');
 }
 
 // ── Per-frame update (called from the main loop) ────────────────────────────
@@ -377,7 +378,7 @@ function updateRound(dt) {
   } else {
     _updatePlanting(dt);
     roundTimer -= dt;
-    if (roundTimer <= 0) endRound('ct', 'Время вышло — победа Контр-террористов');
+    if (roundTimer <= 0) endRound('ct', 'Время вышло — победа Контр-террористов', 'time');
   }
   _updateRoundHUD();
 }
@@ -454,7 +455,7 @@ function _updatePlantedBomb(dt) {
     if (bomb.defuse >= need) {
       if (typeof playSound === 'function') playSound('weapons/c4_disarmed.wav', { volume: 0.9 });
       _clearBomb();
-      endRound('ct', 'Бомба обезврежена — победа Контр-террористов');
+      endRound('ct', 'Бомба обезврежена — победа Контр-террористов', 'defuse');
       return;
     }
   } else {

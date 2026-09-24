@@ -184,8 +184,25 @@ const check = (name, cond, extra) => {
   check('HE buy charges money only (count is client-side)', r.ok && r.kind === 'nade' && n.money === 16000 - 300,
         `ok=${r.ok} money=${n.money}`);
 
-  check('knife kill rewards $1500', M.matchKillReward('knife') === 1500);
+  // CS 1.6: +300 for any enemy kill, knife included (the $1500 knife bonus is CS:GO); −3300 for a teammate.
+  check('knife kill rewards $300 (not the CS:GO 1500)', M.matchKillReward('knife') === 300);
   check('gun kill rewards $300', M.matchKillReward('ak47') === 300);
+  check('team kill costs $3300', M.matchKillReward('ak47', true) === -3300);
+
+  // Round money + the shared loss-bonus streak (ReGameDLL multiplay_gamerules.cpp).
+  const C = require('../src/combat-core.js');
+  const eco = C.combatEconomyNew();
+  const seq = [];
+  for (let i = 0; i < 5; i++) seq.push(C.combatRoundMoney(eco, 't', 'elim').ct);   // CT loses 5 in a row
+  check('loss bonus streak 1400→1900→2400→2900→3400 (1.6 cap quirk)', seq.join(',') === '1400,1900,2400,2900,3400', seq.join(','));
+  const brk = C.combatRoundMoney(eco, 'ct', 'time');
+  check('breaking the streak resets the bonus to 1500', brk.t === 1500 && brk.ct === 3250, `T=${brk.t} CT=${brk.ct}`);
+  const e2 = C.combatEconomyNew();
+  const ex = C.combatRoundMoney(e2, 't', 'explode');
+  check('bomb exploded: T 3500, CT 1400', ex.t === 3500 && ex.ct === 1400, `T=${ex.t} CT=${ex.ct}`);
+  const e3 = C.combatEconomyNew();
+  const df = C.combatRoundMoney(e3, 'ct', 'defuse');
+  check('bomb defused: CT 3250, T 1400 + 800 for the plant', df.ct === 3250 && df.t === 2200, `CT=${df.ct} T=${df.t}`);
 }
 
 // ── Round rewards via the server ─────────────────────────────────────────────
@@ -197,11 +214,11 @@ const check = (name, cond, extra) => {
   srv.worldTickMatch(world, M.MATCH_BUY_TIME);     // → live
   a.alive = false; a.money = 0; b.money = 0;        // T wiped; zero money to see the bonus
   srv.worldTickMatch(world, 0.01);                 // elimination → CT win + rewards
-  check('winner (CT) gets the win bonus', b.money === M.MATCH_WIN_REWARD, `b=${b.money}`);
-  check('loser (T) gets the loss bonus', a.money === M.MATCH_LOSS_REWARD, `a=${a.money}`);
+  check('elimination winner (CT) gets 3250', b.money === 3250, `b=${b.money}`);
+  check('loser (T) gets the 1400 loss bonus', a.money === 1400, `a=${a.money}`);
 
   const gs = srv.gameState(world, b);
-  check('gameState me carries economy', gs.me && gs.me.money === M.MATCH_WIN_REWARD && Array.isArray(gs.me.weapons),
+  check('gameState me carries economy', gs.me && gs.me.money === 3250 && Array.isArray(gs.me.weapons),
         gs.me ? `money=${gs.me.money}` : 'no me');
 }
 
@@ -221,11 +238,13 @@ const check = (name, cond, extra) => {
   // Plant
   const { w, t } = setup();
   t.state.pos = A.slice(); t.use = true;
+  const tMoney0 = t.money;
   check('bomb not planted yet', w.match.bomb === null);
   for (let i = 0; i < 40; i++) srv.worldTickMatch(w, 0.1);   // 4s > PLANT_TIME (3)
   check('held E in a bombsite → planted on site A', w.match.bomb && w.match.bomb.site === 'a',
         w.match.bomb ? `site=${w.match.bomb.site}` : 'no bomb');
-  check('planter rewarded + carrier cleared', t.money >= M.MATCH_START_MONEY && t.carryingC4 === false);
+  // 1.6 pays no personal plant bonus — the Ts get 800 only if the bomb is then defused.
+  check('carrier cleared, no personal plant bonus', t.money === tMoney0 && t.carryingC4 === false, `money ${tMoney0}→${t.money}`);
   check('gstate carries the bomb', srv.gameState(w, t).bomb && srv.gameState(w, t).bomb.site === 'a');
 
   // Detonate (fuse runs out → T win + blast events)

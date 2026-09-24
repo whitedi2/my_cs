@@ -30,8 +30,6 @@ const MATCH_FALL_PER   = 100.0 / (MATCH_FALL_FATAL - MATCH_FALL_SAFE);   // dmg 
 // ── Economy (Phase 6C) ───────────────────────────────────────────────────────
 const MATCH_START_MONEY = 800;     // mp_startmoney
 const MATCH_MONEY_CAP   = 16000;
-const MATCH_WIN_REWARD  = 3250;
-const MATCH_LOSS_REWARD  = 1400;
 const MATCH_NADE_CAP    = { hegrenade: 1, flashbang: 2, smokegrenade: 1 };
 
 // Buy catalog (must mirror BUY_CATALOG in game.js). team: both|ct|t. kind defaults
@@ -74,12 +72,12 @@ const MATCH_DEFUSE_TIME  = 10;    // hold seconds to defuse without a kit
 const MATCH_DEFUSE_KIT   = 5;     // …with a defuse kit
 const MATCH_C4_DAMAGE    = 500;   // blast damage at the origin
 const MATCH_C4_RADIUS    = 700;   // blast radius (units)
-const MATCH_PLANT_REWARD = 800;   // money awarded for planting
 const MATCH_HE_DAMAGE    = 100;   // HE grenade blast (ReGameDLL pev->dmg) …
 const MATCH_HE_RADIUS    = 350;   // … radius = dmg×3.5 (CBaseMonster::RadiusDamage)
 
-// Per-kill reward (ReGameDLL: knife $1500, most guns $300). 🔹 Approx — flat $300 otherwise.
-function matchKillReward(weapon) { return weapon === 'knife' ? 1500 : 300; }
+// Per-kill money: +300 for any enemy kill, −3300 for a teammate (combatKillReward). The weapon
+// doesn't matter in 1.6 — the $1500 knife bonus is a CS:GO rule.
+function matchKillReward(weapon, teamKill) { return _combat.combatKillReward(!!teamKill); }
 
 // Friendly-fire: teammates take REDUCED damage (not zero). 🔹 Tunable; vanilla CS 1.6 is
 // 0 or full (mp_friendlyfire), we use a partial factor. Self-damage is always full.
@@ -167,7 +165,7 @@ function matchTick(ms, roster, dt) {
   if (ms.phase === 'buy') {
     // Elimination can already settle it; otherwise buy time elapses into live.
     const w = _matchCheckElim(joined, false);
-    if (w) { _matchEndRound(ms, ev, w.winner, w.reason); return ev; }
+    if (w) { _matchEndRound(ms, ev, w.winner, w.reason, 'elim'); return ev; }
     if (ms.timer <= 0) { ms.phase = 'live'; ms.timer = MATCH_ROUND_TIME; ms.buyLeft = MATCH_BUY_TIME; }
     return ev;
   }
@@ -182,20 +180,20 @@ function matchTick(ms, roster, dt) {
       if (ms.bomb.timer <= 0) {
         ev.bombDetonate = { pos: ms.bomb.pos.slice() };
         ms.bombResult = 'explode';
-        _matchEndRound(ms, ev, 't', 'Бомба взорвана — победа Террористов');
+        _matchEndRound(ms, ev, 't', 'Бомба взорвана — победа Террористов', 'explode');
         return ev;
       }
     }
     const w = _matchCheckElim(joined, !!(ms.bomb && ms.bomb.live));
-    if (w) { _matchEndRound(ms, ev, w.winner, w.reason); return ev; }
-    if (!ms.bomb && ms.timer <= 0) _matchEndRound(ms, ev, 'ct', 'Время вышло — победа Контр-террористов');
+    if (w) { _matchEndRound(ms, ev, w.winner, w.reason, 'elim'); return ev; }
+    if (!ms.bomb && ms.timer <= 0) _matchEndRound(ms, ev, 'ct', 'Время вышло — победа Контр-террористов', 'time');
     return ev;
   }
 
   if (ms.phase === 'over') {
     if (ms.timer <= 0) {
       if (joined.length >= MATCH_WARMUP_MIN) _matchStartRound(ms, ev);
-      else { ms.phase = 'warmup'; ms.timer = 0; }    // everyone left → back to warmup
+      else { ms.phase = 'warmup'; ms.timer = 0; ms.eco = _combat.combatEconomyNew(); }    // everyone left → back to warmup
     }
     return ev;
   }
@@ -227,10 +225,10 @@ function matchBombPlant(ms, pos, site) {
 // Server validated a completed defuse → CT win (ev carries the round-end for reward handling).
 function matchBombDefuse(ms, ev) {
   ms.bombResult = 'defuse';
-  _matchEndRound(ms, ev, 'ct', 'Бомба обезврежена — победа Контр-террористов');
+  _matchEndRound(ms, ev, 'ct', 'Бомба обезврежена — победа Контр-террористов', 'defuse');
 }
 
-function _matchEndRound(ms, ev, winner, reason) {
+function _matchEndRound(ms, ev, winner, reason, kind) {
   if (ms._ended) return;
   ms._ended = true;
   ms.phase = 'over';
@@ -238,7 +236,8 @@ function _matchEndRound(ms, ev, winner, reason) {
   ms.bomb = null;             // any round end removes the planted bomb (cue via ms.bombResult)
   ms.winner = winner; ms.reason = reason;
   if (winner === 't') ms.scoreT++; else ms.scoreCT++;
-  ev.roundEnd = { winner, reason };
+  // Team payouts incl. the shared loss-bonus streak (combatRoundMoney).
+  ev.roundEnd = { winner, reason, kind, money: _combat.combatRoundMoney(ms.eco || (ms.eco = _combat.combatEconomyNew()), winner, kind) };
 }
 
 // Elimination needs BOTH teams present (else a one-team practice round only ends on the
@@ -296,8 +295,8 @@ if (typeof module !== 'undefined' && module.exports) {
     matchCreate, matchTick, matchApplyDamage, matchFallDamage, matchRevive, matchBuyOpen, matchFrozen,
     matchBuy, matchKillReward, matchFFMult, matchBombPlant, matchBombDefuse,
     MATCH_FREEZE_TIME, MATCH_BUY_TIME, MATCH_ROUND_TIME, MATCH_ROUND_END, MATCH_WARMUP_MIN, MATCH_MAX_HP, MATCH_FF_MULT,
-    MATCH_START_MONEY, MATCH_MONEY_CAP, MATCH_WIN_REWARD, MATCH_LOSS_REWARD, MATCH_BUY,
+    MATCH_START_MONEY, MATCH_MONEY_CAP, MATCH_BUY,
     MATCH_C4_TIME, MATCH_PLANT_TIME, MATCH_DEFUSE_TIME, MATCH_DEFUSE_KIT,
-    MATCH_C4_DAMAGE, MATCH_C4_RADIUS, MATCH_PLANT_REWARD, MATCH_HE_DAMAGE, MATCH_HE_RADIUS,
+    MATCH_C4_DAMAGE, MATCH_C4_RADIUS, MATCH_HE_DAMAGE, MATCH_HE_RADIUS,
   };
 }
