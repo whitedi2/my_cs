@@ -386,7 +386,8 @@ document.addEventListener('mousedown', e => {
   const wpn = curW();
   // Knife: gated by meleeCooldown (CS rate); held-repeat handled in updateWeapon.
   if (wpn.type === 'melee') {
-    if (meleeCooldown <= 0 && (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB)) {
+    const cdLeft = e.button === 2 ? meleeCooldown2 : meleeCooldown;   // LMB/RMB have separate timers
+    if (cdLeft <= 0 && (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB)) {
       if      (e.button === 0) _startMeleeAttack(wpn, false);
       else if (e.button === 2) _startMeleeAttack(wpn, true);
     }

@@ -98,7 +98,9 @@ const check = (name, cond, extra) => {
   check('revive → full hp + alive', pd.hp === 100 && pd.alive === true);
 
   check('safe fall does no damage', M.matchFallDamage(400) === 0);
-  check('hard fall hurts', M.matchFallDamage(800) > 0, `dmg=${M.matchFallDamage(800).toFixed(1)}`);
+  // CHalfLifeMultiplay::FlPlayerFallDamage: (v − 500) · 100/600 · 1.25 → 800 u/s = 62.5.
+  check('hard fall = CS formula (×1.25)', Math.abs(M.matchFallDamage(800) - 62.5) < 1e-9, `dmg=${M.matchFallDamage(800).toFixed(2)}`);
+  check('fatal speed kills outright', M.matchFallDamage(1100) >= 100, `dmg=${M.matchFallDamage(1100).toFixed(1)}`);
 }
 
 // ── Server applies bullet damage to HP + kills ───────────────────────────────

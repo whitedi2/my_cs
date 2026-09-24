@@ -272,7 +272,10 @@ const WPNS = [
     rot: { x: -0.10, y: Math.PI / 2, z: 0.15 },
     scale: 0.12,
     type: 'melee',
-    slashDamage: 20, stabDamage: 65, backstabMult: 3,   // CS 1.6 knife (swing/stab); ×3 from behind
+    // ReGameDLL: KNIFE_SWING_DAMAGE 15, KNIFE_STAB_DAMAGE 65, ×3 from behind (dot > 0.8). The
+    // 20-dmg KNIFE_SWING_DAMAGE_FAST branch is dead code in CKnife::Swing (its condition reads
+    // m_flNextPrimaryAttack AFTER it was just pushed 0.4 s ahead), so a slash always does 15.
+    slashDamage: 15, stabDamage: 65, backstabMult: 3,
     // Code-driven knife sounds (no MDL events): swing/stab + flesh/wall hits.
     deploySound:   'weapons/knife_deploy1.wav',
     slashSound:    ['weapons/knife_slash1.wav', 'weapons/knife_slash2.wav'],
@@ -408,7 +411,11 @@ let nextWpnIdx = -1;
 
 const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5, SILENCER: 6, PULLPIN: 7, THROW: 8 };
 let ws = WS.DRAW, wsT = 0, wsIdleT = 0, wsHit = false;
-let meleeCooldown = 0;          // time (s) until the next knife attack is allowed
+// Knife rate, as ReGameDLL CKnife keeps it: two timers. LMB (m_flNextPrimaryAttack) and RMB
+// (m_flNextSecondaryAttack) are gated separately — after a slash the stab waits 0.5 s even
+// though the next slash is allowed at 0.35/0.4 s.
+let meleeCooldown  = 0;         // s until the next LMB slash is allowed
+let meleeCooldown2 = 0;         // s until the next RMB stab is allowed
 let bobCycle = 0, bobAmt = 0;  // weapon bob state
 
 function curW() { return WPNS[curWpnIdx]; }
@@ -664,7 +671,7 @@ function _beginDraw(idx) {
   curWpnIdx  = idx;
   nextWpnIdx = -1;
   ws = WS.DRAW; wsT = 0;
-  meleeCooldown = 0;
+  meleeCooldown = 0; meleeCooldown2 = 0;
   const wpn = WPNS[curWpnIdx];
   wpn._reloadInterrupted = false;  // Очистить флаг прерывания при переключении на новое оружие
   wpn._silencerInterrupted = false;  // Очистить флаг глушителя при переключении
@@ -713,15 +720,17 @@ function _meleeHits(dist) {
 //   LMB slash : hit → slash1/slash2 (0.25s),  miss → midslash1/midslash2 (0.4s)
 //   RMB stab  : hit → stab (1.1s),            miss → stab_miss (1.0s)
 function _startMeleeAttack(wpn, isStab) {
-  const meleeResult = _meleeHits(48);
+  // KNIFE_SWING_DISTANCE 48 / KNIFE_STAB_DISTANCE 32 (ReGameDLL weapons.h) — the stab reaches less.
+  const reach = isStab ? 32 : 48;
+  const meleeResult = _meleeHits(reach);
   const hit = meleeResult !== null;
   // Cut orientation (right-hand weapon): LMB = one diagonal upper-left→lower-right,
   // RMB = near-horizontal. Mirrored for a left-hand weapon. Small jitter only.
   const handSign = rightHand ? 1 : -1;
-  let seqName, cd, cutRoll;
+  let seqName, cd, cd2, cutRoll;
   if (isStab) {
     seqName = hit ? 'stab' : 'stab_miss';
-    cd = hit ? 1.1 : 1.0;
+    cd = cd2 = hit ? 1.1 : 1.0;           // CKnife::Stab: both timers 1.1 hit / 1.0 miss
     ws = WS.STAB;
     cutRoll = handSign * -0.12 + (Math.random() - 0.5) * 0.1;   // RMB → near-horizontal
   } else {
@@ -730,15 +739,16 @@ function _startMeleeAttack(wpn, isStab) {
     // hit must not shorten the visible animation. Hit only affects the cooldown.
     const i = wpn.anim ? (wpn.anim._slashIdx = ((wpn.anim._slashIdx ?? -1) + 1) % 2) : 0;
     seqName = i ? 'midslash2' : 'midslash1';
-    cd = hit ? 0.35 : 0.4;
+    cd  = hit ? 0.4 : 0.35;               // CKnife::Swing: hit 0.4, miss 0.35 (was swapped)
+    cd2 = 0.5;                            // …and the stab waits 0.5 either way
     ws = WS.SLASH;
     cutRoll = handSign * -0.35 + (Math.random() - 0.5) * 0.12;  // LMB → shallow diagonal upper-left→lower-right
   }
   if (hit) _spawnDecal('knife', 64, 0, cutRoll);
   let bodyHit = false;
-  if (typeof enemyTryShoot === 'function') bodyHit = enemyTryShoot(48, {   // knife the dummy if in range
+  if (typeof enemyTryShoot === 'function') bodyHit = enemyTryShoot(reach, {   // knife the dummy if in range
     melee: true,
-    damage: isStab ? (wpn.stabDamage ?? 65) : (wpn.slashDamage ?? 25),
+    damage: isStab ? (wpn.stabDamage ?? 65) : (wpn.slashDamage ?? 15),
     backstabMult: wpn.backstabMult ?? 3,
   });
   // Original knife sounds (code-driven, no MDL events): swing swoosh on every
@@ -755,7 +765,7 @@ function _startMeleeAttack(wpn, isStab) {
     }
   }
   wsT = 0; wsHit = false;
-  meleeCooldown = cd;
+  meleeCooldown = cd; meleeCooldown2 = cd2;
   if (wpn.anim) {
     wpn.anim._attackSeq = seqName;
     wpn.anim._prevAttackWs = undefined;   // force frame reset in applySkeletalAnimation
@@ -783,6 +793,7 @@ function updateWeapon(dt) {
   }
   wsT += dt; wsIdleT += dt;
   if (meleeCooldown > 0) meleeCooldown -= dt;
+  if (meleeCooldown2 > 0) meleeCooldown2 -= dt;
   const p = wpn.root.position, r = wpn.root.rotation;
   const eo = t => 1 - (1-t)*(1-t);
 
@@ -1085,10 +1096,9 @@ function updateWeapon(dt) {
 
   // Knife auto-repeat: while a mouse button is held, swing at the original
   // CS fire rate (gated by meleeCooldown), interrupting the previous swing.
-  if (wpn.type === 'melee' && meleeCooldown <= 0 &&
-      (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB)) {
-    if      (lmbHeld) _startMeleeAttack(wpn, false);
-    else if (rmbHeld) _startMeleeAttack(wpn, true);
+  if (wpn.type === 'melee' && (ws === WS.IDLE || ws === WS.SLASH || ws === WS.STAB)) {
+    if      (lmbHeld && meleeCooldown  <= 0) _startMeleeAttack(wpn, false);
+    else if (rmbHeld && !lmbHeld && meleeCooldown2 <= 0) _startMeleeAttack(wpn, true);
   }
 
   // Skeletal animation

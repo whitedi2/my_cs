@@ -265,7 +265,8 @@ function matchApplyDamage(pl, dmg, hg) {
 
 // Fall damage for a touchdown speed (GoldSrc-style linear over the safe threshold).
 function matchFallDamage(fallVel) {
-  return fallVel > MATCH_FALL_SAFE ? (fallVel - MATCH_FALL_SAFE) * MATCH_FALL_PER : 0;
+  // CHalfLifeMultiplay::FlPlayerFallDamage: (v − 500) · 100/600 · 1.25 (CS adds the 1.25).
+  return fallVel > MATCH_FALL_SAFE ? (fallVel - MATCH_FALL_SAFE) * MATCH_FALL_PER * 1.25 : 0;
 }
 
 // Round respawn: full HP + alive again (armor/helmet persist across rounds, CS-style).

@@ -46,6 +46,13 @@
     reload:    { wpn: 'm4',    dur: 5.0, tl: [[0.2, { lmb: true }], [0.6, { lmb: false }], [1.0, { tap: 'KeyR' }]] },
     switch:    { wpn: 'knife', dur: 4.0, tl: [[0.5, { tap: 'Digit1' }], [1.8, { tap: 'Digit2' }], [3.0, { tap: 'Digit3' }]] },
     silencer:  { wpn: 'usp',   dur: 4.0, tl: [[0.5, { tap: 'KeyF' }]] },
+    // ── knife (ReGameDLL CKnife: slash 0.35 miss / 0.4 hit; stab 1.0 / 1.1; stab after a slash waits 0.5) ──
+    knife:     { wpn: 'knife', dur: 2.2, tl: [[0.0, { lmb: true }], [2.0, { lmb: false }]] },
+    knife_mix: { wpn: 'knife', dur: 3.0, tl: [[0.0, { lmb: true }], [0.04, { lmb: false }], [0.1, { rmb: true }], [2.8, { rmb: false }]] },
+    // ── fall damage: small lift + a downward kick (de_dust2's sky is only ~170 u above the spawns,
+    //    too low to reach a damaging speed by gravity alone); FlPlayerFallDamage only reads the
+    //    touchdown speed, so the source of that speed doesn't matter ──
+    fall:      { waitFor: 'ground', wpn: 'knife', dur: 1.5, tl: [[0.0, { lift: 60, vz: -700 }]] },
   };
 
   // ── Output plumbing (read back by tools/client_test.js via --dump-dom) ─────
@@ -179,6 +186,8 @@
       if ('rmb' in a) mouseBtn(2, a.rmb);
       if (a.look)  { yaw = a.look[0] * Math.PI / 180; pitch = a.look[1] * Math.PI / 180; }
       if (a.mouse) { pendingYaw += a.mouse[0] * Math.PI / 180; pendingPitch += a.mouse[1] * Math.PI / 180; }
+      // lift: teleport straight up by N units at rest (a scripted drop; the pump then simulates the fall)
+      if (a.lift)  { gsPos = [gsPos[0], gsPos[1], gsPos[2] + a.lift]; vel = [0, 0, a.vz || 0]; onGround = false; }
     }
 
     function sample(t) {

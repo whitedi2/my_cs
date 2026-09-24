@@ -331,9 +331,9 @@ function playerMove(dt) {
     }
   }
   // Fall damage (CS FlPlayerFallDamage): any landing over the safe threshold hurts;
-  // armor doesn't help. (HP stays client-side until server-side hit-reg, step D.)
+  // armor doesn't help. CS multiplies the HL formula by 1.25 (multiplay_gamerules.cpp). (HP stays client-side until server-side hit-reg, step D.)
   if (ev.landed && ev.fallVel > FALL_SAFE_SPEED && typeof playerTakeDamage === 'function')
-    playerTakeDamage((ev.fallVel - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED, { covered: false });
+    playerTakeDamage((ev.fallVel - FALL_SAFE_SPEED) * FALL_DAMAGE_PER_SPEED * 1.25, { covered: false });
 
   // ── View punch spring (landing kick) ──────────────────────────────────
   // Implicit Euler — unconditionally stable at any dt (explicit blows up at dt≥0.05)

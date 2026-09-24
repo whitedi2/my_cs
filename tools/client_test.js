@@ -74,6 +74,7 @@ function findChrome() {
 const SCENARIO_DUR = {   // must mirror the SCENARIOS table in src/autotest.js
   walk: 2.5, walk_m4: 2.5, shiftwalk: 2.5, strafe: 2.0, duck: 2.5, jump: 2.0,
   fire: 2.5, dryfire: 9.0, reload: 5.0, switch: 4.0, silencer: 4.0,
+  knife: 2.2, knife_mix: 3.0, fall: 1.5,
 };
 function unescapeHtml(s) {
   return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
@@ -123,6 +124,17 @@ const dist2d  = (a, b) => Math.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1]);
 // Run-speed cap the game actually uses, mirroring physics.js: the weapon's
 // m_flMaxSpeed, falling back to sv_maxspeed (the knife carries no cap of its own).
 const capOf   = o => o.wcfg.maxSpeed || o.cfg.maxspeed;
+// Frames where a knife attack STARTED: the state machine enters SLASH/STAB or restarts
+// it (wsT resets). Returns [{t, ws}].
+const meleeStarts = s => {
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    const x = s[i], p = s[i - 1];
+    if (x.ws !== 2 && x.ws !== 3) continue;
+    if (!p || p.ws !== x.ws || x.wsT < p.wsT) out.push({ t: x.t, ws: x.ws });
+  }
+  return out;
+};
 const WS = { IDLE: 0, DRAW: 1, SLASH: 2, STAB: 3, FIRE: 4, RELOAD: 5, SILENCER: 6, PULLPIN: 7, THROW: 8 };
 
 // ── Per-scenario assertions ──────────────────────────────────────────────────
@@ -254,6 +266,48 @@ const ASSERTS = {
     const afterSwitch = firstW(s, x => x.t >= 0.5 && x.wpn === 'm4');
     check('a switch plays the draw animation', afterSwitch && afterSwitch.ws === WS.DRAW,
           afterSwitch ? `ws=${afterSwitch.ws}` : '');
+  },
+  // Knife timings straight from ReGameDLL CKnife::Swing/Stab. The tick is 1/50 s, so a
+  // cooldown lands on the next whole frame (0.35 → 0.36, 0.5 → 0.5/0.52).
+  knife(o, check) {
+    const st = meleeStarts(o.samples).filter(x => x.ws === 2);
+    const gaps = st.slice(1).map((x, i) => x.t - st[i].t);
+    const mean = gaps.reduce((a, b) => a + b, 0) / (gaps.length || 1);
+    check('held LMB keeps slashing', st.length >= 5, `slashes=${st.length}`);
+    check('slash-miss cadence is 0.35 s (CKnife::Swing miss)', near(mean, 0.36, 0.021),
+          `mean gap=${mean.toFixed(3)}s over ${gaps.length}`);
+  },
+  knife_mix(o, check) {
+    const st = meleeStarts(o.samples);
+    const slash = st.find(x => x.ws === 2), stabs = st.filter(x => x.ws === 3);
+    check('a slash, then stabs', !!slash && stabs.length >= 2, `slash=${!!slash} stabs=${stabs.length}`);
+    if (slash && stabs.length) {
+      const wait = stabs[0].t - slash.t;
+      // ±1 tick: an attack started from the mouse handler is also decremented by that same
+      // frame's updateWeapon, so it can come up one frame (0.02 s here) early.
+      check('stab after a slash waits 0.5 s (m_flNextSecondaryAttack)', wait >= 0.47 && wait <= 0.54,
+            `waited ${wait.toFixed(3)}s`);
+    }
+    if (stabs.length >= 2) {
+      const g = stabs[1].t - stabs[0].t;
+      check('stab-miss cadence is 1.0 s', near(g, 1.0, 0.021), `gap=${g.toFixed(3)}s`);
+    }
+  },
+  fall(o, check) {
+    const s = o.samples;
+    const air  = s.filter(x => !x.ground);
+    const land = firstW(s, x => x.t > 0.05 && x.ground);
+    check('the lift put him in the air', air.length >= 2, `air frames=${air.length}`);
+    check('lands', !!land);
+    if (!land) return;
+    // Touchdown speed = the fastest downward |vz| before contact (the core reports the
+    // pre-landing velocity as m_flFallVelocity; the contact tick itself is already clipped).
+    const v = Math.max(...s.filter(x => x.t < land.t && !x.ground).map(x => -x.vel[2]));
+    const want = v > 500 ? (v - 500) * (100 / 600) * 1.25 : 0;   // CHalfLifeMultiplay::FlPlayerFallDamage
+    const lost = s[0].hp - o.end.hp;
+    check('reaches a damaging speed (> 500)', v > 600, `v=${v.toFixed(1)}`);
+    check('HP loss = CS fall formula (×1.25)', near(lost, want, 2), `lost=${lost} want≈${want.toFixed(1)} at v=${v.toFixed(0)}`);
+    check('armor does not absorb falls', o.end.ar === s[0].ar);
   },
   silencer(o, check) {
     const s = o.samples;
