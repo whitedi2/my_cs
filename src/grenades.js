@@ -19,17 +19,14 @@ const GRENADE_DEFS = {
                   detonate: 'weapons/sg_explode.wav' },
 };
 
-const GREN_ELAST   = 0.5;   // 🔹 bounce restitution across the normal (engine SV_Physics bounce
-                            //    coefficient isn't a single exposed constant — kept as approximation)
-const GREN_FRICT   = 0.7;   // tangential speed kept per bounce — CS grenade pev->friction = 0.7
-const GREN_GRAVITY = 0.55;  // CS sets the grenade entity pev->gravity = 0.55 → falls at ~half
-                            // sv_gravity, so it arcs much farther than a full-gravity drop.
+// Flight physics (gravity/friction per type, bounce, rest) is the shared engine port
+// simGrenadeStep in src/sim-core.js — the server runs the very same code.
 // Grenades are traced with the smallest available BSP hull (duck/hull3, ±18 vertical),
 // so a resting grenade's CENTER sits ~18u above the floor. Drop the visual mesh by this
 // much so the model actually touches the ground (see docs/DIFFERENCES.md 🔹).
 const GREN_VIS_DROP = 14;
-// Spawn the nade a touch above the eye so it reads as leaving the raised throwing hand
-// (the projectile origin in CS is the eye; this is purely the visual "from the hand" lift).
+// The physics origin is the eye (CS: eye + forward·16). The MESH starts this much higher so
+// it reads as leaving the raised throwing hand, and eases down onto the true path — visual only.
 const GREN_SPAWN_LIFT = 12;
 
 const _grenadesInAir = [];
@@ -100,25 +97,18 @@ function _ensureWMesh(type, cb) {
 }
 
 // ── Throw: spawn the projectile at the eye + aim, with an arc ────────────────
-// Original CS lob (ggrenade.cpp): the aim pitch is biased ~10° upward and the throw
-// speed scales with how far DOWN you look (level aim ≈ 500 u/s, max 1000). GoldSrc
-// pitch is +down; our `pitch` is +up, so negate when entering the formula.
+// Original CS lob (wpn_hegrenade.cpp WeaponIdle): pitch biased 10° up, speed (90 − pitch)·6
+// capped at 750 (level aim = 600 u/s) — simGrenadeThrow in sim-core. GoldSrc pitch is +down;
+// our `pitch` is +up, so negate when entering the formula.
 function throwGrenade(wpn) {
   if (!gsPos) return;
   const type = wpn.grenadeType;
   const eyeH = playerEyeH();
 
-  let gp = -pitch * 180 / Math.PI;                       // GoldSrc-convention pitch (deg, +down)
-  if (gp < 0) gp = -10 + gp * ((90 - 10) / 90);
-  else        gp = -10 + gp * ((90 + 10) / 90);
-  let flVel = (90 - gp) * 5;
-  if (flVel > 1000) flVel = 1000;
+  const th = simGrenadeThrow(yaw, -pitch * 180 / Math.PI);   // GoldSrc pitch (deg, +down)
+  const fwd = th.dir, flVel = th.speed;
 
-  const mp = -gp * Math.PI / 180;                        // biased pitch back in our +up convention
-  const cp = Math.cos(mp), sp = Math.sin(mp);
-  const fwd = [-Math.sin(yaw) * cp, Math.cos(yaw) * cp, sp];   // GoldSrc forward (+z up)
-
-  const eye = [gsPos[0], gsPos[1], gsPos[2] + eyeH + GREN_SPAWN_LIFT];
+  const eye = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
   let src = [eye[0] + fwd[0] * 16, eye[1] + fwd[1] * 16, eye[2] + fwd[2] * 16];
   // Don't let the 16u muzzle offset poke the projectile through a wall/floor when you
   // throw straight into a surface (otherwise it spawns in solid and falls through).
@@ -136,11 +126,12 @@ function throwGrenade(wpn) {
   const predicted = (typeof _netDriven !== 'undefined' && _netDriven);
   if (predicted && typeof netSendNadeThrow === 'function') netSendNadeThrow(src.slice(), [vx, vy, vz], type);
   const g = { type, pos: src, vel: [vx, vy, vz], fuse: GRENADE_DEFS[type].fuse, mesh: null, predicted,
-              spin: [Math.random() * 6, Math.random() * 6, 0], resting: false, bounceT: 0, drop: 0 };
+              spin: [Math.random() * 6, Math.random() * 6, 0], resting: false, onGround: false, bounceCount: 0,
+              drop: 0, lift: GREN_SPAWN_LIFT };
   _ensureWMesh(type, tmpl => {
     if (!tmpl || g._dead) return;
     g.mesh = tmpl.clone();
-    g.mesh.position.set(g.pos[0], g.pos[2] - g.drop, -g.pos[1]);
+    g.mesh.position.set(g.pos[0], g.pos[2] - g.drop + g.lift, -g.pos[1]);
     scene.add(g.mesh);
   });
   _grenadesInAir.push(g);
@@ -169,15 +160,15 @@ function updateGrenades(dt) {
   for (let i = _grenadesInAir.length - 1; i >= 0; i--) {
     const g = _grenadesInAir[i];
     g.fuse -= dt;
-    if (g.bounceT > 0) g.bounceT -= dt;
     if (!g.resting) _moveGrenade(g, dt);
+    g.lift *= Math.exp(-dt * 12);        // hand-height start eases onto the true path (visual)
     if (g.mesh) {
       // In flight the mesh sits at the true (collision-center) point so it leaves at
       // hand height; once it settles, ease it down onto the floor (the duck-hull center
       // rests ~18u up). Easing avoids a hard pop when it comes to rest.
       const target = g.resting ? GREN_VIS_DROP : 0;
       g.drop += (target - g.drop) * Math.min(1, dt * 12);
-      g.mesh.position.set(g.pos[0], g.pos[2] - g.drop, -g.pos[1]);
+      g.mesh.position.set(g.pos[0], g.pos[2] - g.drop + g.lift, -g.pos[1]);
       if (!g.resting) { g.mesh.rotation.x += g.spin[0] * dt; g.mesh.rotation.y += g.spin[1] * dt; }
     }
     if (g.fuse <= 0) {
@@ -192,35 +183,17 @@ function updateGrenades(dt) {
   _updateSmokes(dt);
 }
 
-// Gravity + swept BSP collision with reflection off the hit-plane normal.
+// One physics update: the shared engine port (sim-core simGrenadeStep), plus the sound for
+// the bounces it reports (BounceSound only fires for the first 5 airborne bounces).
 function _moveGrenade(g, dt) {
   const prev = [...g.pos];                  // last known good (non-solid) position
-  g.vel[2] -= SV.gravity * GREN_GRAVITY * dt;
-  let timeLeft = dt, hops = 0;
-  while (timeLeft > 1e-5 && hops < 4) {
-    const to = [g.pos[0] + g.vel[0] * timeLeft, g.pos[1] + g.vel[1] * timeLeft, g.pos[2] + g.vel[2] * timeLeft];
-    const tr = _traceGren(g.pos, to);
-    if (tr.allsolid) { g.vel = [0, 0, 0]; g.resting = true; return; }
-    if (tr.fraction > 0) g.pos = [...tr.end];
-    if (tr.fraction >= 1 || !tr.plane) break;
-    const n = tr.plane;
-    const dot = g.vel[0] * n[0] + g.vel[1] * n[1] + g.vel[2] * n[2];
-    g.vel[0] = (g.vel[0] - (1 + GREN_ELAST) * dot * n[0]) * GREN_FRICT;
-    g.vel[1] = (g.vel[1] - (1 + GREN_ELAST) * dot * n[1]) * GREN_FRICT;
-    g.vel[2] = (g.vel[2] - (1 + GREN_ELAST) * dot * n[2]) * GREN_FRICT;
-    if (g.bounceT <= 0 && Math.hypot(g.vel[0], g.vel[1], g.vel[2]) > 80) {
-      _grenadeBounceSound(g); g.bounceT = 0.12;
-    }
-    timeLeft -= timeLeft * tr.fraction;
-    hops++;
-  }
-  // Safety net: if a fast bounce ever lands the center inside geometry, snap back to
-  // the last good spot and settle — never let a grenade vanish through the world.
+  const ev = simGrenadeStep(simHull, g, dt);
+  if (ev.bounces) _grenadeBounceSound(g);
+  // Safety net: if a bounce ever leaves the centre inside geometry, snap back and settle —
+  // never let a grenade vanish through the world.
   if (typeof pointContents === 'function' && pointContents(gHullHeadDuck, g.pos) === CONTENTS_SOLID) {
-    g.pos = prev; g.vel = [0, 0, 0]; g.resting = true;
+    g.pos = prev; g.vel = [0, 0, 0]; g.onGround = true; g.resting = true;
   }
-  // Settle on a near-flat surface once it's slow (so it doesn't jitter forever).
-  if (Math.hypot(g.vel[0], g.vel[1], g.vel[2]) < 30) g.resting = true;
 }
 
 // Bounce sound. Canon (ggrenade.cpp / CS assets): the HE grenade has its own

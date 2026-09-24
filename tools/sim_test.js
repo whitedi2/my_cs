@@ -111,5 +111,60 @@ const idleCmd = { forwardMove: 0, sideMove: 0, jump: false, duck: false, walk: f
         `dz=${(st.pos[2] - z0).toFixed(3)}`);
 }
 
+// ── Test 5: grenade throw + flight = engine MOVETYPE_BOUNCE + CGrenade::BounceTouch ──
+{
+  const near = (a, b, e) => Math.abs(a - b) <= e;
+  // Throw speed (wpn_hegrenade.cpp): (90 − biased pitch)·6, capped at 750.
+  check('nade throw: level aim = 600 u/s', near(sim.simGrenadeThrow(0, 0).speed, 600, 1e-9));
+  check('nade throw: capped at 750 looking up', sim.simGrenadeThrow(0, -45).speed === 750);
+  check('nade throw: 300 u/s looking 45° down', near(sim.simGrenadeThrow(0, 45).speed, 300, 1e-9));
+  check('nade throw: level aim leaves 10° up', near(Math.asin(sim.simGrenadeThrow(0, 0).dir[2]) * 180 / Math.PI, 10, 1e-9));
+
+  const sp = hullData.spawns.ct[0];
+  const floorSt = sim.simMakeState([sp.origin[0], sp.origin[1], sp.origin[2] + 64]);
+  for (let i = 0; i < 200 && !floorSt.onGround; i++) sim.simPlayerMove(hull, floorSt, idleCmd, DT, null);
+  const floorZ = floorSt.pos[2] - 36;                // player feet = the floor
+  const nadeRestZ = floorZ + 18;                     // duck-hull centre resting on it
+
+  // Drop straight down from 100 u above rest: the rebound keeps (1 − friction) of the speed.
+  for (const [type, want] of [['hegrenade', 0.3], ['flashbang', 0.2]]) {
+    const g = { type, pos: [floorSt.pos[0], floorSt.pos[1], nadeRestZ + 100], vel: [0, 0, 0], onGround: false, bounceCount: 0 };
+    let before = 0, after = null;
+    for (let i = 0; i < 300 && after === null; i++) {
+      const vz0 = g.vel[2];
+      sim.simGrenadeStep(hull, g, 0.01);
+      if (g.bounceCount === 1) { before = -(vz0 - sim.SIM_GRENADE[type].gravity * 800 * 0.01); after = g.vel[2]; }
+    }
+    check(`nade ${type}: floor rebound = ${want} of impact speed`, after !== null && near(after / before, want, 0.01),
+          after !== null ? `${after.toFixed(1)} / ${before.toFixed(1)} = ${(after / before).toFixed(3)}` : 'no bounce');
+  }
+
+  // A glancing floor hit in the air keeps its horizontal speed (only the normal part bounces).
+  {
+    const yaw = ((sp.angle || 0) - 90) * Math.PI / 180;   // the spawn faces open space
+    const g = { type: 'hegrenade', pos: [floorSt.pos[0], floorSt.pos[1], nadeRestZ + 4],
+                vel: [-Math.sin(yaw) * 300, Math.cos(yaw) * 300, -200], onGround: false, bounceCount: 0 };
+    let hSpeedAfter = null;
+    for (let i = 0; i < 50 && hSpeedAfter === null; i++) {
+      sim.simGrenadeStep(hull, g, 0.01);
+      if (g.bounceCount === 1) hSpeedAfter = Math.hypot(g.vel[0], g.vel[1]);
+    }
+    check('nade: airborne bounce keeps the tangential speed', hSpeedAfter !== null && near(hSpeedAfter, 300, 0.5),
+          `h=${hSpeedAfter && hSpeedAfter.toFixed(2)}`);
+  }
+
+  // A normal level throw from eye height comes to rest before the 1.5 s fuse, on the floor.
+  {
+    const yaw = ((sp.angle || 0) - 90) * Math.PI / 180;
+    const th = sim.simGrenadeThrow(yaw, 0);
+    const g = { type: 'hegrenade', pos: [floorSt.pos[0], floorSt.pos[1], floorSt.pos[2] + 17],
+                vel: th.dir.map(c => c * th.speed), onGround: false, bounceCount: 0 };
+    let restT = null;
+    for (let i = 0; i < 150; i++) { sim.simGrenadeStep(hull, g, 0.01); if (g.resting && restT === null) restT = (i + 1) * 0.01; }
+    check('nade: level throw settles before the fuse', restT !== null && restT < 1.5, `rest at ${restT && restT.toFixed(2)}s`);
+    check('nade: rests on a floor, not in solid', g.onGround && g.vel.every(v => v === 0));
+  }
+}
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -119,7 +119,7 @@ const WPNS = [
     ejectionBone: 41, ejectionOrg: [0, -1.25, 0], shellType: 'rifle',
     flashSX: 0.5, flashSY: 0.5, flashType: 'rifle',
     ammo: 30, maxAmmo: 30,
-    reserve: 90, reloadTime: 3.1,
+    reserve: 90, reloadTime: 3.05,        // M4A1_RELOAD_TIME
     maxSpeed: 230,            // CS 1.6 m_flMaxSpeed (run cap)
     slot: 'primary',
     root: null,
@@ -133,11 +133,11 @@ const WPNS = [
   ..._autoRifle('aug',   'Bullpup',        { damage: 32, rangeMod: 0.96,  fireInterval: 0.09,   ammo: 30, reload: 3.3,  recoilP: 0.85, spread: 0.013, maxSpeed: 240, fireSound: ['weapons/aug-1.wav'], muzzleBone: 20, muzzleOrg: [2.4, -15.7, 1.1],   ejectBone: 41, ejectOrg: [-0.75, 4.0, 0.75] }),
   ..._autoRifle('sg552', 'Krieg 552',      { damage: 33, rangeMod: 0.955, fireInterval: 0.0825, ammo: 30, reload: 3.0,  recoilP: 0.95, spread: 0.014, maxSpeed: 235, fireSound: ['weapons/sg552-1.wav', 'weapons/sg552-2.wav'], muzzleBone: 38, muzzleOrg: [0, -11.25, -0.5],  ejectBone: 38, ejectOrg: [0, -1.0, 0] }),
   // ── SMGs (group 3, full-auto, 9mm/.45 shells). Stats verified vs ReGameDLL.
-  ..._autoRifle('mp5',   'MP5 Navy',  { damage: 26, rangeMod: 0.84,  fireInterval: 0.08,   ammo: 30, reserve: 120, reload: 2.6, recoilP: 0.55, spread: 0.016, fireSound: ['weapons/mp5-1.wav', 'weapons/mp5-2.wav'], shellType: 'pistol', muzzleBone: 20, muzzleOrg: [3.4, -13.7, 2.5],  ejectBone: 38, ejectOrg: [0, -1.5, 0] }),
-  ..._autoRifle('tmp',   'TMP',       { damage: 20, rangeMod: 0.85,  fireInterval: 0.07,   ammo: 30, reserve: 120, reload: 2.1, recoilP: 0.4,  spread: 0.016, fireSound: ['weapons/tmp-1.wav', 'weapons/tmp-2.wav'], shellType: 'pistol', fire: ['shoot'], muzzleBone: 20, muzzleOrg: [2.5, -15.8, 2.25],  ejectBone: 40, ejectOrg: [0, -1.0, 0.5] }),
-  ..._autoRifle('mac10', 'MAC-10',    { damage: 29, rangeMod: 0.82,  fireInterval: 0.075,  ammo: 30, reserve: 100, reload: 3.1, recoilP: 0.6,  spread: 0.02,  fireSound: ['weapons/mac10-1.wav'], shellType: 'pistol', muzzleBone: 20, muzzleOrg: [2.0, -8.0, 0.5],   ejectBone: 40, ejectOrg: [0, -2.0, 0] }),
+  ..._autoRifle('mp5',   'MP5 Navy',  { damage: 26, rangeMod: 0.84,  fireInterval: 0.08,   ammo: 30, reserve: 120, reload: 2.63, recoilP: 0.55, spread: 0.016, fireSound: ['weapons/mp5-1.wav', 'weapons/mp5-2.wav'], shellType: 'pistol', muzzleBone: 20, muzzleOrg: [3.4, -13.7, 2.5],  ejectBone: 38, ejectOrg: [0, -1.5, 0] }),
+  ..._autoRifle('tmp',   'TMP',       { damage: 20, rangeMod: 0.85,  fireInterval: 0.07,   ammo: 30, reserve: 120, reload: 2.12, recoilP: 0.4,  spread: 0.016, fireSound: ['weapons/tmp-1.wav', 'weapons/tmp-2.wav'], shellType: 'pistol', fire: ['shoot'], muzzleBone: 20, muzzleOrg: [2.5, -15.8, 2.25],  ejectBone: 40, ejectOrg: [0, -1.0, 0.5] }),
+  ..._autoRifle('mac10', 'MAC-10',    { damage: 29, rangeMod: 0.82,  fireInterval: 0.075,  ammo: 30, reserve: 100, reload: 3.15, recoilP: 0.6,  spread: 0.02,  fireSound: ['weapons/mac10-1.wav'], shellType: 'pistol', muzzleBone: 20, muzzleOrg: [2.0, -8.0, 0.5],   ejectBone: 40, ejectOrg: [0, -2.0, 0] }),
   ..._autoRifle('ump45', 'UMP45',     { damage: 30, rangeMod: 0.82,  fireInterval: 0.095,  ammo: 25, reserve: 100, reload: 3.5, recoilP: 0.55, spread: 0.016, fireSound: ['weapons/ump45-1.wav'], shellType: 'pistol', muzzleBone: 41, muzzleOrg: [0, -8.3, 0],       ejectBone: 41, ejectOrg: [0, -1.0, 0] }),
-  ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.3, recoilP: 0.5,  spread: 0.016, maxSpeed: 245, fireSound: ['weapons/p90-1.wav'], shellType: 'pistol', idle: 'idle', muzzleBone: 20, muzzleOrg: [1.9, -8.6, 1.5],   ejectBone: 39, ejectOrg: [1.0, -2.0, 0] }),
+  ..._autoRifle('p90',   'P90',       { damage: 21, rangeMod: 0.885, fireInterval: 0.07,   ammo: 50, reserve: 100, reload: 3.4, recoilP: 0.5,  spread: 0.016, maxSpeed: 245, fireSound: ['weapons/p90-1.wav'], shellType: 'pistol', idle: 'idle', muzzleBone: 20, muzzleOrg: [1.9, -8.6, 1.5],   ejectBone: 39, ejectOrg: [1.0, -2.0, 0] }),
   // ── Machine gun (group 5, full-auto). Verified vs ReGameDLL.
   ..._autoRifle('m249',  'M249 Para', { damage: 32, rangeMod: 0.97,  fireInterval: 0.10,   ammo: 100, reserve: 200, reload: 4.7, recoilP: 1.0, spread: 0.012,
                   maxSpeed: 220, fireSound: ['weapons/m249-1.wav', 'weapons/m249-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [3.6, -18.4, 2.75],  ejectBone: 49, ejectOrg: [0, 0, 0] }),
@@ -167,7 +167,8 @@ const WPNS = [
     flashSX: 0.5, flashSY: 0.5, flashType: 'rifle',
     muzzleBone: 38, muzzleOrg: [0, -22.0, 0],    // MDL attachment 0 (muzzle)
     ejectionBone: 38, ejectionOrg: [0, -4.5, 0], // MDL attachment 1 (shell)
-    ammo: 10, maxAmmo: 10, reserve: 30, reloadTime: 2.93,
+    ammo: 10, maxAmmo: 10, reserve: 30,
+    reloadTime: 2.5,             // AWP_RELOAD_TIME — ready here; the 2.93 s MDL reload anim plays out over idle
     maxSpeed: 210, zoomSpeed: 150,   // CS 1.6: 210 run, drops to 150 while scoped
     slot: 'primary',
     root: null,
@@ -216,7 +217,7 @@ const WPNS = [
   ..._pistol('glock18',   'Glock-18',     { damage: 25, rangeMod: 0.75,  ammo: 20, reserve: 120, reload: 2.2, fireInterval: 0.2,   recoilKick: 0.03,  spread: 0.010, fireSound: ['weapons/glock18-2.wav'], fire: ['shoot3'], burstCapable: true, burstCount: 3, burstInterval: 0.1, burstCooldown: 0.3, muzzleBone: 20, muzzleOrg: [2.5, -8.7, 1.7],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
   ..._pistol('deagle',    'Desert Eagle', { damage: 54, rangeMod: 0.81,  ammo: 7,  reserve: 35,  reload: 2.2, fireInterval: 0.225, recoilKick: 0.08,  spread: 0.006, spreadGrow: 0.06, spreadMax: 0.10, fireSound: ['weapons/deagle-1.wav', 'weapons/deagle-2.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 20, muzzleOrg: [2.6, -8.8, 1.4],  ejectBone: 38, ejectOrg: [0, -2.5, 0] }),
   ..._pistol('p228',      'P228 Compact', { damage: 32, rangeMod: 0.8,   ammo: 13, reserve: 52,  reload: 2.7, fireInterval: 0.15,  recoilKick: 0.045, spread: 0.008, fireSound: ['weapons/p228-1.wav'], fire: ['shoot1', 'shoot2', 'shoot3'], muzzleBone: 20, muzzleOrg: [2.6, -6.8, 1.5],  ejectBone: 39, ejectOrg: [0, -2.0, 0] }),
-  ..._pistol('fiveseven', 'Five-SeveN',   { damage: 20, rangeMod: 0.885, ammo: 20, reserve: 100, reload: 3.2, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.008, fireSound: ['weapons/fiveseven-1.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 41, muzzleOrg: [0, -6.0, 0],  ejectBone: 41, ejectOrg: [0, -2.5, 0] }),
+  ..._pistol('fiveseven', 'Five-SeveN',   { damage: 20, rangeMod: 0.885, ammo: 20, reserve: 100, reload: 2.7, fireInterval: 0.15,  recoilKick: 0.03,  spread: 0.008, fireSound: ['weapons/fiveseven-1.wav'], fire: ['shoot1', 'shoot2'], muzzleBone: 41, muzzleOrg: [0, -6.0, 0],  ejectBone: 41, ejectOrg: [0, -2.5, 0] }),
   // ── Half-Life weapons (NON-CANON, opt-in via the server's mp_hl_weapons flag) ──
   // Ported from original HL GoldSrc (v_rpg / v_crossbow). `hl:true` marks them so they
   // can be hidden when the flag is off; `projectile` makes WS.FIRE spawn a travelling
@@ -684,7 +685,7 @@ function _beginDraw(idx) {
   wpn._silencerInterrupted = false;  // Очистить флаг глушителя при переключении
   wpn._bursting = false; wpn._burstLeft = 0;   // cancel any in-progress burst on draw
   wpn._fireQueued = false;                     // drop any buffered semi-auto click
-  if (wpn.anim) { wpn.anim._drawAnimDone = false; wpn.anim.curFrame = 0; }
+  if (wpn.anim) { wpn.anim._drawAnimDone = false; wpn.anim.curFrame = 0; wpn.anim._gunAnimPlaying = false; }
   if (wpn.root) wpn.root.visible = true;
   // Guns play their deploy sound via an MDL event; the knife has none, so emit
   // its code-driven deploy here. Warm the rest of this weapon's samples too.
@@ -1083,6 +1084,14 @@ function updateWeapon(dt) {
           _beginFire(wpn);
         } else {
           ws = WS.IDLE; wsT = 0;
+          // The gun is usable at the original *_RELOAD_TIME, but the MDL reload sequence can
+          // run longer (AWP: ready at 2.5 s, anim 2.93 s). As in the engine, the view anim just
+          // keeps playing — let it finish over idle, the same way a long fire anim does, with
+          // its sound events. A shot, a draw or the anim's end takes over.
+          if (wpn.anim && wpn.type === 'gun') {
+            wpn.anim._lastFireSeq = wpn.reloadSeq || (wpn.silencer ? 'reload' : 'reload_unsil');
+            wpn.anim._gunAnimPlaying = true;
+          }
         }
       }
       break;

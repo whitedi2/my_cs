@@ -62,6 +62,14 @@
       [2.00, { rmb: true }], [2.02, { rmb: false }],    // → 10
       [2.40, { lmb: true }], [2.44, { lmb: false }],    // scoped shot → 90, back to 10 at ~3.85
     ] },
+    // reload ready at AWP_RELOAD_TIME 2.5 while the 2.93 s anim plays on; a shot in that tail fires
+    awp_reload: { wpn: 'awp', dur: 4.8, tl: [
+      [0.0, { lmb: true }], [0.04, { lmb: false }],
+      [1.6, { tap: 'KeyR' }],
+      [4.2, { lmb: true }], [4.24, { lmb: false }],   // ready (1.6+2.5=4.1) but anim runs to ~4.53
+    ] },
+    // HE thrown level (spawn angle faces open space): (90+10)·6 = 600 u/s at 10° up, fuse 1.5 s
+    nade:      { wpn: 'hegrenade', nades: { hegrenade: 1 }, dur: 2.4, tl: [[0.0, { lmb: true }], [0.2, { lmb: false }]] },
     awp_speed: { wpn: 'awp', dur: 3.4, tl: [
       [0.0, { hold: ['KeyW'] }], [1.1, { hold: [] }],   // unscoped: cap 210
       [1.6, { rmb: true }], [1.62, { rmb: false }],     // scope in
@@ -131,6 +139,8 @@
       pitch = Math.atan2((e[2] + 50) - (gsPos[2] + eyeH), L);   // ~chest/head height
     }
 
+    if (sc && sc.nades && typeof grenadeCounts !== 'undefined')
+      for (const [k, n] of Object.entries(sc.nades)) { grenadeCounts[k] = n; ownedWeapons.add(k); }
     const wid = q.get('wpn') || (sc && sc.wpn);
     if (wid) { ownedWeapons.add(wid); const i = WPNS.findIndex(w => w.id === wid); if (i >= 0) switchWeapon(i); }
 
@@ -228,6 +238,12 @@
         camZ: (typeof smoothCamY === 'number') ? r(smoothCamY) : null,
         fov: (typeof scopeFov === 'function') ? (scopeFov() || 90) : 90,   // scope FOV (90 = unscoped)
         spr: (w && w._lastSpread != null) ? r(w._lastSpread) : null,       // last shot's cone
+        seq: (w && w.anim) ? (w.anim._evSeqName || null) : null,          // view-model sequence playing
+        // first live grenade (solo: the real one; its fuse runs in updateGrenades)
+        nades: (typeof _grenadesInAir !== 'undefined') ? _grenadesInAir.length : 0,
+        nade: (typeof _grenadesInAir !== 'undefined' && _grenadesInAir[0])
+          ? { pos: _grenadesInAir[0].pos.map(r), vel: _grenadesInAir[0].vel.map(r), rest: !!_grenadesInAir[0].resting,
+              fuse: r(_grenadesInAir[0].fuse) } : null,
         gap: (typeof xhairGap !== 'undefined') ? r(xhairGap) : null,
         vmod: (typeof velMod !== 'undefined') ? r(velMod) : 1,
       };
@@ -364,8 +380,13 @@
         // wind-down was costing ~24 s of the ~26 s a scenario took.
         (function idle() { setTimeout(idle, 10000); })();
       }
-      // Seed the pump with the loop itself — the rAF that is already pending was
-      // registered with the real scheduler and may never fire under a virtual clock.
+      // Cancel whatever the REAL scheduler still has queued. The game loop (the only rAF user
+      // — input.js animate) registered itself before the pump took over; if that callback
+      // fires later it runs one un-sampled game step on a real timestamp, which showed up as a
+      // reload finishing a frame or three "early". rAF ids are sequential, so cancel them all.
+      const lastId = realRAF(() => {});
+      for (let id = 1; id <= lastId; id++) cancelAnimationFrame(id);
+      // Seed the pump with the loop itself.
       pending.push(window.animate);
       setTimeout(pump, 0);
     }

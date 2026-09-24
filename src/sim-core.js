@@ -364,10 +364,87 @@ function simPlayerMoveStep(hull, st, cmd, dt, params) {
   return ev;
 }
 
+// ── Grenade flight (shared: client prediction AND the authoritative server) ────
+// A port of the engine's MOVETYPE_BOUNCE (ReHLDS SV_Physics_Bounce) + CS CGrenade::BounceTouch,
+// stepped at the engine tick (SIM_TICK):
+//  • gravity × pev->gravity, applied whole before the move (SV_AddGravity);
+//  • BounceTouch runs on contact, BEFORE the clip: rolling on the ground → velocity × 0.8
+//    ("a bit of static friction"); in the air → count the bounce (sound for the first 5,
+//    forced stop at 10);
+//  • SV_ClipVelocity with backoff = 2 − pev->friction: the normal part comes back at
+//    (1 − friction), the tangential part is kept;
+//  • on a floor (n.z > 0.7): vz < g·dt → on ground (vz = 0); |v|² < 900 → at rest; else push
+//    0.9 of the remaining move.
+// The trace uses the duck hull — the smallest hull the BSP export has (the real grenade is a
+// point) — so a resting grenade's centre sits 18 u up; the renderer drops the mesh to match.
+const SIM_GRENADE = {
+  hegrenade:    { gravity: 0.55, friction: 0.7 },   // CGrenade::ShootTimed2
+  flashbang:    { gravity: 0.5,  friction: 0.8 },   // CGrenade::ShootTimed
+  smokegrenade: { gravity: 0.5,  friction: 0.8 },   // CGrenade::ShootSmokeGrenade
+};
+const SIM_STOP_EPSILON = 0.1;   // SV_ClipVelocity snaps tiny components to 0
+
+// g: { type, pos:[x,y,z], vel:[x,y,z], onGround, bounceCount, resting } — mutated in place.
+// Returns { bounces } = audible bounces during this call (BounceSound calls).
+function simGrenadeStep(hull, g, dt) {
+  const ev = { bounces: 0 };
+  const P = SIM_GRENADE[g.type] || SIM_GRENADE.hegrenade;
+  const G = SIM_SV.gravity;
+  let left = dt;
+  for (let i = 0; left > 1e-6 && i < 64; i++) {
+    const t = Math.min(left, SIM_TICK); left -= t;
+    if (g.vel[2] > 0) g.onGround = false;
+    if (g.onGround && !g.vel[0] && !g.vel[1] && !g.vel[2]) { g.resting = true; break; }   // at rest
+    g.resting = false;
+    g.vel[2] -= P.gravity * G * t;
+    const to = [g.pos[0] + g.vel[0] * t, g.pos[1] + g.vel[1] * t, g.pos[2] + g.vel[2] * t];
+    const tr = simTraceMove(hull, true, g.pos, to);
+    if (tr.allsolid) { g.vel = [0, 0, 0]; g.onGround = true; g.resting = true; break; }
+    g.pos = [...tr.end];
+    if (tr.fraction >= 1 || !tr.plane) continue;
+    // CGrenade::BounceTouch
+    if (g.onGround) { g.vel[0] *= 0.8; g.vel[1] *= 0.8; g.vel[2] *= 0.8; }
+    else {
+      const n = g.bounceCount | 0;
+      if (n < 5) ev.bounces++;
+      if (n >= 10) { g.onGround = true; g.vel = [0, 0, 0]; }
+      g.bounceCount = n + 1;
+    }
+    // SV_ClipVelocity(vel, normal, vel, 2 − friction)
+    const nrm = tr.plane, back = (g.vel[0] * nrm[0] + g.vel[1] * nrm[1] + g.vel[2] * nrm[2]) * (2 - P.friction);
+    for (let k = 0; k < 3; k++) {
+      g.vel[k] -= nrm[k] * back;
+      if (g.vel[k] > -SIM_STOP_EPSILON && g.vel[k] < SIM_STOP_EPSILON) g.vel[k] = 0;
+    }
+    if (nrm[2] > 0.7) {
+      if (g.vel[2] < G * t) { g.onGround = true; g.vel[2] = 0; }
+      if (g.vel[0] * g.vel[0] + g.vel[1] * g.vel[1] + g.vel[2] * g.vel[2] < 900) {
+        g.onGround = true; g.vel = [0, 0, 0]; g.resting = true; break;
+      }
+      const sc = (1 - tr.fraction) * t * 0.9;
+      const tr2 = simTraceMove(hull, true, g.pos, [g.pos[0] + g.vel[0] * sc, g.pos[1] + g.vel[1] * sc, g.pos[2] + g.vel[2] * sc]);
+      if (!tr2.allsolid) g.pos = [...tr2.end];
+    }
+  }
+  return ev;
+}
+
+// CS throw (wpn_hegrenade/flashbang/smokegrenade.cpp WeaponIdle): pitch biased 10° up and
+// stretched (80/90 looking up, 100/90 looking down), speed (90 − pitch)·6 capped at 750, from
+// eye + forward·16, plus the thrower's velocity. gp = GoldSrc pitch in degrees (+down).
+// Returns { dir:[x,y,z] (unit, GoldSrc), speed }.
+function simGrenadeThrow(yawRad, gpDeg) {
+  let gp = gpDeg;
+  gp = gp < 0 ? -10 + gp * ((90 - 10) / 90) : -10 + gp * ((90 + 10) / 90);
+  const speed = Math.min((90 - gp) * 6, 750);
+  const mp = -gp * Math.PI / 180, cp = Math.cos(mp);
+  return { dir: [-Math.sin(yawRad) * cp, Math.cos(yawRad) * cp, Math.sin(mp)], speed };
+}
+
 // Node-only: export the same functions the browser sees as globals.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     simMakeHull, simMakeState, simPlayerMove, simTraceMove,
-    simPointContents, simCategorize,
+    simPointContents, simCategorize, simGrenadeStep, simGrenadeThrow, SIM_GRENADE,
   };
 }

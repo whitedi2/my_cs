@@ -476,40 +476,22 @@ function worldNadeDamage(world, owner, origin) {
 // ── Authoritative grenade flight (Phase 6 polish) ────────────────────────────
 // Clients throw → 'nadethrow' intent; the SERVER owns flight (bounce + fuse) and streams
 // positions in snapshots so everyone sees the arc. On the fuse it detonates: HE applies
-// radius damage, all types broadcast a `boom` (effect). Mirrors grenades.js _moveGrenade.
-const GREN_GRAVITY = 0.55, GREN_ELAST = 0.5, GREN_FRICT = 0.7;
+// radius damage, all types broadcast a `boom` (effect). Flight = sim-core simGrenadeStep, the
+// same engine port the client predicts with.
 
 function worldSpawnGrenade(world, owner, msg) {
   const w = String(msg.w || '');
   if (w !== 'hegrenade' && w !== 'flashbang' && w !== 'smokegrenade') return;
   const o = msg.o, d = msg.d;
   if (!Array.isArray(o) || o.length !== 3 || !Array.isArray(d) || d.length !== 3) return;
-  world.grenades.push({ id: ++world._grenSeq, w, owner, pos: [o[0], o[1], o[2]], vel: [d[0], d[1], d[2]], fuse: 1.5, resting: false, bounceT: 0 });
+  world.grenades.push({ id: ++world._grenSeq, w, type: w, owner, pos: [o[0], o[1], o[2]], vel: [d[0], d[1], d[2]],
+                        fuse: 1.5, resting: false, onGround: false, bounceCount: 0 });
 }
 
 function _moveGrenadeServer(g, dt, bounces) {
   if (!_hull) return;
-  g.vel[2] -= CONFIG.gravity * GREN_GRAVITY * dt;
-  let timeLeft = dt, hops = 0;
-  while (timeLeft > 1e-5 && hops < 4) {
-    const to = [g.pos[0] + g.vel[0] * timeLeft, g.pos[1] + g.vel[1] * timeLeft, g.pos[2] + g.vel[2] * timeLeft];
-    const tr = sim.simTraceMove(_hull, true, g.pos, to);   // smallest (duck) hull, like the client
-    if (tr.allsolid) { g.vel = [0, 0, 0]; g.resting = true; return; }
-    if (tr.fraction > 0) g.pos = [...tr.end];
-    if (tr.fraction >= 1 || !tr.plane) break;
-    const n = tr.plane;
-    const dot = g.vel[0] * n[0] + g.vel[1] * n[1] + g.vel[2] * n[2];
-    g.vel[0] = (g.vel[0] - (1 + GREN_ELAST) * dot * n[0]) * GREN_FRICT;
-    g.vel[1] = (g.vel[1] - (1 + GREN_ELAST) * dot * n[1]) * GREN_FRICT;
-    g.vel[2] = (g.vel[2] - (1 + GREN_ELAST) * dot * n[2]) * GREN_FRICT;
-    if (g.bounceT <= 0 && Math.hypot(g.vel[0], g.vel[1], g.vel[2]) > 80) {   // audible bounce (cooldown like the client)
-      bounces.push({ pos: g.pos.slice(), w: g.w, owner: g.owner });
-      g.bounceT = 0.12;
-    }
-    timeLeft -= timeLeft * tr.fraction;
-    hops++;
-  }
-  if (Math.hypot(g.vel[0], g.vel[1], g.vel[2]) < 30) g.resting = true;
+  const ev = sim.simGrenadeStep(_hull, g, dt);
+  if (ev.bounces) bounces.push({ pos: g.pos.slice(), w: g.w, owner: g.owner });   // BounceSound (heard by all)
 }
 
 // Advance grenades + detonate on fuse. Returns { dmg, booms:[{pos,w}], bounces:[{pos,w,owner}] }.
@@ -518,7 +500,6 @@ function worldTickGrenades(world, dt) {
   for (let i = world.grenades.length - 1; i >= 0; i--) {
     const g = world.grenades[i];
     g.fuse -= dt;
-    if (g.bounceT > 0) g.bounceT -= dt;
     if (!g.resting) _moveGrenadeServer(g, dt, bounces);
     if (g.fuse <= 0) {
       if (g.w === 'hegrenade') {

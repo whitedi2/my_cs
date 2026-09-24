@@ -75,7 +75,8 @@ const SCENARIO_DUR = {   // must mirror the SCENARIOS table in src/autotest.js
   walk: 2.5, walk_m4: 2.5, shiftwalk: 2.5, strafe: 2.0, duck: 2.5, jump: 2.0,
   fire: 2.5, dryfire: 9.0, reload: 5.0, switch: 4.0, silencer: 4.0,
   knife: 2.2, knife_mix: 3.0, fall: 1.5,
-  awp: 4.6, awp_speed: 3.4,
+  awp: 4.6, awp_speed: 3.4, awp_reload: 4.8,
+  nade: 2.4,
 };
 function unescapeHtml(s) {
   return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
@@ -329,6 +330,39 @@ const ASSERTS = {
     const wait = back ? back.t - shots[1].t : NaN;
     check('re-zooms to 10 when the next shot is allowed (1.45 s)', back && Math.abs(wait - o.wcfg.fireInterval) <= 0.041,
           `after ${wait.toFixed(3)}s, cycle=${o.wcfg.fireInterval}`);
+  },
+  awp_reload(o, check) {
+    const s = o.samples;
+    const rs = firstW(s, x => x.ws === WS.RELOAD), re = rs && firstW(s, x => x.t > rs.t && x.ws !== WS.RELOAD);
+    check('R starts a reload', !!rs);
+    if (!rs || !re) return;
+    check('ready at AWP_RELOAD_TIME 2.5 s', Math.abs((re.t - rs.t) - o.wcfg.reloadTime) <= 0.041 && o.wcfg.reloadTime === 2.5,
+          `ready after ${(re.t - rs.t).toFixed(3)}s (reloadTime=${o.wcfg.reloadTime})`);
+    check('clip refilled at the ready point', re.ammo === o.wcfg.maxAmmo, `ammo=${re.ammo}`);
+    const tail = between(s, re.t, re.t + 0.08);
+    check('reload anim keeps playing past the ready point', tail.length && tail.every(x => x.ws === WS.IDLE && x.seq === 'reload'),
+          tail.map(x => `${x.ws}/${x.seq}`).slice(0, 3).join(' '));
+    const shot = firstW(s, x => x.t > re.t && x.ammo < re.ammo);
+    check('a shot during the anim tail fires (the gun is ready)', !!shot, shot ? `t=${shot.t.toFixed(2)}` : '');
+    check('…and cuts the reload anim', shot && /^shoot/.test(shot.seq || ''), shot ? `seq=${shot.seq}` : '');
+  },
+  // HE grenade through the real client (throw → shared sim-core flight → fuse → detonate).
+  nade(o, check) {
+    const s = o.samples;
+    const i0 = s.findIndex(x => x.nade);
+    check('a grenade is thrown', i0 >= 0);
+    if (i0 < 0) return;
+    const f = s[i0].nade;
+    const h = Math.hypot(f.vel[0], f.vel[1]);
+    // One tick of flight has already happened: vz lost ≤ 0.55·800·dt.
+    check('throw speed 600 u/s at 10° up (horizontal 590.9)', near(h, 600 * Math.cos(Math.PI / 18), 1), `h=${h.toFixed(1)}`);
+    check('…vertical ≈ 104 minus a tick of gravity', f.vel[2] <= 104.2 && f.vel[2] > 104.2 - 0.55 * 800 * 0.021,
+          `vz=${f.vel[2].toFixed(1)}`);
+    const thrownAt = s[i0].t - (1.5 - s[i0].nade.fuse);   // fuse started at the throw
+    const gone = firstW(s, (x, i) => i > i0 && !x.nade);
+    check('it comes to rest before going off', s.some(x => x.nade && x.nade.rest));
+    check('detonates 1.5 s after the throw (fuse)', gone && Math.abs((gone.t - thrownAt) - 1.5) <= 0.041,
+          gone ? `after ${(gone.t - thrownAt).toFixed(3)}s` : 'never');
   },
   awp_speed(o, check) {
     const s = o.samples;
