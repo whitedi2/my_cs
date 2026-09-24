@@ -346,7 +346,7 @@ function updateMovementSounds(dt) {
   if (!_actx || typeof gsPos === 'undefined' || !gsPos || !vel) return;
   _stepTimerMs -= dt * 1000;
 
-  const jumpvel = (typeof SV !== 'undefined' && SV.jumpvel) || 245;
+  const jumpvel = (typeof SV !== 'undefined' && SV.jumpvel) || CONFIG.jumpvel;
   const landMin = jumpvel * 0.8;                 // ≈ PLAYER_MIN_BOUNCE_SPEED → a full jump lands a step
   if (!onGround) {
     _peakFall = Math.max(_peakFall, -vel[2]);    // track peak downward speed while airborne

@@ -302,6 +302,7 @@ function _onSnapshot(m) {
         onGround: !!e.og, wasJump: !!e.wj, duckAmount: e.da || 0,
         phyDucked: !!e.dk, prevVelZ: e.pz || 0,
         velMod: (e.vm != null ? e.vm : 1),     // bullet-tag slowdown, authoritative
+        stamina: +e.sn || 0,                    // jump penalty timer, authoritative
       };
       _authDirty = true;
       // Revive on the snapshot edge (20 Hz) — faster than gstate (5 Hz) — so the death-cam
@@ -328,6 +329,7 @@ function netReconcile() {
   st.onGround   = _authState.onGround;  st.wasJump  = _authState.wasJump;
   st.duckAmount = _authState.duckAmount; st.phyDucked = _authState.phyDucked;
   st.prevVelZ   = _authState.prevVelZ;    st.velMod   = _authState.velMod;
+  st.stamina    = _authState.stamina || 0;
   while (_pending.length && _pending[0].seq <= _ackSeq) _pending.shift();   // drop acked
   for (const e of _pending) simPlayerMove(simHull, st, e.cmd, e.dt, { wpnMax: e.wpnMax });
   // Write the corrected prediction back into the shared player globals.
@@ -335,6 +337,7 @@ function netReconcile() {
   onGround = st.onGround;     wasJump = st.wasJump;
   duckAmount = st.duckAmount; phyDucked = st.phyDucked;
   prevVelZ = st.prevVelZ;     velMod = st.velMod;
+  stamina = st.stamina;
 }
 
 // Buffer this frame's predicted cmd for reconciliation and send it to the server.
@@ -552,7 +555,7 @@ function _playRemoteFire(inst, posGs) {
   if (list && typeof playRemoteFire === 'function') playRemoteFire(list, posGs, 'rfire' + inst.id);
 }
 
-const _LAND_MIN = 196;   // ≈ 0.8×jumpvel — a real jump/fall lands a step (matches the player)
+const _LAND_MIN = 0.8 * CONFIG.jumpvel;   // ≈ PLAYER_MIN_BOUNCE_SPEED — a real jump/fall lands a step (matches the player)
 function updateRemoteSounds(inst, s, dt) {
   if (inst.dead) { inst._stepT = 0; inst._wasOg = true; inst._peakFall = 0; return; }
   const pos = s.pos, vz = (s.vel && s.vel[2]) || 0;

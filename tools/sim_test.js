@@ -111,6 +111,73 @@ const idleCmd = { forwardMove: 0, sideMove: 0, jump: false, duck: false, walk: f
         `dz=${(st.pos[2] - z0).toFixed(3)}`);
 }
 
+// ── Test 6: jump height, jump penalty (pm_shared fuser2) and crouch speed ──────
+{
+  const near = (a, b, e) => Math.abs(a - b) <= e;
+  const sp = hullData.spawns.ct[0];
+  const yaw = ((sp.angle || 0) - 90) * Math.PI / 180;         // the spawn faces open space
+  const fresh = () => {
+    const st = sim.simMakeState([sp.origin[0], sp.origin[1], sp.origin[2] + 64]);
+    for (let i = 0; i < 200 && !st.onGround; i++) sim.simPlayerMove(hull, st, idleCmd, DT, null);
+    for (let i = 0; i < 20; i++) sim.simPlayerMove(hull, st, idleCmd, DT, null);
+    return st;
+  };
+  const cmd = o => Object.assign({ forwardMove: 0, sideMove: 0, jump: false, duck: false, walk: false, yaw }, o);
+
+  // PM_JumpHeight: sqrt(2·800·45) → a 45 u rise.
+  {
+    const st = fresh(), z0 = st.pos[2];
+    sim.simPlayerMove(hull, st, cmd({ jump: true }), DT, null);
+    const vz0 = st.vel[2];
+    let top = z0;
+    for (let i = 0; i < 150; i++) { sim.simPlayerMove(hull, st, idleCmd, DT, null); top = Math.max(top, st.pos[2]); }
+    check('jump: take-off = sqrt(2·800·45) ≈ 268.3 (minus half a tick of gravity)', near(vz0, 268.33 - 4, 1), `vz=${vz0.toFixed(2)}`);
+    check('jump: rises 45 u (PM_JumpHeight)', near(top - z0, 45, 1.5), `rise=${(top - z0).toFixed(2)}`);
+  }
+
+  // Jumping again right on landing: the jump is scaled by (100 − t·0.019)% of the penalty left.
+  {
+    const st = fresh();
+    sim.simPlayerMove(hull, st, cmd({ jump: true }), DT, null);
+    let landed = false;
+    for (let i = 0; i < 150 && !landed; i++) landed = sim.simPlayerMove(hull, st, cmd({}), DT, null).landed;
+    const left = st.stamina;
+    sim.simPlayerMove(hull, st, cmd({ jump: true }), DT, null);
+    const r = (100 - Math.max(0, left - 10) * 0.019) / 100;       // the timer ticks once more before PM_Jump
+    check('jump penalty: an immediate re-jump is lower by the penalty ratio', st.vel[2] < 268.33 * 0.95 && near(st.vel[2], 268.33 * r - 4, 1.5),
+          `vz=${st.vel[2].toFixed(1)} want≈${(268.33 * r - 4).toFixed(1)} (penalty ${left.toFixed(0)} ms)`);
+  }
+
+  // Running jump: speed drops after landing while the penalty runs, then comes back to 250.
+  {
+    const st = fresh();
+    for (let i = 0; i < 100; i++) sim.simPlayerMove(hull, st, cmd({ forwardMove: 1 }), DT, null);
+    const run = Math.hypot(st.vel[0], st.vel[1]);
+    sim.simPlayerMove(hull, st, cmd({ forwardMove: 1, jump: true }), DT, null);
+    let landed = false, slowest = Infinity;
+    for (let i = 0; i < 150 && !landed; i++) landed = sim.simPlayerMove(hull, st, cmd({ forwardMove: 1 }), DT, null).landed;
+    for (let i = 0; i < 20; i++) { sim.simPlayerMove(hull, st, cmd({ forwardMove: 1 }), DT, null); slowest = Math.min(slowest, Math.hypot(st.vel[0], st.vel[1])); }
+    check('jump penalty: landing from a running jump bleeds speed', run > 249 && slowest < run * 0.6, `run=${run.toFixed(0)} → ${slowest.toFixed(0)}`);
+  }
+
+  // The penalty timer runs out 1315.79 ms after a jump: 132 ticks of 10 ms.
+  {
+    const st = fresh();
+    sim.simPlayerMove(hull, st, cmd({ jump: true }), DT, null);
+    let ticks = 1;
+    while (st.stamina > 0 && ticks < 400) { sim.simPlayerMove(hull, st, idleCmd, DT, null); ticks++; }
+    check('jump penalty: lasts 1315.79 ms (132 ticks after the jump tick)', ticks === 133, `ticks=${ticks} incl. the jump`);
+  }
+
+  // Crouch-walk: input × PLAYER_DUCKING_MULTIPLIER 0.333 → 250 · 0.333 = 83.25.
+  {
+    const st = fresh();
+    let top = 0;
+    for (let i = 0; i < 120; i++) { sim.simPlayerMove(hull, st, cmd({ forwardMove: 1, duck: true }), DT, null); top = Math.max(top, Math.hypot(st.vel[0], st.vel[1])); }
+    check('crouch-walk = 250 × 0.333 (PLAYER_DUCKING_MULTIPLIER)', near(top, 83.25, 0.5), `top=${top.toFixed(2)}`);
+  }
+}
+
 // ── Test 5: grenade throw + flight = engine MOVETYPE_BOUNCE + CGrenade::BounceTouch ──
 {
   const near = (a, b, e) => Math.abs(a - b) <= e;

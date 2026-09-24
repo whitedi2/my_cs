@@ -75,7 +75,7 @@ SwiftShader — многопоточный программный растери
 
 Сценарии (таблица `SCENARIOS` в `src/autotest.js`): `walk` `walk_m4` `shiftwalk` `strafe` `duck`
 `jump` `fall` · `fire` `dryfire` `reload` `switch` `silencer` · `knife` `knife_mix` · `awp` `awp_speed`
-`awp_reload` · `nade` · `ammo` `freeze`. Добавить свой — вписать запись в
+`awp_reload` · `nade` · `ammo` `freeze` · `bhop`. Добавить свой — вписать запись в
 `SCENARIOS` (`hold`/`tap`/`lmb`/`look`/`mouse`), длительность в `SCENARIO_DUR` и ассерты в
 `ASSERTS` (`tools/client_test.js`).
 
@@ -125,7 +125,7 @@ Runtime разбит по файлам (порядок загрузки = пор
 | `src/autotest.js` | **харнесс** (только при `?test=…`, в обычной игре — no-op): вход без pointer lock, дебаг-флаги для скриншота, скриптованные сценарии ввода с покадровой трассой состояния. Грузится последним | `SCENARIOS`, `drive`, `sample`, `emit`, пумп с фиксированным шагом (перехват `requestAnimationFrame`) |
 
 **Конфиг физики/управления:** `config.js` (глобальный `const CONFIG`, грузится классическим тегом до
-загрузчика). Тут `gravity, maxspeed, jumpvel, eyestand/eyeduck, ducktime, sensitivity, stairSmoothing`,
+загрузчика). Тут `gravity, maxspeed, jumpvel (268.3 = PM_JumpHeight), duckmult (0.333), eyestand/eyeduck, ducktime, sensitivity, stairSmoothing`,
 дефолты настроек.
 
 **Координаты:** GoldSrc `(x,y,z)` Z-up ↔ Three.js `(x, z, -y)` — **главный источник багов**.

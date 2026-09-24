@@ -4,12 +4,12 @@ const CONFIG = {
   gravity:      800,
   maxspeed:     250,    // обычный бег
   walkspeed:    130,    // тихая ходьба (Shift)
-  crouchspeed:  90,     // бег в приседе
+  duckmult:     0.333,  // присед: ввод × PLAYER_DUCKING_MULTIPLIER (pm_shared) → 250 × 0.333 ≈ 83
   accelerate:   5,      // sv_accelerate
   airaccel:     10,     // sv_airaccelerate
   friction:     4,      // sv_friction
   stopspeed:    75,     // sv_stopspeed
-  jumpvel:      245,    // начальная вертикальная скорость прыжка
+  jumpvel:      268.3281572999748,   // PM_JumpHeight: sqrt(2·800·45) — подъём на 45 ед.
   stepsize:     18,     // высота ступеньки (hull1 half-height / 2)
   eyestand:     17,     // высота глаз от origin стоя  (GoldSrc VEC_VIEW_OFS = 17)
   eyeduck:     -6,      // высота глаз от origin в приседе (GoldSrc VEC_DUCK_VIEW = 12 → floor+30)

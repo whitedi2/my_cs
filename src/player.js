@@ -340,7 +340,7 @@ function _updateGaitYaw(rig, st, dt) {
 
 // Native speed each locomotion cycle was authored for — used to scale playback
 // to the actual ground speed so the feet stop sliding.
-const _seqBaseSpeed = { walk: CONFIG.walkspeed, run: CONFIG.maxspeed, crouchrun: CONFIG.crouchspeed };
+const _seqBaseSpeed = { walk: CONFIG.walkspeed, run: CONFIG.maxspeed, crouchrun: CONFIG.maxspeed * CONFIG.duckmult };
 
 // ── Upper-body aim/shoot/reload layer ───────────────────────────────────────
 const _AIM_SET = {

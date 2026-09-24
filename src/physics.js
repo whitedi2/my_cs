@@ -106,6 +106,7 @@ let xhairGap     = 0;        // crosshair expansion from FIRING (px): always sho
 let xhairMoveGap = 0;        // crosshair expansion from MOVEMENT (px): gated by cl_dynamiccrosshair
 let prevVelZ   = 0;          // z-velocity from previous frame (for landing detection)
 let velMod     = 1;          // bullet-tag slowdown (1 = none); server-authoritative, predicted locally
+let stamina    = 0;          // jump penalty timer, ms (sim-core st.stamina / pm_shared fuser2)
 let gHullHeadStand, gHullHeadDuck;
 let simHull = null;          // sim-core hull wrapper (shared movement core) — built in initPhysics
 let localSt = null;          // reusable sim-core state object for the local player
@@ -170,7 +171,7 @@ function respawn() {
   if (typeof _netDriven !== 'undefined' && _netDriven) {
     pickSpawn(playerTeam);
     vel = [0, 0, 0];
-    onGround = false; wasJump = false; prevVelZ = 0;
+    onGround = false; wasJump = false; prevVelZ = 0; stamina = 0;
     duckAmount = 0; phyDucked = false; duckViewOfs = 0;
     smoothCamY = null;
     recoilPitch = recoilYaw = 0;
@@ -183,6 +184,7 @@ function respawn() {
   onGround = false;
   wasJump  = false;
   prevVelZ = 0;            // clear fall-velocity so respawning doesn't re-trigger fall damage
+  stamina  = 0;
   duckAmount = 0;
   phyDucked  = false;
   duckViewOfs = 0;
@@ -306,6 +308,7 @@ function playerMove(dt) {
   localSt.onGround = onGround;     localSt.wasJump = wasJump;
   localSt.duckAmount = duckAmount; localSt.phyDucked = phyDucked;
   localSt.prevVelZ = prevVelZ;     localSt.velMod = velMod;
+  localSt.stamina = stamina;
 
   const ev = simPlayerMove(simHull, localSt, cmd, dt, { wpnMax });
 
@@ -313,6 +316,7 @@ function playerMove(dt) {
   onGround = localSt.onGround;     wasJump = localSt.wasJump;
   duckAmount = localSt.duckAmount; phyDucked = localSt.phyDucked;
   prevVelZ = localSt.prevVelZ;     velMod = localSt.velMod;
+  stamina = localSt.stamina;
   // The +19 stand-up teleport already accounts for the crouch view offset — snap it
   // so the camera doesn't dip (sim-core reports the teleport via ev.stoodUp).
   if (ev.stoodUp) duckViewOfs = 0;

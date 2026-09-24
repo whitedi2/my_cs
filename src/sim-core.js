@@ -122,6 +122,7 @@ function simMakeState(pos) {
     phyDucked:  false,
     prevVelZ:   0,
     velMod:     1,        // bullet "tagging" slowdown (1 = none); set on hit, recovers on ground
+    stamina:    0,        // jump penalty, ms (pm_shared pmove->fuser2); set by a jump, decays
   };
 }
 
@@ -231,6 +232,9 @@ function simPlayerMoveStep(hull, st, cmd, dt, params) {
   const ev = { jumped: false, landed: false, fallVel: 0, stoodUp: false, duckedDown: false };
   const wantDuck = !!cmd.duck;
 
+  // Jump penalty timer (pm_shared fuser2, ms): runs down by the frame time first (PM_ReduceTimers).
+  if (st.stamina > 0) st.stamina = Math.max(0, st.stamina - dt * 1000);
+
   // Duck transition (smooth 0..1) + duck hull state while airborne.
   if (wantDuck) st.duckAmount = Math.min(1, st.duckAmount + dt / SV.ducktime);
   else          st.duckAmount = Math.max(0, st.duckAmount - dt / SV.uncrouchtime);
@@ -273,13 +277,14 @@ function simPlayerMoveStep(hull, st, cmd, dt, params) {
   if (!wasGround && st.onGround) { ev.landed = true; ev.fallVel = -st.prevVelZ; }
   st.prevVelZ = st.vel[2];
 
-  // Speed / wish dir. Weapon caps run speed; walk/crouch scale with it.
+  // Speed / wish dir. The weapon caps run speed; walk scales with it. Ducking multiplies the
+  // input by PLAYER_DUCKING_MULTIPLIER (0.333) from the moment duck is held (IN_DUCK) or the
+  // duck hull is on (FL_DUCKING) — PM_Duck — so a crouch-walk is 1/3 of the (walk) speed.
   const walk   = !!cmd.walk;
   const wpnMax = (params && params.wpnMax) || SV.maxspeed;
   const sScale = wpnMax / SV.maxspeed;
-  const maxSpd = walk ? SV.walkspeed * sScale
-               : st.duckAmount > 0.1 ? SV.crouchspeed * sScale
-               : wpnMax;
+  let maxSpd = walk ? SV.walkspeed * sScale : wpnMax;
+  if (wantDuck || st.phyDucked) maxSpd *= SV.duckmult;
 
   const yaw  = cmd.yaw || 0;
   const fwdX = -Math.sin(yaw), fwdY = Math.cos(yaw);
@@ -303,6 +308,10 @@ function simPlayerMoveStep(hull, st, cmd, dt, params) {
     }
     st.vel[2] = 0;
     simFriction(st, dt);
+    // Jump penalty on the ground (PM_WalkMove): while the timer runs, horizontal speed is scaled
+    // by (100 − t·0.019)% every frame — ×0.75 right after a jump, easing off as t → 0. This is
+    // the 1.6 "sticky landing" (and why chained jumps lose speed).
+    if (st.stamina > 0) { const r = (100 - st.stamina * 0.001 * 19) * 0.01; st.vel[0] *= r; st.vel[1] *= r; }
     simAccel(st, wDir, wSpd, SV.accelerate, dt);
 
     const jumpKey = !!cmd.jump;
@@ -318,7 +327,11 @@ function simPlayerMoveStep(hull, st, cmd, dt, params) {
         const spd = Math.hypot(st.vel[0], st.vel[1]);
         if (spd > maxScaled) { const f = (maxScaled / spd) * 0.65; st.vel[0] *= f; st.vel[1] *= f; }
         else if (spd > SV.maxspeed * 0.7) { st.vel[0] *= 0.8; st.vel[1] *= 0.8; }
+        // PM_Jump: a jump while the penalty still runs is lower by the same ratio; then the
+        // penalty restarts at 1315.789429 ms.
         st.vel[2]   = SV.jumpvel;
+        if (st.stamina > 0) st.vel[2] *= (100 - st.stamina * 0.001 * 19) * 0.01;
+        st.stamina  = 1315.789429;
         st.onGround = false;
         ev.jumped   = true;
       }

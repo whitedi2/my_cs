@@ -76,7 +76,7 @@ const SCENARIO_DUR = {   // must mirror the SCENARIOS table in src/autotest.js
   fire: 2.5, dryfire: 9.0, reload: 5.0, switch: 4.0, silencer: 4.0,
   knife: 2.2, knife_mix: 3.0, fall: 1.5,
   awp: 4.6, awp_speed: 3.4, awp_reload: 4.8,
-  nade: 2.4, ammo: 0.9, freeze: 2.0,
+  nade: 2.4, ammo: 0.9, freeze: 2.0, bhop: 1.8,
 };
 function unescapeHtml(s) {
   return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
@@ -203,8 +203,8 @@ const ASSERTS = {
     check('camera does not jump on the hull swap or stand-up', maxStep < 6, `max step=${maxStep.toFixed(2)}u/frame`);
     const moving = between(s, 0.7, 1.9);
     const top = peak(moving, x => x.spd);
-    const want = o.cfg.crouchspeed * (capOf(o) / o.cfg.maxspeed);
-    check('crouch-walk capped at crouchspeed', near(top, want, want * 0.04), `top=${top.toFixed(1)} want=${want}`);
+    const want = capOf(o) * o.cfg.duckmult;   // PLAYER_DUCKING_MULTIPLIER 0.333 on the input
+    check('crouch-walk = cap × 0.333', near(top, want, want * 0.02), `top=${top.toFixed(1)} want=${want.toFixed(2)}`);
     check('stands back up at the end', o.end.duck < 0.01 && !o.end.ducked, `duck=${o.end.duck}`);
   },
   jump(o, check) {
@@ -391,6 +391,24 @@ const ASSERTS = {
     check('live: walks again', topLive > 150, `top=${topLive.toFixed(1)}`);
     check('live: fires again', o.end.ammo < s[0].ammo, `ammo ${s[0].ammo} → ${o.end.ammo}`);
     check('live: buy window still open (15 s)', live.every(x => x.buyOpen));
+  },
+  // Jump penalty through the real client (physics.js ↔ sim-core stamina): a jump right on landing
+  // is lower — pm_shared fuser2.
+  bhop(o, check) {
+    const s = o.samples;
+    const offs = [];                                  // take-off samples of each jump
+    // take-off = an airborne sample whose predecessor was grounded — or sample 0 itself (the
+    // first jump fires on the very first scripted frame).
+    for (let i = 0; i < s.length; i++) if (!s[i].ground && (i === 0 || s[i - 1].ground)) offs.push(s[i]);
+    check('two jumps', offs.length >= 2, `jumps=${offs.length}`);
+    if (offs.length < 2) return;
+    const v1 = offs[0].vel[2], v2 = offs[1].vel[2];
+    check('first jump at full height (≈268 − gravity of a frame)', v1 > 255, `vz=${v1.toFixed(1)}`);
+    // pm_shared PM_Jump: vz × (100 − t·0.019)%, t = penalty left = 1315.79 ms − time since the last jump.
+    const left = Math.max(0, 1315.789429 - (offs[1].t - offs[0].t) * 1000);
+    const want = v1 * (100 - left * 0.019) / 100;
+    check('second jump is lower by exactly the penalty left', v2 < v1 && near(v2, want, 2),
+          `vz ${v1.toFixed(1)} → ${v2.toFixed(1)}, want ${want.toFixed(1)} (penalty ${left.toFixed(0)} ms)`);
   },
   awp_speed(o, check) {
     const s = o.samples;

@@ -282,7 +282,7 @@ function snapshotEntry(pl) {
     v: [s.vel[0], s.vel[1], s.vel[2]],
     y: pl.yaw,
     og: s.onGround ? 1 : 0, dk: s.phyDucked ? 1 : 0,
-    da: s.duckAmount, wj: s.wasJump ? 1 : 0, pz: s.prevVelZ, vm: s.velMod,
+    da: s.duckAmount, wj: s.wasJump ? 1 : 0, pz: s.prevVelZ, vm: s.velMod, sn: s.stamina || 0,
     m: pl.model, tm: pl.team, w: pl.weapon, al: pl.alive ? 1 : 0,
     pi: pl.pitch || 0, wsv: pl.ws || 0, wsp: pl.wsT || 0,   // presentation: look pitch + weapon state
     fc: pl.shots || 0,                                     // gunfire counter (clients play the shot sound on a bump)

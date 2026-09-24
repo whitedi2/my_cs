@@ -85,6 +85,11 @@
       [0.3, { hold: ['KeyW', 'Space'] }], [0.35, { hold: ['KeyW'] }],
       [1.8, { hold: [], lmb: false }],
     ] },
+    // two jumps: the second pressed just after landing (air time ≈ 0.67 s) → penalised
+    bhop:      { waitFor: 'ground', wpn: 'knife', dur: 1.8, tl: [
+      [0.0, { hold: ['Space'] }], [0.1, { hold: [] }],
+      [0.78, { hold: ['Space'] }], [0.88, { hold: [] }],
+    ] },
     awp_speed: { wpn: 'awp', dur: 3.4, tl: [
       [0.0, { hold: ['KeyW'] }], [1.1, { hold: [] }],   // unscoped: cap 210
       [1.6, { rmb: true }], [1.62, { rmb: false }],     // scope in
