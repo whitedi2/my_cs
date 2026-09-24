@@ -190,7 +190,7 @@ const check = (name, cond, extra) => {
   check('team kill costs $3300', M.matchKillReward('ak47', true) === -3300);
 
   // Round money + the shared loss-bonus streak (ReGameDLL multiplay_gamerules.cpp).
-  const C = require('../src/combat-core.js');
+  // (C = combat-core, required above for the ammo-pack checks)
   const eco = C.combatEconomyNew();
   const seq = [];
   for (let i = 0; i < 5; i++) seq.push(C.combatRoundMoney(eco, 't', 'elim').ct);   // CT loses 5 in a row
