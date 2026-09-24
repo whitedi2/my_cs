@@ -64,7 +64,8 @@ server.on('listening', () => {
   let aId = null, bId = null;
   let aDmg = null, bDmg = null;   // the server's `dmg` event is broadcast to everyone
 
-  const a = connect((m) => { if (m.t === 'welcome') aId = m.id; if (m.t === 'dmg') aDmg = m; });
+  let phase = null;
+  const a = connect((m) => { if (m.t === 'welcome') aId = m.id; if (m.t === 'dmg') aDmg = m; if (m.t === 'gstate') phase = m.phase; });
   const b = connect((m) => { if (m.t === 'welcome') bId = m.id; if (m.t === 'dmg') bDmg = m; });
 
   // Once both have ids: A reports a KNIFE hit on B; the server applies it to B's HP and
@@ -73,8 +74,16 @@ server.on('listening', () => {
     if (aId == null || bId == null) return;
     clearInterval(fire);
     wsSendText(a, JSON.stringify({ t: 'hello', tm: 't' }));   // opposite teams → full knife damage (no FF cut)
+    // The round opens with the freeze: attacks are refused (CS m_bCanShoot = false)…
     wsSendText(a, JSON.stringify({ t: 'hit', target: bId, hg: 2, dmg: 30 }));
     setTimeout(() => {
+      check('freeze time: the knife hit is refused', !bDmg && !aDmg, bDmg ? `hp=${bDmg.hp}` : '');
+      // …so wait for the live round, then hit for real.
+      const waitLive = setInterval(() => {
+        if (phase !== 'live') return;
+        clearInterval(waitLive);
+        wsSendText(a, JSON.stringify({ t: 'hit', target: bId, hg: 2, dmg: 30 }));
+        setTimeout(() => {
       check('damage event broadcast', !!bDmg && !!aDmg);
       check('dmg targets the victim', bDmg && bDmg.id === bId, bDmg ? `id=${bDmg.id}` : '');
       check('dmg names the attacker', bDmg && bDmg.by === aId, bDmg ? `by=${bDmg.by}` : '');
@@ -85,8 +94,10 @@ server.on('listening', () => {
       a.destroy(); b.destroy(); server.close();
       console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
       process.exit(failures === 0 ? 0 : 1);
+        }, 150);
+      }, 20);
     }, 150);
   }, 10);
 });
 server.on('error', (e) => { console.error('server error', e); process.exit(1); });
-setTimeout(() => { console.error('timeout'); process.exit(1); }, 5000).unref();
+setTimeout(() => { console.error('timeout'); process.exit(1); }, 15000).unref();   // 5 s freeze first

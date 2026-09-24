@@ -290,6 +290,8 @@ function playerMove(dt) {
   if (keys['KeyA'] || (arrowMove && keys['ArrowLeft']))  sm -= 1;
   let wpnMax = (typeof curW === 'function' && curW().maxSpeed) || SV.maxspeed;
   if (typeof isScoped === 'function' && isScoped()) wpnMax = curW().zoomSpeed || wpnMax;
+  // Freeze time: CS caps maxspeed to 1 (ResetMaxSpeed) — can't walk, can still jump/duck/turn.
+  if (typeof freezePeriod === 'function' && freezePeriod()) wpnMax = 1;
   const cmd = { forwardMove: fm, sideMove: sm, jump: !!keys['Space'],
                 duck: !!wantDuck, walk: !!walk, yaw };
 

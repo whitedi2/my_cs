@@ -10,8 +10,14 @@
 // Shared buy rules (armour price, ammo packs) live in combat-core — loaded on both sides.
 const _combat = require('./combat-core.js');
 
-const MATCH_BUY_TIME   = 15;    // s of buy time at round start (mp_buytime-ish)
-const MATCH_ROUND_TIME = 115;   // 1:55 main round clock
+// Competitive CS 1.6 config (league server.cfg): mp_freezetime 5, mp_buytime 0.25 (15 s),
+// mp_roundtime 1.75 (1:45), mp_c4timer 35, mp_startmoney 800.
+// Phase 'buy' IS the freeze time: nobody moves (maxspeed 1) or shoots, buying is open. The round
+// clock then runs ('live') and the buy window stays open for MATCH_BUY_TIME more (as in CS, where
+// mp_buytime counts from the end of the freeze).
+const MATCH_FREEZE_TIME = 5;    // s frozen at round start (mp_freezetime)
+const MATCH_BUY_TIME   = 15;    // s buying stays open after the freeze ends (mp_buytime 0.25)
+const MATCH_ROUND_TIME = 105;   // 1:45 round clock (mp_roundtime 1.75)
 const MATCH_ROUND_END  = 5;     // banner before the next round
 const MATCH_WARMUP_MIN = 1;     // players (joined) needed to kick off the match
 
@@ -22,7 +28,7 @@ const MATCH_FALL_FATAL = 1100.0;
 const MATCH_FALL_PER   = 100.0 / (MATCH_FALL_FATAL - MATCH_FALL_SAFE);   // dmg per unit over safe
 
 // ── Economy (Phase 6C) ───────────────────────────────────────────────────────
-const MATCH_START_MONEY = 16000;
+const MATCH_START_MONEY = 800;     // mp_startmoney
 const MATCH_MONEY_CAP   = 16000;
 const MATCH_WIN_REWARD  = 3250;
 const MATCH_LOSS_REWARD  = 1400;
@@ -62,7 +68,7 @@ const MATCH_BUY = {
 };
 
 // ── C4 bomb (Phase 6D) — numbers mirror rounds.js ────────────────────────────
-const MATCH_C4_TIME      = 40;    // fuse seconds after a successful plant
+const MATCH_C4_TIME      = 35;    // fuse seconds after a successful plant (mp_c4timer 35)
 const MATCH_PLANT_TIME   = 3.0;   // hold seconds to plant (standing in a bombsite)
 const MATCH_DEFUSE_TIME  = 10;    // hold seconds to defuse without a kit
 const MATCH_DEFUSE_KIT   = 5;     // …with a defuse kit
@@ -162,11 +168,12 @@ function matchTick(ms, roster, dt) {
     // Elimination can already settle it; otherwise buy time elapses into live.
     const w = _matchCheckElim(joined, false);
     if (w) { _matchEndRound(ms, ev, w.winner, w.reason); return ev; }
-    if (ms.timer <= 0) { ms.phase = 'live'; ms.timer = MATCH_ROUND_TIME; }
+    if (ms.timer <= 0) { ms.phase = 'live'; ms.timer = MATCH_ROUND_TIME; ms.buyLeft = MATCH_BUY_TIME; }
     return ev;
   }
 
   if (ms.phase === 'live') {
+    if (ms.buyLeft > 0) ms.buyLeft = Math.max(0, ms.buyLeft - dt);
     // A planted bomb runs its OWN fuse; the round clock no longer ends the round. The bomb
     // must be defused (CT win) or it detonates → T win + blast damage (applied by the server,
     // which has the geometry). ev.bombDetonate tells the server where to apply it.
@@ -198,14 +205,20 @@ function matchTick(ms, roster, dt) {
 
 function _matchStartRound(ms, ev) {
   ms.round++;
-  ms.phase = 'buy';
-  ms.timer = MATCH_BUY_TIME;
+  ms.phase = 'buy';                 // = freeze time
+  ms.timer = MATCH_FREEZE_TIME;
+  ms.buyLeft = 0;
   ms.winner = null; ms.reason = '';
   ms.bomb = null;             // fresh round → no planted bomb (carrier reassigned by the server)
   ms.bombResult = null;
   ms._ended = false;
   ev.roundStart = true;
 }
+
+// Buying is open during the freeze and for MATCH_BUY_TIME into the live round.
+function matchBuyOpen(ms) { return ms.phase === 'buy' || (ms.phase === 'live' && ms.buyLeft > 0); }
+// Freeze time: movement capped to maxspeed 1 and no attacks (ResetMaxSpeed / m_bCanShoot).
+function matchFrozen(ms) { return ms.phase === 'buy'; }
 
 // Server validated a completed plant (carrier + bombsite + 3s hold) → arm the bomb.
 function matchBombPlant(ms, pos, site) {
@@ -280,9 +293,9 @@ function matchRevive(pl) { pl.hp = MATCH_MAX_HP; pl.alive = true; }
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    matchCreate, matchTick, matchApplyDamage, matchFallDamage, matchRevive,
+    matchCreate, matchTick, matchApplyDamage, matchFallDamage, matchRevive, matchBuyOpen, matchFrozen,
     matchBuy, matchKillReward, matchFFMult, matchBombPlant, matchBombDefuse,
-    MATCH_BUY_TIME, MATCH_ROUND_TIME, MATCH_ROUND_END, MATCH_WARMUP_MIN, MATCH_MAX_HP, MATCH_FF_MULT,
+    MATCH_FREEZE_TIME, MATCH_BUY_TIME, MATCH_ROUND_TIME, MATCH_ROUND_END, MATCH_WARMUP_MIN, MATCH_MAX_HP, MATCH_FF_MULT,
     MATCH_START_MONEY, MATCH_MONEY_CAP, MATCH_WIN_REWARD, MATCH_LOSS_REWARD, MATCH_BUY,
     MATCH_C4_TIME, MATCH_PLANT_TIME, MATCH_DEFUSE_TIME, MATCH_DEFUSE_KIT,
     MATCH_C4_DAMAGE, MATCH_C4_RADIUS, MATCH_PLANT_REWARD, MATCH_HE_DAMAGE, MATCH_HE_RADIUS,

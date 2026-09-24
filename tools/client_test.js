@@ -76,7 +76,7 @@ const SCENARIO_DUR = {   // must mirror the SCENARIOS table in src/autotest.js
   fire: 2.5, dryfire: 9.0, reload: 5.0, switch: 4.0, silencer: 4.0,
   knife: 2.2, knife_mix: 3.0, fall: 1.5,
   awp: 4.6, awp_speed: 3.4, awp_reload: 4.8,
-  nade: 2.4, ammo: 0.9,
+  nade: 2.4, ammo: 0.9, freeze: 2.0,
 };
 function unescapeHtml(s) {
   return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
@@ -375,6 +375,22 @@ const ASSERTS = {
     check('4th press when full: refused, no charge', m4(0.45) === 90 && $(0.45) === 820, `m4=${m4(0.45)} $${$(0.45)}`);
     check('USP 90 → 100: partial pack, full $25', usp(0.55) === 100 && $(0.55) === 795, `usp=${usp(0.55)} $${$(0.55)}`);
     check('USP full: refused', usp(0.85) === 100 && $(0.85) === 795, `$${$(0.85)}`);
+  },
+  // Freeze time (competitive round start): maxspeed 1, no attacks, jump/buy still allowed.
+  freeze(o, check) {
+    const s = o.samples;
+    const frz = s.filter(x => x.phase === 'buy' && x.t > 0.02), live = s.filter(x => x.phase === 'live');
+    check('the 1 s freeze runs, then the round goes live', frz.length > 30 && live.length > 20,
+          `freeze=${frz.length} live=${live.length} frames`);
+    const top = peak(frz, x => x.spd);
+    check('freeze: holding W does not walk (maxspeed 1)', top <= 1.01, `top=${top.toFixed(2)} u/s`);
+    check('freeze: holding LMB does not fire', frz.every(x => x.ammo === s[0].ammo), `ammo ${s[0].ammo} → ${o.end.ammo}`);
+    check('freeze: jumping still works', frz.some(x => !x.ground));
+    check('freeze: buying is open', frz.every(x => x.buyOpen));
+    const topLive = peak(live, x => x.spd);
+    check('live: walks again', topLive > 150, `top=${topLive.toFixed(1)}`);
+    check('live: fires again', o.end.ammo < s[0].ammo, `ammo ${s[0].ammo} → ${o.end.ammo}`);
+    check('live: buy window still open (15 s)', live.every(x => x.buyOpen));
   },
   awp_speed(o, check) {
     const s = o.samples;

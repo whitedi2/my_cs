@@ -20,6 +20,7 @@ const SP = hullData.spawns.ct[0];                          // real on-ground spa
 const SP_POS = [SP.origin[0], SP.origin[1], SP.origin[2] + 1];
 const SP_YAW = ((SP.angle || 0) - 90) * Math.PI / 180;     // walk the way the spawn faces (open space)
 let failures = 0;
+let liveAt = null, liveIdx = 0, phase = null;
 function check(name, cond, extra) {
   const ok = !!cond;
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  ' + extra : ''}`);
@@ -91,37 +92,51 @@ server.on('listening', () => {
       buf = buf.slice(i + 4);
       handshakeDone = true;
 
-      // Join at a real on-ground spawn, then walk the way it faces for ~1s @100 Hz.
+      // Join at a real on-ground spawn and hold "forward" the whole time @100 Hz. The round opens
+      // with the freeze (MATCH_FREEZE_TIME): the server must NOT move us then; once gstate says
+      // 'live' the same input has to walk us.
       wsSendText(sock, JSON.stringify({ t: 'hello', m: 'gign', tm: 'ct', p: SP_POS, y: SP_YAW }));
       sendTimer = setInterval(() => {
         seq++;
         wsSendText(sock, JSON.stringify({ t: 'cmd', seq, dt: 1 / 100, fm: 1, y: SP_YAW, ws: 250 }));
-        if (seq >= 100) clearInterval(sendTimer);
-      }, 5);
+      }, 10);
     }
     const r = readFrames(buf); buf = r.rest;
     for (const f of r.frames) {
       let m; try { m = JSON.parse(f); } catch { continue; }
       if (m.t === 'welcome') { gotWelcome = true; check('received welcome with id', m.id > 0, `id=${m.id}`); }
-      else if (m.t === 'snap') snaps.push(m);
+      else if (m.t === 'gstate') { if (m.phase === 'live' && liveAt === null) { liveAt = Date.now(); liveIdx = snaps.length; } phase = m.phase; }
+      else if (m.t === 'snap') { m._phase = phase; snaps.push(m); }
     }
   });
 
-  // Evaluate after the cmd stream has been processed and a few snapshots arrived.
-  setTimeout(() => {
+  // Evaluate ~1 s after the freeze ends (or give up after 12 s).
+  const t0 = Date.now();
+  const evalTimer = setInterval(() => {
+    const ready = liveAt !== null && Date.now() - liveAt > 1000;
+    if (!ready && Date.now() - t0 < 12000) return;
+    clearInterval(evalTimer); clearInterval(sendTimer);
     check('received welcome', gotWelcome);
     check('received snapshots', snaps.length > 0, `count=${snaps.length}`);
-    const first = snaps[0] && (snaps[0].players || [])[0];
-    const last  = snaps[snaps.length - 1];
-    const me = last && (last.players || []).find(p => p.id > 0);
+    const myPos = sn => { const p = sn && (sn.players || []).find(q => q.id > 0); return p && p.p; };
+    // gstate (phase) arrives at 5 Hz vs 20 Hz snapshots, so the last few 'buy'-tagged snaps are
+    // already live — drop that 0.25 s tail. What remains may creep ≪1 u: CS freeze is maxspeed 1.
+    const frz = snaps.filter(sn => sn._phase === 'buy' && myPos(sn)).slice(0, -5);
+    const frzMoved = frz.length > 1 ? Math.hypot(myPos(frz[frz.length - 1])[0] - myPos(frz[0])[0], myPos(frz[frz.length - 1])[1] - myPos(frz[0])[1]) : 0;
+    let maxStep = 0, stepAt = -1;
+    for (let i = 1; i < frz.length; i++) { const d = Math.hypot(myPos(frz[i])[0] - myPos(frz[i - 1])[0], myPos(frz[i])[1] - myPos(frz[i - 1])[1]); if (d > maxStep) { maxStep = d; stepAt = i; } }
+    check('freeze time: holding forward does not move us', frz.length > 1 && frzMoved < 1, `moved=${frzMoved.toFixed(2)}u over ${frz.length} snaps (max step ${maxStep.toFixed(2)} at #${stepAt})`);
+    check('the round goes live after the freeze', liveAt !== null);
+    const last = snaps[snaps.length - 1];
     check('snapshot ack advanced', last && last.ack > 0, last ? `ack=${last.ack}` : '');
-    const moved = (first && me) ? Math.hypot(me.p[0] - first.p[0], me.p[1] - first.p[1]) : 0;
-    check('walking moved us horizontally', moved > 20, `moved=${moved.toFixed(1)}u`);
+    const a = myPos(snaps[liveIdx]), b = myPos(last);
+    const moved = (a && b) ? Math.hypot(b[0] - a[0], b[1] - a[1]) : 0;
+    check('live: walking moved us horizontally', moved > 20, `moved=${moved.toFixed(1)}u`);
     sock.destroy();
     server.close();
     done();
-  }, 900);
+  }, 100);
 });
 
 server.on('error', (e) => { console.error('server error', e); process.exit(1); });
-setTimeout(() => { console.error('timeout'); process.exit(1); }, 5000).unref();
+setTimeout(() => { console.error('timeout'); process.exit(1); }, 15000).unref();   // covers the 5 s freeze + 1 s of walking

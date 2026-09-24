@@ -26,11 +26,24 @@ const check = (name, cond, extra) => {
   ev = M.matchTick(ms, t1, 0.1);
   check('a player joins → round 1, buy phase', ev.roundStart && ms.phase === 'buy' && ms.round === 1,
         `phase=${ms.phase} round=${ms.round}`);
-  check('buy timer set', Math.abs(ms.timer - M.MATCH_BUY_TIME) < 0.01, `timer=${ms.timer}`);
+  // Competitive CS config: 5 s freeze (no moving/shooting, buying open) → 1:45 clock, buy
+  // window 15 s into the round; c4 35 s; $800 start.
+  check('competitive config: freeze 5, buy 15, round 1:45, C4 35, $800',
+        M.MATCH_FREEZE_TIME === 5 && M.MATCH_BUY_TIME === 15 && M.MATCH_ROUND_TIME === 105 &&
+        M.MATCH_C4_TIME === 35 && M.MATCH_START_MONEY === 800);
+  check('round opens with the freeze', Math.abs(ms.timer - M.MATCH_FREEZE_TIME) < 0.01 && M.matchFrozen(ms),
+        `timer=${ms.timer}`);
+  check('buying is open during the freeze', M.matchBuyOpen(ms));
 
-  M.matchTick(ms, t1, M.MATCH_BUY_TIME);
-  check('buy elapses → live', ms.phase === 'live' && Math.abs(ms.timer - M.MATCH_ROUND_TIME) < 0.5,
+  M.matchTick(ms, t1, M.MATCH_FREEZE_TIME);
+  check('freeze elapses → live', ms.phase === 'live' && Math.abs(ms.timer - M.MATCH_ROUND_TIME) < 0.5 && !M.matchFrozen(ms),
         `phase=${ms.phase} timer=${ms.timer.toFixed(1)}`);
+  check('buy window stays open into the round', M.matchBuyOpen(ms), `buyLeft=${ms.buyLeft}`);
+  M.matchTick(ms, t1, M.MATCH_BUY_TIME - 0.5);
+  check('…still open just before 15 s', M.matchBuyOpen(ms), `buyLeft=${ms.buyLeft.toFixed(2)}`);
+  M.matchTick(ms, t1, 1.0);
+  check('…closed after 15 s', !M.matchBuyOpen(ms), `buyLeft=${ms.buyLeft}`);
+  ms.timer = M.MATCH_ROUND_TIME;   // reset the clock (it ran 15.5 s above) for the timeout check below
 
   ev = M.matchTick(ms, t1, M.MATCH_ROUND_TIME);
   check('clock runs out → over, CT wins', ms.phase === 'over' && ms.winner === 'ct',

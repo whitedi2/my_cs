@@ -224,7 +224,7 @@ function worldRespawn(pl, opts = {}) {
 // Advance one player by a single usercmd. Ignores stale/duplicate seq. dt clamped
 // so a client can't fast-forward the sim with a huge dt. Dead players don't move.
 // Returns a fall-damage event { dealt, died } when landing hurts, else null.
-function worldApplyCmd(pl, c) {
+function worldApplyCmd(pl, c, frozen) {
   if (!_hull || !c || (c.seq | 0) <= pl.lastSeq) return null;
   pl.lastSeq = c.seq | 0;
   pl.lastCmdAt = Date.now();          // for the idle-tick: this player is actively sending input
@@ -244,7 +244,8 @@ function worldApplyCmd(pl, c) {
     forwardMove: c.fm || 0, sideMove: c.sm || 0,
     jump: !!c.jp, duck: !!c.dk, walk: !!c.wk, yaw: pl.yaw,
   };
-  const ev = sim.simPlayerMove(_hull, pl.state, cmd, dt, { wpnMax: c.ws || CONFIG.maxspeed });
+  // Freeze time: CS caps maxspeed to 1 (ResetMaxSpeed) — jumping/ducking still work.
+  const ev = sim.simPlayerMove(_hull, pl.state, cmd, dt, { wpnMax: frozen ? 1 : (c.ws || CONFIG.maxspeed) });
   if (ev.landed) {                                  // authoritative fall damage
     const fd = match.matchFallDamage(ev.fallVel);
     if (fd > 0) {
@@ -521,7 +522,7 @@ function gameState(world, pl) {
   for (const p of world.players.values()) if (p.joined) online++;
   const gs = {
     t: 'gstate', map: ms.map, phase: ms.phase, round: ms.round,
-    timer: Math.max(0, ms.timer), scoreT: ms.scoreT, scoreCT: ms.scoreCT,
+    timer: Math.max(0, ms.timer), buy: Math.max(0, ms.buyLeft || 0), scoreT: ms.scoreT, scoreCT: ms.scoreCT,
     winner: ms.winner, reason: ms.reason, online, bombResult: ms.bombResult,
     bomb: ms.bomb ? {
       pos: ms.bomb.pos, site: ms.bomb.site, timer: Math.max(0, ms.bomb.timer),
@@ -879,7 +880,9 @@ function worldBotTick(world, bot, dt) {
   bot.yaw = yaw; bot.pitch = pitch;
 
   const cmd = { forwardMove: fm, sideMove: 0, jump: false, duck: false, walk: false, yaw };
-  const ev = sim.simPlayerMove(_hull, bot.state, cmd, Math.min(Math.max(dt, 0), 0.1), { wpnMax: CONFIG.maxspeed });
+  // Freeze time holds bots in place too (maxspeed 1), like every player.
+  const ev = sim.simPlayerMove(_hull, bot.state, cmd, Math.min(Math.max(dt, 0), 0.1),
+                              { wpnMax: match.matchFrozen(world.match) ? 1 : CONFIG.maxspeed });
   let fall = null;
   if (ev.landed) {
     const fd = match.matchFallDamage(ev.fallVel);
@@ -1056,12 +1059,13 @@ function startServer(port) {
         break;
       }
       case 'cmd': {
-        const apply = (c) => { const fe = worldApplyCmd(pl, c); if (fe) dmgEvent(id, 0, id, fe.dealt, pl.hp, fe.died, 'fall'); };
+        const apply = (c) => { const fe = worldApplyCmd(pl, c, match.matchFrozen(world.match)); if (fe) dmgEvent(id, 0, id, fe.dealt, pl.hp, fe.died, 'fall'); };
         if (Array.isArray(msg.cmds)) for (const c of msg.cmds) apply(c);
         else apply(msg);
         break;
       }
       case 'hit': {                                        // KNIFE: shooter-reported dmg, applied to server HP
+        if (match.matchFrozen(world.match)) break;       // freeze time: no attacks (m_bCanShoot)
         const tp = world.players.get(msg.target | 0);
         if (tp && (msg.target | 0) !== id && tp.alive) {
           const r = match.matchApplyDamage(tp, (msg.dmg | 0) * match.matchFFMult(pl, tp), msg.hg | 0);
@@ -1073,6 +1077,7 @@ function startServer(port) {
         break;
       }
       case 'shot': {                                       // BULLETS: authoritative, lag-compensated hitreg
+        if (match.matchFrozen(world.match)) break;       // freeze time: no attacks (m_bCanShoot)
         const hits = worldProcessShot(world, id, msg);
         for (const h of hits) {
           dmgEvent(h.tid, h.hg, id, h.dealt, h.hp, h.died, msg.w);
@@ -1081,10 +1086,12 @@ function startServer(port) {
         break;
       }
       case 'proj': {                                       // HL PROJECTILES: server-owned rocket / bolt
+        if (match.matchFrozen(world.match)) break;       // freeze time: no attacks (m_bCanShoot)
         if (MP_HL_WEAPONS && pl.alive) worldSpawnProjectile(world, id, msg);
         break;
       }
       case 'nadethrow': {                                  // thrown grenade → server-owned flight + fuse
+        if (match.matchFrozen(world.match)) break;       // freeze time: no attacks (m_bCanShoot)
         if (pl.alive) worldSpawnGrenade(world, id, msg);
         break;
       }
@@ -1102,7 +1109,7 @@ function startServer(port) {
         for (const w of pl.weapons) { const it = match.MATCH_BUY[w]; if (it && it.slot === slot && combat.combatAmmoPack(w)) { pack = combat.combatAmmoPack(w); break; } }
         const price = pack ? pack.price : 0;
         let reason = '';
-        if (world.match.phase !== 'buy') reason = 'Время закупки вышло';
+        if (!match.matchBuyOpen(world.match)) reason = 'Время закупки вышло';
         else if (!_inBuyZone(pl))        reason = 'Вы не в зоне закупки';
         else if (!pack)                  reason = 'Нет оружия для патронов';
         else if (pl.money < price)       reason = 'Недостаточно денег';
@@ -1114,7 +1121,7 @@ function startServer(port) {
       case 'buy': {                                        // server-validated purchase (Phase 6C)
         const sk = sockets.get(id);                        // _onMsg has no `socket` in scope — look it up
         if (!sk) break;
-        if (world.match.phase !== 'buy') { _send(sk, JSON.stringify({ t: 'bought', ok: false, reason: 'Время закупки вышло' })); break; }
+        if (!match.matchBuyOpen(world.match)) { _send(sk, JSON.stringify({ t: 'bought', ok: false, reason: 'Время закупки вышло' })); break; }
         if (!_inBuyZone(pl))             { _send(sk, JSON.stringify({ t: 'bought', ok: false, reason: 'Вы не в зоне закупки' })); break; }
         const r = match.matchBuy(pl, String(msg.id || ''), { hlWeapons: MP_HL_WEAPONS });
         _send(sk, JSON.stringify({ t: 'bought', ok: r.ok, reason: r.reason || '', id: r.id, kind: r.kind, money: pl.money }));

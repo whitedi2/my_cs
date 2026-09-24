@@ -78,6 +78,13 @@
       [0.5, { tap: 'Period' }],                           // USP 90 → 100 (+10 of a 12 pack, full $25)
       [0.6, { tap: 'Period' }],                           // full → refused
     ] },
+    // freeze time (CS ResetMaxSpeed = 1, m_bCanShoot = false): W + LMB held and a jump through a
+    // 1 s freeze — no walking or shots, the jump works; then the round goes live and both do
+    freeze:    { wpn: 'm4', dur: 2.0, tl: [
+      [0.0, { round: { phase: 'buy', freeze: 1.0 }, hold: ['KeyW'], lmb: true }],
+      [0.3, { hold: ['KeyW', 'Space'] }], [0.35, { hold: ['KeyW'] }],
+      [1.8, { hold: [], lmb: false }],
+    ] },
     awp_speed: { wpn: 'awp', dur: 3.4, tl: [
       [0.0, { hold: ['KeyW'] }], [1.1, { hold: [] }],   // unscoped: cap 210
       [1.6, { rmb: true }], [1.62, { rmb: false }],     // scope in
@@ -215,6 +222,8 @@
       document.dispatchEvent(new MouseEvent(down ? 'mousedown' : 'mouseup', { button, bubbles: true }));
 
     function apply(a) {
+      // round state first, so input on the same frame already sees it (e.g. a click in the freeze)
+      if (a.round) { roundPhase = a.round.phase; if (a.round.freeze != null) buyTimer = a.round.freeze; buyLeft = 0; }
       if (a.hold)  setHeld(a.hold);
       if (a.tap)   tap(a.tap);
       if ('lmb' in a) mouseBtn(0, a.lmb);
@@ -252,6 +261,8 @@
         seq: (w && w.anim) ? (w.anim._evSeqName || null) : null,          // view-model sequence playing
         // first live grenade (solo: the real one; its fuse runs in updateGrenades)
         money: (typeof playerMoney !== 'undefined') ? playerMoney : null,
+        phase: (typeof roundPhase !== 'undefined') ? roundPhase : null,
+        buyOpen: (typeof buyTimeOpen === 'function') ? buyTimeOpen() : null,
         rsv: (typeof WPNS !== 'undefined' && typeof ownedWeapons !== 'undefined')
           ? Object.fromEntries(WPNS.filter(x => x.type === 'gun' && ownedWeapons.has(x.id)).map(x => [x.id, x.reserve])) : null,
         nades: (typeof _grenadesInAir !== 'undefined') ? _grenadesInAir.length : 0,

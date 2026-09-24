@@ -395,7 +395,7 @@ document.addEventListener('mousedown', e => {
   }
   // Grenade: hold LMB to pull the pin (cook), release to throw (handled on mouseup).
   if (wpn.type === 'grenade') {
-    if (e.button === 0 && ws === WS.IDLE) {
+    if (e.button === 0 && ws === WS.IDLE && !(typeof freezePeriod === 'function' && freezePeriod())) {
       ws = WS.PULLPIN; wsT = 0; wsHit = false;
       if (wpn.anim) { wpn.anim._prevAnimWs = undefined; wpn.anim.curFrame = 0; }
     }

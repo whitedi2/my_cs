@@ -697,6 +697,8 @@ function _beginDraw(idx) {
 // initialization lives in one place. ws/wsT/wsHit are shared globals. For a
 // burst-mode weapon (Glock with RMB toggle) one pull queues a 3-round burst.
 function _beginFire(wpn) {
+  // Freeze time: no attacks (CS m_bCanShoot = false). Settle to idle instead of firing.
+  if (typeof freezePeriod === 'function' && freezePeriod()) { ws = WS.IDLE; wsT = 0; return; }
   wpn.ammo--; ws = WS.FIRE; wsT = 0; wsHit = false;
   if (wpn._burstMode) { wpn._bursting = true; wpn._burstLeft = (wpn.burstCount || 3) - 1; }
   else { wpn._bursting = false; wpn._burstLeft = 0; }
@@ -728,6 +730,7 @@ function _meleeHits(dist) {
 //   LMB slash : hit → slash1/slash2 (0.25s),  miss → midslash1/midslash2 (0.4s)
 //   RMB stab  : hit → stab (1.1s),            miss → stab_miss (1.0s)
 function _startMeleeAttack(wpn, isStab) {
+  if (typeof freezePeriod === 'function' && freezePeriod()) return;   // freeze time: no attacks
   // KNIFE_SWING_DISTANCE 48 / KNIFE_STAB_DISTANCE 32 (ReGameDLL weapons.h) — the stab reaches less.
   const reach = isStab ? 32 : 48;
   const meleeResult = _meleeHits(reach);
@@ -843,7 +846,7 @@ function updateWeapon(dt) {
         } else if (lmbHeld && wpn.type === 'gun' && wpn.ammo > 0) {
           // Если LMB зажата во время draw и есть патроны - начать стрельбу
           _beginFire(wpn);
-        } else if (lmbHeld && wpn.type === 'grenade') {
+        } else if (lmbHeld && wpn.type === 'grenade' && !(typeof freezePeriod === 'function' && freezePeriod())) {
           // LMB held through the deploy (the mousedown fired before idle, so PULLPIN
           // was never latched) — pull the pin now so the release still throws.
           ws = WS.PULLPIN; wsT = 0; wsHit = false;
@@ -855,6 +858,11 @@ function updateWeapon(dt) {
     case WS.IDLE: {
       p.set(wpn.pos.x + bobX, wpn.pos.y + Math.sin(wsIdleT*1.6)*0.005, wpn.pos.z + bobZ);
       r.set(wpn.rot.x + Math.cos(wsIdleT*0.9)*0.007, wpn.rot.y + bobYaw, wpn.rot.z);
+      // A held trigger on an AUTOMATIC gun fires as soon as it's allowed again (CS ItemPostFrame
+      // tests the held button every frame) — e.g. holding fire through the end of the freeze.
+      // Semi-auto guns still need a fresh click, as in CS.
+      if (lmbHeld && wpn.type === 'gun' && wpn.autofire && wpn.ammo > 0 &&
+          !(typeof freezePeriod === 'function' && freezePeriod())) _beginFire(wpn);
       break;
     }
     case WS.PULLPIN: {
@@ -1046,11 +1054,11 @@ function updateWeapon(dt) {
         }
       }
       if (t >= 1) {
-        if (wpn._bursting && wpn._burstLeft > 0 && wpn.ammo > 0) {
+        if (wpn._bursting && wpn._burstLeft > 0 && wpn.ammo > 0 && !(typeof freezePeriod === 'function' && freezePeriod())) {
           // Continue the burst — fires the next round regardless of the LMB state
           // (one trigger pull = the full 3-round burst, as in CS).
           wpn.ammo--; wpn._burstLeft--; wsT = 0; wsHit = false;
-        } else if (lmbHeld && wpn.autofire && wpn.ammo > 0) {
+        } else if (lmbHeld && wpn.autofire && wpn.ammo > 0 && !(typeof freezePeriod === 'function' && freezePeriod())) {
           wpn.ammo--; wsT = 0; wsHit = false;
         } else if (wpn._fireQueued && !wpn.autofire && wpn.ammo > 0) {
           // A click arrived during the cooldown (semi-auto buffer) — fire it now.

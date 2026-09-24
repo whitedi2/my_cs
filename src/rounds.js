@@ -8,9 +8,13 @@
 // clock — T win if the bomb explodes, CT win if it's defused or time runs out. Money
 // rewards approximate CS (win/loss bonus + plant bonus).
 
-const BUY_TIME      = 15;    // s you can buy from round start (CS mp_buytime-ish)
-const ROUND_TIME    = 115;   // 1:55 main round clock
-const C4_TIME       = 40;    // bomb fuse after a successful plant
+// Competitive CS 1.6 config — mirrors match-core (MATCH_FREEZE_TIME/BUY_TIME/ROUND_TIME/C4_TIME):
+// 'buy' phase = freeze time (no moving/shooting, buying open), then the 1:45 clock runs with the
+// buy window open 15 s more.
+const FREEZE_TIME   = 5;     // mp_freezetime
+const BUY_TIME      = 15;    // mp_buytime 0.25 — counted from the end of the freeze
+const ROUND_TIME    = 105;   // mp_roundtime 1.75 (1:45)
+const C4_TIME       = 35;    // bomb fuse after a successful plant (mp_c4timer 35)
 const PLANT_TIME    = 3.0;   // hold E in the site to plant
 const DEFUSE_TIME   = 10;    // hold E on the bomb to defuse (no kit)
 const DEFUSE_KIT    = 5;     // with a defuse kit
@@ -20,7 +24,8 @@ const PLANT_REWARD  = 800, WIN_REWARD = 3250, LOSS_REWARD = 1400;
 
 let roundPhase = 'idle';     // 'idle' (no match) | 'buy' | 'live' | 'over'
 let roundTimer = ROUND_TIME; // counts down during 'live'
-let buyTimer   = BUY_TIME;   // counts down during 'buy'
+let buyTimer   = FREEZE_TIME; // counts down during 'buy' (the freeze)
+let buyLeft    = 0;          // buy window left in 'live' (after the freeze)
 let roundNum   = 0;
 let endTimer   = 0, endMsg = '', endColor = '#fff';
 let hasDefuseKit = false;
@@ -53,7 +58,8 @@ function startMatch() {
 function startRound(skipRespawn) {
   roundNum++;
   roundPhase = 'buy';
-  buyTimer   = BUY_TIME;
+  buyTimer   = FREEZE_TIME;
+  buyLeft    = 0;
   roundTimer = ROUND_TIME;
   _localRoundReset(skipRespawn);
 }
@@ -98,6 +104,7 @@ function applyServerRound(m) {
   if (m.phase === 'buy')        buyTimer = m.timer;
   else if (m.phase === 'live')  roundTimer = m.timer;
   else if (m.phase === 'over') { endTimer = m.timer; endMsg = m.reason || ''; endColor = (m.winner === 't') ? '#e8a33d' : '#78a8f0'; }
+  buyLeft = +m.buy || 0;                      // server's buy window left in 'live'
   // New round (buy phase) → reset our body once we've actually joined a team. Only on a
   // genuine round-number change (joining a fresh round 1 we already spawned in _chooseClass).
   if (hasJoined && m.phase === 'buy' && m.round > 0 && m.round !== prevRound) {
@@ -356,12 +363,13 @@ function updateRound(dt) {
     return;
   }
 
-  if (roundPhase === 'buy') {
+  if (roundPhase === 'buy') {                 // freeze time
     buyTimer -= dt;
-    if (buyTimer <= 0) roundPhase = 'live';
+    if (buyTimer <= 0) { roundPhase = 'live'; buyLeft = BUY_TIME; }
     _updateRoundHUD();
     return;
   }
+  if (buyLeft > 0) buyLeft = Math.max(0, buyLeft - dt);
 
   // live
   if (bomb && bomb.live) {
@@ -379,7 +387,8 @@ function updateRound(dt) {
 // disabled in MP until they move server-side (6D).
 function _updateRoundDriven(dt) {
   if (roundPhase === 'buy')        buyTimer   = Math.max(0, buyTimer - dt);
-  else if (roundPhase === 'live')  roundTimer = Math.max(0, roundTimer - dt);
+  if (roundPhase === 'live' && buyLeft > 0) buyLeft = Math.max(0, buyLeft - dt);
+  if (roundPhase === 'live')       roundTimer = Math.max(0, roundTimer - dt);
   else if (roundPhase === 'over')  endTimer   = Math.max(0, endTimer - dt);
   // Server-driven bomb: smooth-tick the fuse between gstates + accelerating beep / LED blink.
   if (bomb && bomb.live) {
@@ -468,7 +477,9 @@ function _fmtTime(s) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-function buyTimeOpen() { return roundPhase === 'buy'; }
+function buyTimeOpen() { return roundPhase === 'buy' || (roundPhase === 'live' && buyLeft > 0); }
+// Freeze time (round start): maxspeed 1 and no attacks — jumping/ducking/turning/buying still work.
+function freezePeriod() { return roundPhase === 'buy'; }
 
 function _updateRoundHUD() {
   const hud = document.getElementById('round-hud');
@@ -476,8 +487,9 @@ function _updateRoundHUD() {
     let cls = 'rh-time', t, sub;
     if (roundPhase === 'over')      { t = '—'; sub = `Раунд ${roundNum}`; }
     else if (bomb && bomb.live)     { cls += ' bomb'; t = _fmtTime(bomb.timer); sub = `Бомба на ${bomb.site.toUpperCase()}`; }
-    else if (roundPhase === 'buy')  { cls += ' buy';  t = _fmtTime(buyTimer); sub = 'Время закупки (B)'; }
-    else                            { t = _fmtTime(roundTimer); sub = `Раунд ${roundNum}`; }
+    else if (roundPhase === 'buy')  { cls += ' buy';  t = _fmtTime(buyTimer); sub = 'Фризтайм · закупка (B)'; }
+    else                            { t = _fmtTime(roundTimer);
+                                      sub = buyLeft > 0 ? `Раунд ${roundNum} · закупка ${Math.ceil(buyLeft)} с` : `Раунд ${roundNum}`; }
     const score = _netDriven ? `<div class="rh-score">T ${scoreT} : ${scoreCT} CT</div>` : '';
     hud.innerHTML = score + `<div class="${cls}">${t}</div><div class="rh-sub">${sub}</div>`;
     hud.style.display = 'block';

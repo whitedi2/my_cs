@@ -3,7 +3,7 @@
 // playerTeam / setTeam) and weapons (WPNS / switchWeapon) and player (playerModelName);
 // before input (which opens these menus and routes keys to them).
 
-const START_MONEY = 16000;
+const START_MONEY = 800;     // mp_startmoney (competitive config)
 let playerMoney = START_MONEY;
 const ownedWeapons = new Set(['knife', 'usp']);   // default loadout: knife + pistol
 let hasJoined = false;                            // chosen a team/class yet?
