@@ -37,7 +37,7 @@ function _ensureProjMesh(kind, cb) {
 
 // View ray in GoldSrc coords (matches hitCheck/decal aim, so projectiles fly where you point).
 function _aimRay() {
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const eyeH = playerEyeH();
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   const from = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
   // fz = +sin(pitch): the real look direction (matches the camera + grenade throw, grenades.js).

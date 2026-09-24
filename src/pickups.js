@@ -43,7 +43,7 @@ function _withPData(wid, cb) {
 // landing distance depends on where you look, as in the original); it falls to the
 // floor. Forward vector uses the same convention as the aim ray (yaw + pitch).
 function _spawnPickup(wid, ammo, reserve) {
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const eyeH = playerEyeH();
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   const dx = -Math.sin(yaw) * cp, dy = -sp, dz = -Math.cos(yaw) * cp;   // three-space look forward
   const SPEED = 300;

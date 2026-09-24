@@ -314,6 +314,7 @@ function playerMove(dt) {
   // The +19 stand-up teleport already accounts for the crouch view offset — snap it
   // so the camera doesn't dip (sim-core reports the teleport via ev.stoodUp).
   if (ev.stoodUp) duckViewOfs = 0;
+  if (ev.duckedDown) duckViewOfs = 18;   // origin just dropped 18 — keep the eye where it was
 
   // Multiplayer: buffer this cmd for reconciliation + send it to the server. Solo no-op.
   if (typeof netRecordCmd === 'function') netRecordCmd(cmd, dt, wpnMax);
@@ -390,14 +391,22 @@ function playerMove(dt) {
   yawObj.position.set(gsPos[0], smoothCamY, -gsPos[1]);
 }
 
+// Eye height above the origin for GAMEPLAY — shot/knife/throw origins, pickups, decal and
+// hit rays. It is the crouch view lerp (eyestand → eyeduck) PLUS the duck-hull shift: the
+// duck hull's origin sits 18 below the standing one for the same feet, so the view offset
+// is 18 higher relative to it (GoldSrc VEC_DUCK_VIEW 12 = eyeduck −6 + 18). The camera uses
+// a smoothed copy of that +18 (duckViewOfs) to hide the hull swap; gameplay must not lag.
+function playerEyeH() {
+  return SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand) + (phyDucked ? 18 : 0);
+}
+
 // Place the camera at the current spawn without simulating. Used while the player
 // is frozen (team/class select): playerMove — which normally positions the camera —
 // doesn't run, so without this the camera sits at the world origin (0,0,0) and looks
 // off the map. Puts the eye at the spawn point looking along its angle.
 function syncCameraToPlayer() {
   if (!gsPos) return;
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
-  smoothCamY = gsPos[2] + eyeH;
+  smoothCamY = gsPos[2] + playerEyeH();
   yawObj.position.set(gsPos[0], smoothCamY, -gsPos[1]);
 }
 

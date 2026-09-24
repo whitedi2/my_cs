@@ -558,7 +558,7 @@ function _enemyDie(inst, hg) {
 function enemyTryShoot(maxDist, opts) {
   if (!gsPos) return false;
   opts = opts || {};
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const eyeH = playerEyeH();
   // Same scattered trajectory as the wall decal (opts.dyaw/dpitch = this shot's spread cone),
   // so bullet spread actually deflects hits — a sprayed burst misses, a first tap lands.
   const P = pitch + punchPitch + recoilPitch + (opts.dpitch || 0), Y = yaw + recoilYaw + (opts.dyaw || 0);

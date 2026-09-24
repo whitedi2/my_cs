@@ -184,7 +184,7 @@ function _spawnDecal(type, maxDist, spread, roll, scatter) {
   }
 
   // Camera world forward: yaw on parent Y, pitch on child X
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const eyeH = playerEyeH();
   const P    = pitch + punchPitch + recoilPitch + dpitch;
   const Y    = yaw + recoilYaw + dyaw;
   const cp   = Math.cos(P), sp = Math.sin(P);

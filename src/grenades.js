@@ -106,7 +106,7 @@ function _ensureWMesh(type, cb) {
 function throwGrenade(wpn) {
   if (!gsPos) return;
   const type = wpn.grenadeType;
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const eyeH = playerEyeH();
 
   let gp = -pitch * 180 / Math.PI;                       // GoldSrc-convention pitch (deg, +down)
   if (gp < 0) gp = -10 + gp * ((90 - 10) / 90);
@@ -334,7 +334,7 @@ function _flashAt(pos) {
                { volume: Math.max(0.25, _distVolume(pos, 1)) });
   _spawnExplosion(pos, true);
   if (!gsPos) return;
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const eyeH = playerEyeH();
   const eye = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
   const dx = pos[0] - eye[0], dy = pos[1] - eye[1], dz = pos[2] - eye[2];
   const dist = Math.hypot(dx, dy, dz) || 1;

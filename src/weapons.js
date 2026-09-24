@@ -689,7 +689,7 @@ function _beginFire(wpn) {
 
 function hitCheck(maxDist) {
   if (!gsPos || !gPlanes) return null;
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const eyeH = playerEyeH();
   const cp   = Math.cos(pitch), spv = Math.sin(pitch);
   const from = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
   const fx   = -Math.sin(yaw)*cp, fy = Math.cos(yaw)*cp, fz = -spv;
@@ -700,7 +700,7 @@ function hitCheck(maxDist) {
 // Returns trace if melee connects within dist, null if miss.
 function _meleeHits(dist) {
   if (!gsPos || !gPlanes) return null;
-  const eyeH = SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand);
+  const eyeH = playerEyeH();
   const cp   = Math.cos(pitch), spv = Math.sin(pitch);
   const from = [gsPos[0], gsPos[1], gsPos[2] + eyeH];
   const fx   = -Math.sin(yaw)*cp, fy = Math.cos(yaw)*cp, fz = -spv;

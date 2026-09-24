@@ -199,6 +199,9 @@
         hp: (typeof playerHealth !== 'undefined') ? playerHealth : null,
         ar: (typeof playerArmor  !== 'undefined') ? playerArmor  : null,
         rp: r(recoilPitch), ry: r(recoilYaw), roll: r(punchRoll),
+        // gameplay eye (shot/throw origin) and the rendered camera height, GoldSrc Z
+        eyeZ: (typeof playerEyeH === 'function') ? r(gsPos[2] + playerEyeH()) : null,
+        camZ: (typeof smoothCamY === 'number') ? r(smoothCamY) : null,
         gap: (typeof xhairGap !== 'undefined') ? r(xhairGap) : null,
         vmod: (typeof velMod !== 'undefined') ? r(velMod) : 1,
       };

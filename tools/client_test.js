@@ -168,17 +168,25 @@ const ASSERTS = {
     // CONFIG.ducktime is the full 0→1 transition.
     check('crouch takes ~ducktime', full && near(full.t, o.cfg.ducktime, 0.08),
           full ? `t=${full.t.toFixed(3)} ducktime=${o.cfg.ducktime}` : '');
-    // KNOWN DEVIATION (found by this harness, kept as a warning so it can't mask a real
-    // regression): sim-core sets st.phyDucked only in its `!onGround` branch, so crouching
-    // while standing on the floor never swaps in the duck hull (hull3) — the collision box
-    // stays full height and the origin never drops the 18 units PM_FinishDuck applies.
-    // Speed and eye height still look right (crouchspeed + CONFIG.eyeduck = -6 compensate),
-    // so it only shows as "can't crouch under low geometry". docs/DIFFERENCES.md describes
-    // the origin lowering by 18·duckAmount, which is what the camera does, not the hull.
-    warn('duck hull goes active on the ground (phyDucked)', s.some(x => x.ducked),
-         'sim-core ducks the hull only in the air — see the note in tools/client_test.js');
-    warn('crouching lowers the origin', s.some(x => x.pos[2] < s[0].pos[2] - 1),
-         `z stayed at ${s[0].pos[2]}`);
+    // Duck hull on the floor (PM_FinishDuck) — this was a known deviation until the fix in
+    // sim-core: the hull used to swap only in the air.
+    check('duck hull goes active on the ground (phyDucked)', s.some(x => x.ducked));
+    const low = firstW(s, x => x.ducked);
+    check('origin drops 18 when the hull swaps', low && near(s[0].pos[2] - low.pos[2], 18, 0.05),
+          low ? `dz=${(s[0].pos[2] - low.pos[2]).toFixed(2)}` : '');
+    // Eye heights (GoldSrc): standing origin+17 = floor+53, crouched VEC_DUCK_VIEW = floor+30.
+    // s[0] is standing (origin = floor + 36), so floor = s[0].pos[2] − 36.
+    const floorZ = s[0].pos[2] - 36;
+    check('gameplay eye (shot origin) at floor+30 when crouched', low && near(low.eyeZ - floorZ, 30, 0.5),
+          low ? `eye=floor+${(low.eyeZ - floorZ).toFixed(2)}` : '');
+    check('gameplay eye back at floor+53 after standing', near(o.end.eyeZ - floorZ, 53, 0.5),
+          `eye=floor+${(o.end.eyeZ - floorZ).toFixed(2)}`);
+    // The camera must not jump when the origin snaps down 18: frame-to-frame change stays
+    // within what the smooth crouch lerp produces (~23 u over ducktime → a few u per frame).
+    let maxStep = 0;
+    for (let i = 1; i < s.length; i++) if (s[i].camZ != null && s[i - 1].camZ != null)
+      maxStep = Math.max(maxStep, Math.abs(s[i].camZ - s[i - 1].camZ));
+    check('camera does not jump on the hull swap or stand-up', maxStep < 6, `max step=${maxStep.toFixed(2)}u/frame`);
     const moving = between(s, 0.7, 1.9);
     const top = peak(moving, x => x.spd);
     const want = o.cfg.crouchspeed * (capOf(o) / o.cfg.maxspeed);

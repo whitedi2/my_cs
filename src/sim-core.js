@@ -211,7 +211,7 @@ function simSlideMove(hull, st, dt) {
 // prediction stays in lockstep with the authoritative sim.
 const SIM_TICK = 0.01;   // 100 Hz movement sub-step (≈ fps_max 100 in the original)
 function simPlayerMove(hull, st, cmd, dt, params) {
-  const acc = { jumped: false, landed: false, fallVel: 0, stoodUp: false };
+  const acc = { jumped: false, landed: false, fallVel: 0, stoodUp: false, duckedDown: false };
   let left = dt;
   // Guard against a runaway loop on a pathological dt; server already clamps to 0.1.
   for (let i = 0; left > 1e-6 && i < 64; i++) {
@@ -219,6 +219,7 @@ function simPlayerMove(hull, st, cmd, dt, params) {
     const ev = simPlayerMoveStep(hull, st, cmd, slice, params);
     if (ev.jumped)  acc.jumped  = true;
     if (ev.stoodUp) acc.stoodUp = true;
+    if (ev.duckedDown) acc.duckedDown = true;
     if (ev.landed) { acc.landed = true; acc.fallVel = ev.fallVel; }
     left -= slice;
   }
@@ -227,7 +228,7 @@ function simPlayerMove(hull, st, cmd, dt, params) {
 
 function simPlayerMoveStep(hull, st, cmd, dt, params) {
   const SV = SIM_SV;
-  const ev = { jumped: false, landed: false, fallVel: 0, stoodUp: false };
+  const ev = { jumped: false, landed: false, fallVel: 0, stoodUp: false, duckedDown: false };
   const wantDuck = !!cmd.duck;
 
   // Duck transition (smooth 0..1) + duck hull state while airborne.
@@ -256,6 +257,16 @@ function simPlayerMoveStep(hull, st, cmd, dt, params) {
   if (st.phyDucked && st.onGround && !wantDuck) {
     const trUp = simTraceMove(hull, true, st.pos, [st.pos[0], st.pos[1], st.pos[2] + 37]);
     if (trUp.fraction >= 1.0) { st.pos[2] += 19; st.phyDucked = false; ev.stoodUp = true; }
+  }
+
+  // Finish the duck on the ground (PM_Duck → PM_FinishDuck): once the crouch transition
+  // completes, swap in the duck hull (hull3) and drop the origin by the hull-min difference
+  // (36 − 18) so the feet stay on the floor. The duck hull lies entirely inside the standing
+  // one at that position, so it always fits — no trace needed. Before this the hull only
+  // switched in the air, so a player crouching on the floor kept a full-height collision box
+  // (couldn't crouch under anything), full-height hitboxes, and no crouch accuracy bonus.
+  if (!st.phyDucked && st.onGround && wantDuck && st.duckAmount >= 1) {
+    st.pos[2] -= 18; st.phyDucked = true; ev.duckedDown = true;
   }
 
   // Report landing (caller applies fall damage). m_flFallVelocity = -vel.z at touchdown.

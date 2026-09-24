@@ -758,7 +758,7 @@ function updateChaseCamera() {
   // Trace from the eye straight back along the camera's (fixed, arrow-orbited)
   // angle — independent of mouse-look, matching yawObj/pitchObj in the render loop.
   const az = orbitYaw, el = orbitPitch;
-  const eyeH = (focus === gsPos) ? (SV.eyestand + duckAmount * (SV.eyeduck - SV.eyestand)) : SV.eyestand;
+  const eyeH = (focus === gsPos) ? playerEyeH() : SV.eyestand;
   const cp = Math.cos(el), sp = Math.sin(el);
   const from = [focus[0], focus[1], focus[2] + eyeH];
   const bx = Math.sin(az) * cp, by = -Math.cos(az) * cp, bz = sp;   // backward dir
@@ -902,7 +902,7 @@ function updateDeathCam(dt) {
   let focus = gsPos, eyeH = SV.eyestand;
   if (_specMode === 'spectate' && inst && inst.pos) {
     focus = inst.pos;
-    eyeH = SV.eyestand + (inst.da || 0) * (SV.eyeduck - SV.eyestand);
+    eyeH = SV.eyestand + (inst.da || 0) * (SV.eyeduck - SV.eyestand) + (inst.dk ? 18 : 0);   // + duck-hull shift, see playerEyeH
     if (_specCam === 2) {            // first-person: look exactly where they look, camera at eye
       _specEye = true;
       orbitYaw = inst.yaw; orbitPitch = (typeof inst.pitch === 'number') ? inst.pitch : 0;
