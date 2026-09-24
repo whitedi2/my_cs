@@ -34,7 +34,62 @@ Ctrl+W/Ctrl+цифра. Также Keyboard Lock включается сам, е
 `fullscreenchange`. В окне без этого — комбо могут сработать (фолбэк только `preventDefault`).
 
 Проверка изменений = перезагрузить страницу в браузере (Ctrl+Shift+R: декали/текстуры
-кэшируются) и посмотреть глазами. Скриншот-тесты не используем.
+кэшируются) и посмотреть глазами. Но **глаза — не единственный способ**: есть харнесс,
+которым агент проверяет себя сам, без браузера в руках человека (см. «Тестирование»).
+
+## Тестирование (харнесс)
+
+Три слоя, от быстрого к медленному. **Прогоняй релевантный слой после правок** — это
+дешевле, чем просить человека перезагрузить страницу.
+
+**1. `npm test` — headless-логика (Node, секунды, без браузера).** 7 сьютов в `tools/`:
+`sim_test` (движение по реальному халлу de_dust2), `tag_slowdown_test` (tagging vs ReGameDLL),
+`net_test` (детерминизм авторитета), `net_smoke` (живой WS end-to-end), `net_hit_test` (нож по WS),
+`net_lagcomp_test` (ray/box + откат), `net_match_test` (раунды, экономика, C4, спауны, FF, гранаты).
+Покрывает `sim-core.js`, `combat-core.js`, `match-core.js`, `server.js`. **Трогал их — прогони.**
+
+**2. `node tools/client_test.js` — клиент в headless Chrome (~6 с на сценарий, весь набор ~70 с).**
+То, до чего `npm test` не достаёт: `playerMove`/камера/отдача (`physics.js`), стейт-машина `ws`
+(`weapons.js`), патроны/HUD. Гоняет НАСТОЯЩУЮ игру: поднимает свою статику на свободном порту,
+открывает `viewer.html?test=1&scenario=<name>`, а `src/autotest.js` проигрывает скриптованный
+таймлайн ввода и пишет покадровую трассу состояния, которую раннер парсит и проверяет.
+
+```bash
+npm run test:client                        # = node tools/client_test.js (все сценарии)
+npm run test:all                           # оба слоя: npm test + test:client
+node tools/client_test.js walk jump        # подмножество
+node tools/client_test.js --dump duck      # распечатать трассу (TSV) + шапку run — отладка физики
+node tools/client_test.js --jobs 1         # по одному (SwiftShader тяжёлый)
+CHROME=<path> node tools/client_test.js    # если Chrome не нашёлся сам
+AUTOTEST_KEEP_DOM=<dir> node tools/...     # сохранить сырой DOM-дамп (когда сценарий молчит)
+```
+
+~6 с на сценарий, и это почти целиком загрузка карты (40 МБ OBJ), сам скрипт — миллисекунды.
+Сценарии идут **по одному** и **без отрисовки** (`renderer.render` заглушен): в headless работает
+SwiftShader — многопоточный программный растеризатор, который на отрисовке de_dust2 забирает все ядра
+и подвешивает машину. Тестам пиксели не нужны. Нужна картинка (посмотреть сценарий живьём) — `&norender=0`;
+параллелить (`--jobs 2`) — только на свободной машине.
+Кроме `PASS`/`FAIL` есть `WARN` — известные расхождения, которые не валят прогон (чтобы не маскировать
+регрессии). Сейчас один такой: **присед на земле не включает duck-халл** (`phyDucked` выставляется в
+`sim-core.js` только в ветке `!onGround`), поэтому под низкой геометрией не проползти; скорость и
+высота глаз при этом правильные. Починят — переведи `warn(...)` обратно в `check(...)`.
+
+Сценарии (таблица `SCENARIOS` в `src/autotest.js`): `walk` `walk_m4` `shiftwalk` `strafe` `duck`
+`jump` · `fire` `dryfire` `reload` `switch` `silencer`. Добавить свой — вписать запись в
+`SCENARIOS` (`hold`/`tap`/`lmb`/`look`/`mouse`), длительность в `SCENARIO_DUR` и ассерты в
+`ASSERTS` (`tools/client_test.js`).
+
+Важно: кадры **не** зависят от того, как быстро рисует headless-GPU — сценарий перехватывает
+`requestAnimationFrame` и крутит цикл сам с фиксированным шагом (`&hz=`, дефолт 50), а таймлайн
+стартует не по таймеру, а по готовности: на земле, а для оружейных сценариев ещё и `ws === IDLE`
+(движенческие помечены `waitFor: 'ground'`). Ассерты сверяются с
+`CONFIG`/`WPNS`, которые трасса везёт с собой, — второй копии констант нет.
+
+**3. `bash tools/shot.sh "<query>" <name>` — скриншот реального кадра.** Требует запущенной
+статики (`python serve.py` или `python -m http.server 8080`). Кладёт `_<name>.png` в корень
+(в `.gitignore`), картинку можно прочитать Read-ом. Флаги те же, что у `autotest.js`:
+`test=1&team=ct&wpn=m4&hitboxes&gore&tp&fire=1&flash&yaw=&pitch=`. Для визуальных вещей
+(модель, вспышка, декали, худ) — единственный способ проверить себя без человека.
 
 ## Где что лежит
 
@@ -67,6 +122,7 @@ Runtime разбит по файлам (порядок загрузки = пор
 | `src/menu-showcase.js` | анимированная заставка меню (кросс-фейд через чёрный `#backdrop-fade`, стрелки `#showcase-ctrl`): кадры `map` (вращающаяся карта) · `passCT`/`passT` (одиночный боец CT-M4 слева / T-AK справа выезжает на стрейфе в пустоте, стреляет в экран со вспышками+гильзами, гаснет к центру) · `arena` (оба на карте лицом друг к другу). Через общий `animateThirdPerson` (+ `_showFlashWorld`, `_spawnShell`/`_updateShells`). Своя `duelCamera`; в игре скрыта (`showcaseStop`). После net.js, до input.js | `showcaseTick`, `showcaseGo`, `showcaseStop`, `showcaseInMap`, `_ensureBuilt`, `_animate`, `_DUEL`, `_SCENES` |
 | `src/load.js` | загрузка карты/ассетов (после physics, чтобы `initPhysics` была определена) | `objPromise`, `hullPromise`, `Promise.all(...).then(...)` |
 | `src/input.js` | pointer lock, настройки, мышь/клавиатура/оружие, **главный цикл** | `animate(t)`, `updateFOV`, обработчики ввода, `animate(0)` в конце |
+| `src/autotest.js` | **харнесс** (только при `?test=…`, в обычной игре — no-op): вход без pointer lock, дебаг-флаги для скриншота, скриптованные сценарии ввода с покадровой трассой состояния. Грузится последним | `SCENARIOS`, `drive`, `sample`, `emit`, пумп с фиксированным шагом (перехват `requestAnimationFrame`) |
 
 **Конфиг физики/управления:** `config.js` (глобальный `const CONFIG`, грузится классическим тегом до
 загрузчика). Тут `gravity, maxspeed, jumpvel, eyestand/eyeduck, ducktime, sensitivity, stairSmoothing`,
@@ -96,6 +152,8 @@ sprites/           кадры muzzleflash (PNG)
 sounds/            звуки из оригинала (.wav, раскладка GoldSrc: weapons/, items/, player/) + materials.txt (текстура→материал шага)
 decals/            PNG следов пуль (shot1..5); следы ножа — процедурные (не из PNG)
 tools/             Python-конвейер (см. ниже) + config.py
+                   *_test.js, net_smoke.js — headless-тесты логики (npm test)
+                   client_test.js — headless-тесты клиента через Chrome; shot.sh — скриншот
 docs/              PLAN.md, DIFFERENCES.md
 ```
 
@@ -173,7 +231,8 @@ docs/              PLAN.md, DIFFERENCES.md
   синтезировать жесты, которых нет в исходных секвенциях. Если нужного движения в модели нет — спросить,
   а не сочинять. (Допустимо: кросс-фейд/слёрп между *существующими* позами, как делает движок — это не
   новая анимация, а интерполяция оригинальных.)
-- Никакой сборки/линтера/тестов — правки идут прямо в `viewer.html`, проверка глазами в браузере.
+- Никакой сборки/линтера — правки идут прямо в `src/*.js`, проверка глазами в браузере
+  **плюс харнесс** (`npm test` / `tools/client_test.js` / `tools/shot.sh`, см. «Тестирование»).
 
 ## Документы
 

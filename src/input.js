@@ -441,7 +441,10 @@ let lastT = 0;
 function animate(t) {
   requestAnimationFrame(animate);
   const rawDt = (t - lastT) / 1000;
-  const dt = Math.min(rawDt, 0.05);
+  // Clamp both ways: a stalled frame must not teleport the sim (≤50 ms), and a timestamp
+  // older than the last one (a stray callback on a different clock) must not run it
+  // backwards — a negative dt rewinds timers like wsT and breaks reload/draw.
+  const dt = Math.max(0, Math.min(rawDt, 0.05));
   lastT = t;
 
   // If frame was stalled >300ms (GPU switch / tab switch) — discard accumulated mouse input
