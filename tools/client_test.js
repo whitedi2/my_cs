@@ -75,6 +75,7 @@ const SCENARIO_DUR = {   // must mirror the SCENARIOS table in src/autotest.js
   walk: 2.5, walk_m4: 2.5, shiftwalk: 2.5, strafe: 2.0, duck: 2.5, jump: 2.0,
   fire: 2.5, dryfire: 9.0, reload: 5.0, switch: 4.0, silencer: 4.0,
   knife: 2.2, knife_mix: 3.0, fall: 1.5,
+  awp: 4.6, awp_speed: 3.4,
 };
 function unescapeHtml(s) {
   return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
@@ -308,6 +309,32 @@ const ASSERTS = {
     check('reaches a damaging speed (> 500)', v > 600, `v=${v.toFixed(1)}`);
     check('HP loss = CS fall formula (×1.25)', near(lost, want, 2), `lost=${lost} want≈${want.toFixed(1)} at v=${v.toFixed(0)}`);
     check('armor does not absorb falls', o.end.ar === s[0].ar);
+  },
+  // AWP straight from ReGameDLL CAWP (wpn_awp.cpp).
+  awp(o, check) {
+    const s = o.samples, fovAt = t => (lastW(s, x => x.t <= t) || s[0]).fov;
+    // A shot = ammo drops. The first can land on sample 0 (clicked on the very first frame),
+    // which has no predecessor — compare it against the full clip instead.
+    const shots = s.filter((x, i) => x.ammo < (i ? s[i - 1].ammo : o.wcfg.maxAmmo));
+    check('two shots fired', shots.length === 2, `shots=${shots.length}`);
+    if (shots.length < 2) return;
+    check('no-scope shot: cone 0.001 + 0.08', near(shots[0].spr, 0.081, 1e-4), `spr=${shots[0].spr}`);
+    check('scoped shot: pinpoint 0.001', near(shots[1].spr, 0.001, 1e-4), `spr=${shots[1].spr}`);
+    check('RMB during the bolt cycle is ignored', fovAt(1.5) === 90, `fov@1.5=${fovAt(1.5)}`);
+    check('RMB → 40', fovAt(1.68) === 40, `fov=${fovAt(1.68)}`);
+    check('a 2nd RMB within 0.3 s is ignored', fovAt(1.95) === 40, `fov=${fovAt(1.95)}`);
+    check('RMB → 10', fovAt(2.3) === 10, `fov=${fovAt(2.3)}`);
+    check('scoped shot drops to 90', shots[1].fov === 90, `fov=${shots[1].fov}`);
+    const back = firstW(s, x => x.t > shots[1].t && x.fov === 10);
+    const wait = back ? back.t - shots[1].t : NaN;
+    check('re-zooms to 10 when the next shot is allowed (1.45 s)', back && Math.abs(wait - o.wcfg.fireInterval) <= 0.041,
+          `after ${wait.toFixed(3)}s, cycle=${o.wcfg.fireInterval}`);
+  },
+  awp_speed(o, check) {
+    const s = o.samples;
+    const un = peak(between(s, 0, 1.2), x => x.spd), sc = peak(between(s, 1.9, 3.2), x => x.spd);
+    check('unscoped AWP runs at 210 (AWP_MAX_SPEED)', near(un, 210, 3), `top=${un.toFixed(1)}`);
+    check('scoped AWP runs at 150 (AWP_MAX_SPEED_ZOOM)', near(sc, 150, 3), `top=${sc.toFixed(1)}`);
   },
   silencer(o, check) {
     const s = o.samples;

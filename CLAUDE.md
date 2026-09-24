@@ -74,7 +74,7 @@ SwiftShader — многопоточный программный растери
 Починил — переводи `warn(...)` обратно в `check(...)`.
 
 Сценарии (таблица `SCENARIOS` в `src/autotest.js`): `walk` `walk_m4` `shiftwalk` `strafe` `duck`
-`jump` `fall` · `fire` `dryfire` `reload` `switch` `silencer` · `knife` `knife_mix`. Добавить свой — вписать запись в
+`jump` `fall` · `fire` `dryfire` `reload` `switch` `silencer` · `knife` `knife_mix` · `awp` `awp_speed`. Добавить свой — вписать запись в
 `SCENARIOS` (`hold`/`tap`/`lmb`/`look`/`mouse`), длительность в `SCENARIO_DUR` и ассерты в
 `ASSERTS` (`tools/client_test.js`).
 

@@ -150,14 +150,15 @@ const WPNS = [
     idleSeq: 'idle1', drawSeq: 'draw', reloadSeq: 'reload',
     fireSeq: 'shoot1', fireSeqsUnsil: ['shoot1', 'shoot2', 'shoot3'],
     silencer: false, autofire: false,
-    fireInterval: 1.5,           // bolt-action cycle (ReGameDLL GetNextAttackDelay 1.5)
+    fireInterval: 1.45,          // bolt-action cycle (ReGameDLL CAWP::PrimaryAttack → AWPFire(…, 1.45))
     recoilKick: 0.22,            // big single-shot vertical screen punch
     spread: 0.001,               // pinpoint when standing still
     moveSpreadMult: 3.0,         // movement wrecks accuracy (sniper)
     fireSound: ['weapons/awp1.wav'],          // code-driven gunfire
     deploySound: 'weapons/awp_deploy.wav',    // draw has no MDL event → code-driven
     zoomFovs: [40, 10],          // RMB cycles 90 → 40 → 10 → 90 (ReGameDLL AWP)
-    scopeResumeDelay: 1.3,       // unscoped through the bolt cycle (~1.2s anim), re-zooms near the end
+    scopeDropOnFire: true,       // CAWP::AWPFire: a scoped shot drops to FOV 90 and m_bResumeZoom brings the
+                                 // level back once the next shot is allowed (the 1.45 s cycle)
     // CS 1.6: 115/bullet, near-zero range falloff (longest range)
     damage: 115, rangeMod: 0.99,
     pos: new THREE.Vector3(-0.04, -0.20, -0.75),
@@ -319,7 +320,8 @@ const WEAPON_ACCURACY = {
   // Machine gun
   m249:  { model: 'bloom', exp: 3, div: 175,   base: 0.4,  max: 0.9,  air: { add: 0.045, mul: 0.5 }, run: { add: 0.045, mul: 0.095 }, still: { add: 0, mul: 0.03 } },
   // Sniper — fixed per-stance cone
-  awp:   { model: 'fixed', air: 0.85, run: 0.25, walk: 0.1, walkThresh: 10, duck: 0.0, still: 0.001 },
+  awp:   { model: 'fixed', air: 0.85, run: 0.25, walk: 0.1, walkThresh: 10, duck: 0.0, still: 0.001,
+           unscoped: 0.08 },   // AWPFire: "If we are not zoomed in, the bullet diverts more" (+0.08)
   // Pistols — time-decay; any movement (runThresh ~0) uses the 'run' branch.
   usp:       { model: 'decay', cool: 0.3,   step: 0.275, lo: 0.6,   hi: 0.92, runThresh: 5, air: 1.2, run: 0.225, duck: 0.08,  still: 0.1,
                sil: { air: 1.3, run: 0.25, duck: 0.125, still: 0.15 } },
@@ -427,6 +429,9 @@ let scopeLevel = 0;
 // CS 1.6: a scoped shot unscopes momentarily, then re-zooms. These track the
 // pending auto re-zoom (level to restore + countdown until it fires).
 let _scopeResumeLevel = 0, _scopeResumeT = 0;
+// m_flNextSecondaryAttack for the zoom: 0.3 s between FOV steps (CAWP::SecondaryAttack), and a
+// shot pushes it to the end of the fire cycle — no re-zooming by hand while the bolt cycles.
+let _scopeNextT = 0;
 function scopeFov() {
   const w = curW();
   return (scopeLevel > 0 && w.zoomFovs) ? w.zoomFovs[scopeLevel - 1] : null;
@@ -437,13 +442,15 @@ function cycleScope() {
   if (!w.zoomFovs || !w.zoomFovs.length) return;
   // Only zoom from a settled weapon (not mid-reload/draw), as in the original.
   if (ws !== WS.IDLE && ws !== WS.FIRE) return;
+  if (_scopeNextT > 0) return;
+  _scopeNextT = 0.3;
   scopeLevel = (scopeLevel + 1) % (w.zoomFovs.length + 1);
   if (typeof playSound === 'function') playSound('weapons/zoom.wav');
   if (typeof updateFOV === 'function') updateFOV();
   _updateScopeOverlay();
 }
 function resetScope() {
-  _scopeResumeLevel = 0; _scopeResumeT = 0;   // cancel any pending auto re-zoom
+  _scopeResumeLevel = 0; _scopeResumeT = 0; _scopeNextT = 0;   // cancel any pending auto re-zoom
   if (scopeLevel === 0) return;
   scopeLevel = 0;
   if (typeof updateFOV === 'function') updateFOV();
@@ -794,6 +801,7 @@ function updateWeapon(dt) {
   wsT += dt; wsIdleT += dt;
   if (meleeCooldown > 0) meleeCooldown -= dt;
   if (meleeCooldown2 > 0) meleeCooldown2 -= dt;
+  if (_scopeNextT > 0) _scopeNextT -= dt;
   const p = wpn.root.position, r = wpn.root.rotation;
   const eo = t => 1 - (1-t)*(1-t);
 
@@ -951,6 +959,8 @@ function updateWeapon(dt) {
           // Canon ReGameDLL accuracy: scalar (bloom/decay/fixed) × firing stance. This
           // already encodes the movement penalty, so the legacy move term is skipped.
           shotSpread = _canonSpread(acc, wpn, sc, spd2d, onGround, phyDucked);
+          if (acc.unscoped && !isScoped()) shotSpread += acc.unscoped;   // no-scope penalty (scope is
+                                                                          // still up here — it drops below)
         } else {
           // Legacy fallback (weapons not yet converted): static cone + ad-hoc move spread.
           shotSpread = wpn.spread || 0;
@@ -959,6 +969,7 @@ function updateWeapon(dt) {
           if (!onGround) shotSpread += 0.05 * moveMult;
           else { let m = (Math.max(0, spd2d - 40) / 250) * 0.035; if (phyDucked) m *= 0.4; shotSpread += m * moveMult; }
         }
+        wpn._lastSpread = shotSpread;   // (read by src/autotest.js)
         // Roll this shot's scatter once (uniform disc of radius shotSpread) and fire the
         // same deflected trajectory at the wall and the dummy.
         let dyaw = 0, dpitch = 0;
@@ -1023,9 +1034,11 @@ function updateWeapon(dt) {
         }
         // CS 1.6 sniper: firing while scoped drops the scope (you see the weapon
         // recoil + bolt), then it auto re-zooms to the same level after a beat.
-        if (scopeLevel > 0 && wpn.zoomFovs) {
+        // AWPFire sets m_flNextSecondaryAttack = the cycle too: no zooming while the bolt cycles.
+        if (wpn.scopeDropOnFire) _scopeNextT = wpn.fireInterval;
+        if (scopeLevel > 0 && wpn.zoomFovs && wpn.scopeDropOnFire) {
           _scopeResumeLevel = scopeLevel;
-          _scopeResumeT     = wpn.scopeResumeDelay || 0.4;
+          _scopeResumeT     = wpn.fireInterval;      // back when the next shot is allowed
           scopeLevel = 0;
           if (typeof updateFOV === 'function') updateFOV();
           _updateScopeOverlay();

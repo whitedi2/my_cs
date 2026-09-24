@@ -52,6 +52,21 @@
     // ── fall damage: small lift + a downward kick (de_dust2's sky is only ~170 u above the spawns,
     //    too low to reach a damaging speed by gravity alone); FlPlayerFallDamage only reads the
     //    touchdown speed, so the source of that speed doesn't matter ──
+    // ── AWP (ReGameDLL CAWP): no-scope shot +0.08 cone; zoom 90→40→10 with 0.3 s between steps and
+    //    locked for the 1.45 s cycle after a shot; a scoped shot drops to 90 and re-zooms at cycle end ──
+    awp:       { wpn: 'awp', dur: 4.6, tl: [
+      [0.00, { lmb: true }], [0.04, { lmb: false }],   // no-scope shot
+      [0.50, { rmb: true }], [0.52, { rmb: false }],    // RMB mid-cycle → must be ignored
+      [1.60, { rmb: true }], [1.62, { rmb: false }],    // → 40
+      [1.70, { rmb: true }], [1.72, { rmb: false }],    // < 0.3 s later → ignored
+      [2.00, { rmb: true }], [2.02, { rmb: false }],    // → 10
+      [2.40, { lmb: true }], [2.44, { lmb: false }],    // scoped shot → 90, back to 10 at ~3.85
+    ] },
+    awp_speed: { wpn: 'awp', dur: 3.4, tl: [
+      [0.0, { hold: ['KeyW'] }], [1.1, { hold: [] }],   // unscoped: cap 210
+      [1.6, { rmb: true }], [1.62, { rmb: false }],     // scope in
+      [1.9, { hold: ['KeyW'] }], [3.1, { hold: [] }],   // scoped: cap 150
+    ] },
     fall:      { waitFor: 'ground', wpn: 'knife', dur: 1.5, tl: [[0.0, { lift: 60, vz: -700 }]] },
   };
 
@@ -211,6 +226,8 @@
         // gameplay eye (shot/throw origin) and the rendered camera height, GoldSrc Z
         eyeZ: (typeof playerEyeH === 'function') ? r(gsPos[2] + playerEyeH()) : null,
         camZ: (typeof smoothCamY === 'number') ? r(smoothCamY) : null,
+        fov: (typeof scopeFov === 'function') ? (scopeFov() || 90) : 90,   // scope FOV (90 = unscoped)
+        spr: (w && w._lastSpread != null) ? r(w._lastSpread) : null,       // last shot's cone
         gap: (typeof xhairGap !== 'undefined') ? r(xhairGap) : null,
         vmod: (typeof velMod !== 'undefined') ? r(velMod) : 1,
       };
